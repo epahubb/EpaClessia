@@ -22,7 +22,7 @@ const GHS = (n: number) =>
 const COLORS = ['#1b4332', '#2d6a4f', '#40916c', '#52b788', '#74c69d'];
 
 function formatUptime(seconds: number): string {
-  if (!seconds || seconds < 0) return '\u2014';
+  if (!seconds || seconds < 0) return '—';
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -115,7 +115,7 @@ const Dashboard: React.FC = () => {
         <style>body{font-family:system-ui,sans-serif;padding:24px;color:#0f172a}h1{font-size:22px}
         table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #e2e8f0;padding:10px 14px;text-align:left;font-size:13px}
         th{background:#f8fafc;text-transform:uppercase;font-size:11px}</style></head>
-        <body><h1>EpaChurch \u2014 Platform Dashboard</h1><p>Generated: ${new Date().toLocaleString()}</p>
+        <body><h1>EpaChurch — Platform Dashboard</h1><p>Generated: ${new Date().toLocaleString()}</p>
         <table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
         ${rows.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}
         </tbody></table><script>window.onload=function(){window.print()}</script></body></html>`;
@@ -296,7 +296,7 @@ const Dashboard: React.FC = () => {
                     <Box sx={{ p: 1, borderRadius: 2, bgcolor: alpha('#f59e0b', 0.12), color: '#f59e0b', display: 'flex' }}><Calendar size={16} /></Box>
                     <Box>
                       <Typography variant="body2" fontWeight={700}>{sub.name || sub.tenantName}</Typography>
-                      <Typography variant="caption" color="text.secondary">Expires: {sub.expiryDate || sub.subscriptionEndDate ? new Date(sub.expiryDate || sub.subscriptionEndDate).toLocaleDateString() : '\u2014'}</Typography>
+                      <Typography variant="caption" color="text.secondary">Expires: {sub.expiryDate || sub.subscriptionEndDate ? new Date(sub.expiryDate || sub.subscriptionEndDate).toLocaleDateString() : '—'}</Typography>
                     </Box>
                   </Box>
                 ))}
@@ -324,7 +324,7 @@ const Dashboard: React.FC = () => {
                   </Avatar>
                   <Box>
                     <Typography variant="body2" fontWeight={800}>{church.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">{church.city || church.location || '\u2014'}</Typography>
+                    <Typography variant="caption" color="text.secondary">{church.city || church.location || '—'}</Typography>
                   </Box>
                 </Box>
                 <Chip label={(church.status || 'active').toUpperCase()} size="small" sx={{ fontWeight: 800, fontSize: '0.65rem' }} />

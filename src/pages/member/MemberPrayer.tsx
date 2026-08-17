@@ -179,7 +179,7 @@ export default function MemberPrayer() {
               disabled={submitting || !request.trim()}
               onClick={handleSubmit}
             >
-              {submitting ? 'Submitting\u2026' : 'Submit request'}
+              {submitting ? 'Submitting…' : 'Submit request'}
             </Button>
           </Paper>
         </Grid>

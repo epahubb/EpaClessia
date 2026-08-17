@@ -795,6 +795,170 @@ export async function initializeDatabase() {
       console.log('Table "role_permissions" created.');
     }
 
+    /* ==================================================================
+     * FEATURE SCHEMA: per-member billing, image storage, church positions,
+     * and multi-method attendance.
+     * ------------------------------------------------------------------
+     * Every block is idempotent (guarded by columnInfo()/hasTable) so it is
+     * safe on every boot, matching the pattern used throughout this file.
+     * This project has no migration runner, so schema evolution lives here.
+     * ================================================================== */
+
+    // --- Images stored in Postgres (profile photos + church logos) ------
+    // Images are compressed in the BROWSER to <= 1MB before upload, so a
+    // bytea column is a reasonable store. This deliberately avoids an
+    // external object store AND local files: Railway's filesystem is
+    // ephemeral, so anything written to disk is destroyed on each redeploy.
+    {
+      const mImgCols = await db('members').columnInfo();
+      await db.schema.alterTable('members', (t) => {
+        if (!mImgCols.photo) t.binary('photo');
+        if (!mImgCols.photoMimeType) t.string('photoMimeType');
+        if (!mImgCols.photoUpdatedAt) t.timestamp('photoUpdatedAt');
+        // ZKTeco enrollment id: maps a fingerprint slot on the device to
+        // this member.
+        if (!mImgCols.biometricId) t.string('biometricId');
+      });
+    }
+
+    {
+      const tImgCols = await db('tenants').columnInfo();
+      await db.schema.alterTable('tenants', (t) => {
+        // NOTE: `logo` already exists as a STRING (external URL). These are
+        // separate columns so the existing URL-based path keeps working and
+        // an uploaded image simply takes precedence.
+        if (!tImgCols.logoImage) t.binary('logoImage');
+        if (!tImgCols.logoMimeType) t.string('logoMimeType');
+        if (!tImgCols.logoUpdatedAt) t.timestamp('logoUpdatedAt');
+      });
+    }
+
+    // --- Per-member subscription billing --------------------------------
+    {
+      const planCols = await db('subscription_plans').columnInfo();
+      await db.schema.alterTable('subscription_plans', (t) => {
+        // 'flat' preserves today's behaviour; 'per_member' multiplies by the
+        // billable member count at invoice time.
+        if (!planCols.billingModel) t.string('billingModel').defaultTo('flat');
+        if (!planCols.pricePerMember) t.decimal('pricePerMember', 15, 2).defaultTo(0);
+        // Members included before per-member charges start accruing.
+        if (!planCols.includedMembers) t.integer('includedMembers').defaultTo(0);
+      });
+    }
+
+    {
+      const invCols = await db('invoices').columnInfo();
+      await db.schema.alterTable('invoices', (t) => {
+        // Audit trail: record WHICH member count produced this amount, so a
+        // church can be shown how its bill was calculated.
+        if (!invCols.billableMembers) t.integer('billableMembers');
+        if (!invCols.unitPrice) t.decimal('unitPrice', 15, 2);
+        if (!invCols.periodStart) t.timestamp('periodStart');
+        if (!invCols.periodEnd) t.timestamp('periodEnd');
+      });
+    }
+
+    // --- Attendance: QR / manual / biometric ----------------------------
+    {
+      const attCols = await db('event_attendance').columnInfo();
+      await db.schema.alterTable('event_attendance', (t) => {
+        // 'manual' | 'qr' | 'biometric'
+        if (!attCols.method) t.string('method').defaultTo('manual');
+        if (!attCols.deviceId) t.string('deviceId');
+        // Manual roll-call must express ABSENT, which the existing
+        // checked_in/checked_out status cannot represent.
+        if (!attCols.present) t.boolean('present').defaultTo(true);
+      });
+    }
+
+    {
+      const evCols = await db('events').columnInfo();
+      await db.schema.alterTable('events', (t) => {
+        // Rotating token encoded in the event QR code. Members scan it from
+        // their own portal, so it must expire: a static code could be
+        // screenshotted and shared by someone who never attended.
+        if (!evCols.qrToken) t.string('qrToken');
+        if (!evCols.qrTokenExpiresAt) t.timestamp('qrTokenExpiresAt');
+      });
+    }
+
+    // ZKTeco devices authenticate to the ingest endpoint with a hashed API
+    // key, scoped to a single church.
+    if (!(await db.schema.hasTable('biometric_devices'))) {
+      await db.schema.createTable('biometric_devices', (t) => {
+        t.string('id').primary();
+        t.string('tenantId').references('id').inTable('tenants');
+        t.string('name').notNullable();
+        t.string('serialNumber');
+        t.string('apiKeyHash').notNullable();
+        t.string('location');
+        t.boolean('active').defaultTo(true);
+        t.timestamp('lastSeenAt');
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'active']);
+      });
+      console.log('Table "biometric_devices" created.');
+    }
+
+    // Raw device punches are stored even when they cannot be matched to a
+    // member or event, so nothing is silently dropped and an operator can
+    // reconcile unmatched fingerprints later.
+    if (!(await db.schema.hasTable('biometric_punches'))) {
+      await db.schema.createTable('biometric_punches', (t) => {
+        t.increments('id').primary();
+        t.string('tenantId');
+        t.string('deviceId');
+        t.string('biometricId');
+        t.string('memberId');
+        t.string('eventId');
+        t.timestamp('punchedAt');
+        t.string('status').defaultTo('pending'); // pending, matched, unmatched, duplicate
+        t.text('note');
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'status']);
+      });
+      console.log('Table "biometric_punches" created.');
+    }
+
+    // --- Church roles & positions ---------------------------------------
+    // ROLE (CHURCH_ADMIN, FINANCE, ...) controls what the portal permits.
+    // POSITION (Usher, Treasurer, Choir Lead) describes a person's place in
+    // the church. A member can hold several at once, so it needs its own
+    // tables rather than a column on `members`.
+    if (!(await db.schema.hasTable('church_positions'))) {
+      await db.schema.createTable('church_positions', (t) => {
+        t.string('id').primary();
+        t.string('tenantId').references('id').inTable('tenants');
+        t.string('name').notNullable();
+        t.string('category'); // leadership, ministry, administration, ...
+        t.text('description');
+        // Optional portal role granted when a member holds this position.
+        t.string('linkedRole');
+        t.boolean('active').defaultTo(true);
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'active']);
+      });
+      console.log('Table "church_positions" created.');
+    }
+
+    if (!(await db.schema.hasTable('member_positions'))) {
+      await db.schema.createTable('member_positions', (t) => {
+        t.increments('id').primary();
+        t.string('tenantId').references('id').inTable('tenants');
+        t.string('memberId').notNullable();
+        t.string('positionId').notNullable();
+        t.string('ministryId'); // optional scope, e.g. leader OF a ministry
+        t.timestamp('startDate').defaultTo(db.fn.now());
+        t.timestamp('endDate');
+        t.boolean('active').defaultTo(true);
+        t.string('assignedBy');
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'memberId']);
+        t.index(['tenantId', 'positionId']);
+      });
+      console.log('Table "member_positions" created.');
+    }
+
     // Seed default Super Admin users
     const superAdmins = [
       {
@@ -935,6 +1099,34 @@ export async function initializeDatabase() {
         await db('role_permissions').insert({ role, permissions: JSON.stringify(perms), updatedAt: new Date() });
       }
       console.log('Seed: Default role/permission matrix initialized.');
+    }
+
+    // Ensure the FINANCE and SECRETARY portal roles exist even on databases
+    // that were seeded before they were introduced. The block above only runs
+    // when role_permissions is COMPLETELY EMPTY, so on an existing deployment
+    // new roles would otherwise never appear.
+    {
+      const NEW_ROLE_PERMS: Record<string, string[]> = {
+        FINANCE: ['giving.manage', 'finance.manage', 'reports.view'],
+        SECRETARY: [
+          'members.manage',
+          'events.manage',
+          'attendance.manage',
+          'comms.send',
+          'reports.view',
+        ],
+      };
+      for (const [role, perms] of Object.entries(NEW_ROLE_PERMS)) {
+        const exists = await db('role_permissions').where({ role }).first().catch(() => null);
+        if (!exists) {
+          await db('role_permissions').insert({
+            role,
+            permissions: JSON.stringify(perms),
+            updatedAt: new Date(),
+          });
+          console.log(`Seed: role permissions added for ${role}.`);
+        }
+      }
     }
 
     // Sermon library (audio/video messages, notes, series) surfaced to members.

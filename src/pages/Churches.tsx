@@ -507,7 +507,7 @@ const Churches: React.FC = () => {
                         {church.websiteUrl.replace(/^https?:\/\//, '')}
                       </Typography>
                     ) : (
-                      <Typography variant="body2" color="text.secondary" fontWeight={600}>{'\u2014'}</Typography>
+                      <Typography variant="body2" color="text.secondary" fontWeight={600}>{'—'}</Typography>
                     )}
                   </TableCell>
                   <TableCell>
@@ -543,7 +543,7 @@ const Churches: React.FC = () => {
                   <TableCell>
                     {(() => {
                       const expiry = church.subscriptionEndDate || church.trialEndDate;
-                      if (!expiry) return <Typography variant="body2" color="text.secondary">{'\u2014'}</Typography>;
+                      if (!expiry) return <Typography variant="body2" color="text.secondary">{'—'}</Typography>;
                       const d = new Date(expiry);
                       const daysLeft = Math.ceil((d.getTime() - Date.now()) / 86400000);
                       const col = daysLeft < 0 ? '#ef4444' : daysLeft <= 30 ? '#f59e0b' : '#10b981';

@@ -56,7 +56,7 @@ const RecentChurchesTable: React.FC<RecentChurchesTableProps> = ({ churches, loa
                     </Box>
                   </TableCell>
                   <TableCell sx={{ py: 1.5 }}>
-                    <Typography variant="body2" color="text.secondary">{church.websiteUrl || '\u2014'}</Typography>
+                    <Typography variant="body2" color="text.secondary">{church.websiteUrl || '—'}</Typography>
                   </TableCell>
                   <TableCell sx={{ py: 1.5 }}>
                     <Typography variant="body2" color="text.secondary">

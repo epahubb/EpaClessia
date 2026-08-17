@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Tabs, Tab, Card, CardContent, Grid, TextField, Button, Stack, FormControlLabel, Switch, Alert, MenuItem, Avatar, CircularProgress } from '@mui/material';
+import { Box, Typography, Tabs, Tab, Card, CardContent, Grid, TextField, Button, Stack, FormControlLabel, Switch, Alert, MenuItem, CircularProgress } from '@mui/material';
 import CrudTable from '../../components/church/CrudTable';
+import ChurchLogoCard from '../../components/church/ChurchLogoCard';
 import churchApi from '../../services/churchApi';
 
 const currencyOpts = [['GHS', 'Ghana Cedi (GHS)'], ['USD', 'US Dollar (USD)'], ['NGN', 'Nigerian Naira (NGN)'], ['EUR', 'Euro (EUR)'], ['GBP', 'Pound (GBP)']].map(([v, l]) => ({ value: v, label: l }));
@@ -23,7 +24,7 @@ const SectionForm: React.FC<{ sectionKey: string; title: string; description?: s
               : (<TextField fullWidth label={f.label} type={f.type === 'textarea' ? 'text' : (f.type || 'text')} value={form[f.name] ?? ''} onChange={e => setForm({ ...form, [f.name]: e.target.value })} multiline={f.type === 'textarea'} minRows={f.type === 'textarea' ? 2 : undefined} InputLabelProps={f.type === 'date' ? { shrink: true } : undefined} />)}
         </Grid>))}
       </Grid>
-      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2 }}><Button variant="contained" onClick={save} disabled={saving}>{saving ? 'Saving\u2026' : 'Save Changes'}</Button></Stack>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2 }}><Button variant="contained" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</Button></Stack>
     </CardContent></Card>
   );
 };
@@ -43,10 +44,7 @@ export const ChurchSettingsPage: React.FC = () => {
         {tabs.map(t => <Tab key={t} label={t} />)}
       </Tabs>
       {tab === 0 && (<Stack spacing={2}>
-        <Card variant="outlined"><CardContent><Stack direction="row" spacing={2} alignItems="center">
-          <Avatar src={g.logo} sx={{ width: 64, height: 64 }}>{(g.churchName || 'C').charAt(0)}</Avatar>
-          <Box><Typography fontWeight={700}>{g.churchName || 'Your Church'}</Typography><Typography variant="body2" color="text.secondary">Paste an image URL in the form below to set your church logo.</Typography></Box>
-        </Stack></CardContent></Card>
+        <ChurchLogoCard churchName={g.churchName} />
         <SectionForm sectionKey="general" title="Church Profile" description="Basic information about your church." initial={g}
           fields={[
             { name: 'churchName', label: 'Church name' },
@@ -55,7 +53,6 @@ export const ChurchSettingsPage: React.FC = () => {
             { name: 'website', label: 'Website' },
             { name: 'currency', label: 'Default currency', type: 'select', options: currencyOpts },
             { name: 'timezone', label: 'Timezone' },
-            { name: 'logo', label: 'Logo image URL', full: true },
             { name: 'address', label: 'Address', type: 'textarea', full: true },
           ]} />
       </Stack>)}

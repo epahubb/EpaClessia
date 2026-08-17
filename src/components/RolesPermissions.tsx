@@ -165,7 +165,7 @@ const RolesPermissions: React.FC = () => {
                         onClick={() => saveRole(role)}
                         sx={{ borderRadius: 2, fontWeight: 700 }}
                       >
-                        {saving === role ? 'Saving\u2026' : 'Save permissions'}
+                        {saving === role ? 'Saving…' : 'Save permissions'}
                       </Button>
                     </Box>
                   </CardContent>

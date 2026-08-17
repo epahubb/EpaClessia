@@ -47,11 +47,11 @@ const Overview: React.FC = () => {
 export const Finance: React.FC = () => {
   const [tab, setTab] = useState(0);
   const givingCols: any[] = [
-    { key: 'createdAt', label: 'Date', render: (r: any) => r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '\u2014' },
+    { key: 'createdAt', label: 'Date', render: (r: any) => r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—' },
     { key: 'memberName', label: 'Giver', render: (r: any) => r.memberName || r.donorName || r.name || 'Anonymous' },
     { key: 'purpose', label: 'Purpose' },
     { key: 'amount', label: 'Amount', render: (r: any) => GHS(r.amount) },
-    { key: 'method', label: 'Method', render: (r: any) => r.method || r.channel || '\u2014' },
+    { key: 'method', label: 'Method', render: (r: any) => r.method || r.channel || '—' },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'completed'} color={r.status === 'pending' ? 'warning' : 'success'} /> },
   ];
   const givingFields: any[] = [
@@ -71,7 +71,7 @@ export const Finance: React.FC = () => {
     { name: 'date', label: 'Date', type: 'date' },
   ];
   const expenseCols: any[] = [
-    { key: 'date', label: 'Date', render: (r: any) => r.date ? new Date(r.date).toLocaleDateString() : '\u2014' },
+    { key: 'date', label: 'Date', render: (r: any) => r.date ? new Date(r.date).toLocaleDateString() : '—' },
     { key: 'category', label: 'Category' },
     { key: 'description', label: 'Description' },
     { key: 'vendor', label: 'Vendor' },

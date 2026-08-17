@@ -15,8 +15,8 @@ export const Reports: React.FC = () => {
       <Typography variant="h4" fontWeight={800} gutterBottom>Reports & Analytics</Typography>
       <Typography color="text.secondary" sx={{ mb: 2 }}>Membership, attendance trends and financial performance.</Typography>
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid size={{ xs: 6, md: 3 }}>{kpi('Total Members', d?.members ?? '\u2014')}</Grid>
-        <Grid size={{ xs: 6, md: 3 }}>{kpi('Visitors', d?.visitors ?? '\u2014')}</Grid>
+        <Grid size={{ xs: 6, md: 3 }}>{kpi('Total Members', d?.members ?? '—')}</Grid>
+        <Grid size={{ xs: 6, md: 3 }}>{kpi('Visitors', d?.visitors ?? '—')}</Grid>
         <Grid size={{ xs: 6, md: 3 }}>{kpi('Total Income', GHS(fin?.totalIncome || 0))}</Grid>
         <Grid size={{ xs: 6, md: 3 }}>{kpi('Net Balance', GHS(fin?.net || 0))}</Grid>
       </Grid>

@@ -158,7 +158,7 @@ export default function MemberGroups() {
                     disabled={busyId === g.id}
                     onClick={() => toggle(g)}
                   >
-                    {busyId === g.id ? 'Working\u2026' : g.joined ? 'Leave' : 'Join'}
+                    {busyId === g.id ? 'Working…' : g.joined ? 'Leave' : 'Join'}
                   </Button>
                 </CardActions>
               </Card>

@@ -296,7 +296,7 @@ export default function CommunicationCenter({ title = 'Communication' }: { title
                   disabled={sending || recipientCount === 0 || !smsMessage.trim()}
                   onClick={handleSendSms}
                 >
-                  {sending ? 'Sending\u2026' : 'Send SMS'}
+                  {sending ? 'Sending…' : 'Send SMS'}
                 </Button>
               </CardContent>
             </Card>
@@ -332,7 +332,7 @@ export default function CommunicationCenter({ title = 'Communication' }: { title
               disabled={sending || !subject.trim()}
               onClick={handleSendAnnouncement}
             >
-              {sending ? 'Posting\u2026' : 'Post announcement'}
+              {sending ? 'Posting…' : 'Post announcement'}
             </Button>
           </CardContent>
         </Card>

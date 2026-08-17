@@ -8,10 +8,10 @@ const ActivityLog: React.FC = () => {
   useEffect(() => { churchApi.getActivityLog().then(setRows).catch(() => setRows([])).finally(() => setLoading(false)); }, []);
   return (
     <Card variant="outlined"><List>
-      {loading && <ListItem><ListItemText primary="Loading\u2026" /></ListItem>}
+      {loading && <ListItem><ListItemText primary="Loading…" /></ListItem>}
       {!loading && rows.length === 0 && <ListItem><ListItemText primary="No audit records yet." secondary="Actions such as creating members, recording finances and managing users appear here." /></ListItem>}
       {rows.map((r: any, i: number) => (<React.Fragment key={r.id || i}><ListItem secondaryAction={<Chip size="small" label={r.action} />}>
-        <ListItemText primary={`${r.userName || 'System'} ${r.action} ${r.entity}${r.details ? ` \u2014 ${r.details}` : ''}`} secondary={r.createdAt ? new Date(r.createdAt).toLocaleString() : ''} />
+        <ListItemText primary={`${r.userName || 'System'} ${r.action} ${r.entity}${r.details ? ` — ${r.details}` : ''}`} secondary={r.createdAt ? new Date(r.createdAt).toLocaleString() : ''} />
       </ListItem>{i < rows.length - 1 && <Divider />}</React.Fragment>))}
     </List></Card>
   );

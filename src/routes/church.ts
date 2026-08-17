@@ -7,6 +7,26 @@ import {
   verifyTransaction,
   isPaystackConfigured,
 } from '../services/paystack';
+import {
+  decodeImageDataUrl,
+  sniffMimeType,
+  ImageValidationError,
+} from '../lib/images';
+import {
+  validateImportRows,
+  MAX_IMPORT_ROWS,
+  type NormalizedMember,
+} from '../lib/memberImport';
+import {
+  generateQrToken,
+  buildQrPayload,
+  checkQrToken,
+  buildRollCall,
+  summarizeRollCall,
+  normalizePresent,
+  generateDeviceApiKey,
+  QR_TOKEN_TTL_MINUTES,
+} from '../lib/attendance';
 
 /**
  * Tenant-scoped church application API.
@@ -53,6 +73,57 @@ function requireRole(...roles: string[]) {
 
 const tid = (req: AuthRequest): string => (req as any).tenantId;
 
+/**
+ * Column list for member queries, with the `photo` bytea column removed.
+ *
+ * Profile pictures are stored in Postgres (up to 1MB each). A list of 50
+ * members selecting `*` would therefore transfer up to 50MB per request, so
+ * list and detail reads must never include the binary column -- images are
+ * fetched separately from GET /members/:id/photo. The column list is read from
+ * the database once and cached, so this stays correct if the schema changes.
+ */
+let memberColumnsCache: string[] | null = null;
+async function memberColumns(): Promise<string[]> {
+  if (!memberColumnsCache) {
+    const info = await db('members').columnInfo();
+    memberColumnsCache = Object.keys(info).filter((c) => c !== 'photo');
+  }
+  return memberColumnsCache;
+}
+
+/** Reports whether a photo exists without transferring its bytes. */
+const hasPhotoColumn = () => db.raw('(photo IS NOT NULL) as "hasPhoto"');
+
+/** Maps image validation failures onto their intended HTTP status. */
+function handleImageError(error: unknown, res: Response, fallback: string): void {
+  if (error instanceof ImageValidationError) {
+    res.status(error.status).json({ error: error.message });
+    return;
+  }
+  console.error(`${fallback}:`, error);
+  res.status(500).json({ error: fallback });
+}
+
+/** Sends a stored image blob with correct type and caching headers. */
+function sendImage(
+  res: Response,
+  raw: Buffer | Uint8Array,
+  mimeType?: string | null,
+  updatedAt?: Date | string | null,
+): void {
+  const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+  res.setHeader('Content-Type', mimeType || sniffMimeType(buf) || 'image/jpeg');
+  res.setHeader('Content-Length', String(buf.length));
+  // "private": these images sit behind authentication and can be personal
+  // data, so shared proxies must not cache them. The ETag lets a browser skip
+  // re-downloading an unchanged image.
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  if (updatedAt) {
+    res.setHeader('ETag', `W/"${new Date(updatedAt).getTime()}"`);
+  }
+  res.end(buf);
+}
+
 router.use(resolveTenant);
 
 /* ------------------------------------------------------------------ */
@@ -73,8 +144,13 @@ router.get('/members', async (req: AuthRequest, res) => {
     }
     if (status !== 'all') query = query.where('membershipStatus', String(status));
     if (familyId) query = query.where('familyId', String(familyId));
+    // The count is cloned BEFORE any .select() is added below. If `query`
+    // already carried a select list, knex would emit `select *, count("id")`,
+    // which Postgres rejects with error 42803. Order matters here.
     const total = await query.clone().count('id as count').first();
     const data = await query
+      .select(await memberColumns())
+      .select(hasPhotoColumn())
       .orderBy('lastName', 'asc')
       .limit(Number(limit))
       .offset(offset);
@@ -92,6 +168,8 @@ router.get('/members/:id', async (req: AuthRequest, res) => {
   try {
     const member = await db('members')
       .where({ id: req.params.id, tenantId: tid(req) })
+      .select(await memberColumns())
+      .select(hasPhotoColumn())
       .first();
     if (!member) return res.status(404).json({ error: 'Member not found' });
     res.json(member);
@@ -100,14 +178,93 @@ router.get('/members/:id', async (req: AuthRequest, res) => {
   }
 });
 
+/* --- Member profile pictures --------------------------------------- */
+
+/**
+ * Serve a member's profile picture as an image response.
+ *
+ * Returned as raw bytes rather than base64 JSON so the browser can cache it
+ * and use it directly in an <img src>. Tenant-scoped: a caller can never read
+ * a photo belonging to another church.
+ */
+router.get('/members/:id/photo', async (req: AuthRequest, res) => {
+  try {
+    const row = await db('members')
+      .where({ id: req.params.id, tenantId: tid(req) })
+      .select('photo', 'photoMimeType', 'photoUpdatedAt')
+      .first();
+    if (!row || !row.photo) {
+      return res.status(404).json({ error: 'This member has no photo' });
+    }
+    sendImage(res, row.photo, row.photoMimeType, row.photoUpdatedAt);
+  } catch (error) {
+    console.error('Get member photo error:', error);
+    res.status(500).json({ error: 'Failed to fetch member photo' });
+  }
+});
+
+/**
+ * Upload or replace a member's profile picture.
+ *
+ * Expects { photo: "data:image/jpeg;base64,..." }, already resized and
+ * compressed in the browser by src/lib/imageCompress.ts. Everything is
+ * re-validated here -- the client is never trusted.
+ */
+router.post(
+  '/members/:id/photo',
+  requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'),
+  async (req: AuthRequest, res) => {
+    try {
+      const exists = await db('members')
+        .where({ id: req.params.id, tenantId: tid(req) })
+        .select('id')
+        .first();
+      if (!exists) return res.status(404).json({ error: 'Member not found' });
+
+      const img = decodeImageDataUrl(req.body?.photo);
+      await db('members')
+        .where({ id: req.params.id, tenantId: tid(req) })
+        .update({
+          photo: img.buffer,
+          photoMimeType: img.mimeType,
+          photoUpdatedAt: new Date(),
+        });
+
+      await logActivity(req, 'update', 'members', req.params.id, 'photo uploaded');
+      res.json({ success: true, bytes: img.bytes, mimeType: img.mimeType });
+    } catch (error) {
+      handleImageError(error, res, 'Failed to upload member photo');
+    }
+  },
+);
+
+/** Remove a member's profile picture. */
+router.delete(
+  '/members/:id/photo',
+  requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'),
+  async (req: AuthRequest, res) => {
+    try {
+      const updated = await db('members')
+        .where({ id: req.params.id, tenantId: tid(req) })
+        .update({ photo: null, photoMimeType: null, photoUpdatedAt: null });
+      if (!updated) return res.status(404).json({ error: 'Member not found' });
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Delete member photo error:', error);
+      res.status(500).json({ error: 'Failed to remove member photo' });
+    }
+  },
+);
+
 router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
   try {
     const { firstName, lastName, email, phone, gender, dateOfBirth, familyId, membershipStatus, notes,
-      membershipId, anniversaryDate, maritalStatus, occupation, address, branchId, ministryId, photoUrl } = req.body;
+      membershipId, anniversaryDate, maritalStatus, occupation, address, branchId, ministryId, photoUrl,
+      photo } = req.body;
     if (!firstName || !lastName) {
       return res.status(400).json({ error: 'firstName and lastName are required' });
     }
-    const member = {
+    const member: any = {
       id: genId('member'),
       tenantId: tid(req),
       familyId: familyId || null,
@@ -131,11 +288,178 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER')
       notes: notes || null,
       createdAt: new Date(),
     };
+
+    // Optional profile picture supplied at creation time, so an admin can add
+    // a member and their photo in one step.
+    if (photo) {
+      const img = decodeImageDataUrl(photo);
+      member.photo = img.buffer;
+      member.photoMimeType = img.mimeType;
+      member.photoUpdatedAt = new Date();
+    }
+
     await db('members').insert(member);
-    res.status(201).json(member);
+
+    // Never echo the raw image bytes back in the JSON response.
+    const { photo: _omitPhoto, ...safeMember } = member;
+    res.status(201).json({ ...safeMember, hasPhoto: Boolean(member.photo) });
   } catch (error) {
-    console.error('Create member error:', error);
-    res.status(500).json({ error: 'Failed to create member' });
+    handleImageError(error, res, 'Failed to create member');
+  }
+});
+
+/**
+ * POST /members/import  -- bulk member import from a spreadsheet.
+ *
+ * The browser parses the .xlsx/.csv file (SheetJS) and posts plain JSON rows
+ * plus the column mapping the user confirmed. The server then re-runs the SAME
+ * validation used for the preview (src/lib/memberImport.ts): a client-side
+ * check is a convenience, never a trust boundary.
+ *
+ * Behaviour that matters to a church secretary uploading a real register:
+ *  - The whole import is one transaction. A failure at row 900 rolls back the
+ *    earlier 899 rather than leaving a half-imported register that is painful
+ *    to reconcile by hand.
+ *  - Rows that fail validation are REPORTED, not silently dropped, and are
+ *    identified by their spreadsheet row number.
+ *  - Members whose email already exists in this church are skipped by default,
+ *    so re-uploading a corrected file does not create duplicates.
+ */
+router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const { rows, mapping, skipExistingEmails = true, dryRun = false } = req.body || {};
+
+    if (!Array.isArray(rows)) {
+      return res.status(400).json({ error: 'rows must be an array of spreadsheet rows' });
+    }
+    if (!mapping || typeof mapping !== 'object') {
+      return res.status(400).json({ error: 'mapping must be an object of field -> column name' });
+    }
+    if (rows.length > MAX_IMPORT_ROWS) {
+      return res.status(413).json({
+        error: `This import has ${rows.length} rows, which exceeds the limit of ${MAX_IMPORT_ROWS}. Please split the file.`,
+      });
+    }
+
+    const tenantId = tid(req);
+    const validation = validateImportRows(rows, mapping);
+
+    if (validation.fatalErrors.length > 0) {
+      return res.status(400).json({
+        error: validation.fatalErrors[0],
+        fatalErrors: validation.fatalErrors,
+      });
+    }
+
+    // Which of these emails does this church already have? Chunked because
+    // SQLite caps bound parameters near 999, and a 2000-row file would blow
+    // straight past that limit in a single whereIn.
+    const candidateEmails = Array.from(
+      new Set(
+        validation.validRows
+          .map((r) => r.member!.email?.toLowerCase())
+          .filter((e): e is string => Boolean(e)),
+      ),
+    );
+    const existingEmails = new Set<string>();
+    for (let i = 0; i < candidateEmails.length; i += 500) {
+      const chunk = candidateEmails.slice(i, i + 500);
+      const found = await db('members')
+        .where({ tenantId })
+        .whereIn(db.raw('lower(??)', ['email']) as any, chunk)
+        .select('email');
+      for (const row of found) {
+        if (row.email) existingEmails.add(String(row.email).toLowerCase());
+      }
+    }
+
+    const skipped: Array<{ rowNumber: number; reason: string }> = [];
+    const toInsert: any[] = [];
+
+    // One timestamp base for the whole batch. The single-member route derives
+    // membershipId from Date.now(), which would hand every row in a bulk insert
+    // the SAME id, so the batch index is appended to keep them distinct.
+    const stamp = String(Date.now()).slice(-6);
+
+    validation.validRows.forEach((result, index) => {
+      const member = result.member as NormalizedMember;
+      const email = member.email?.toLowerCase();
+
+      if (email && existingEmails.has(email) && skipExistingEmails) {
+        skipped.push({ rowNumber: result.rowNumber, reason: `A member with email ${email} already exists` });
+        return;
+      }
+
+      toInsert.push({
+        id: genId('member'),
+        tenantId,
+        familyId: null,
+        firstName: member.firstName,
+        lastName: member.lastName,
+        email: member.email,
+        phone: member.phone,
+        gender: member.gender,
+        dateOfBirth: member.dateOfBirth ? new Date(member.dateOfBirth) : null,
+        membershipStatus: member.membershipStatus,
+        membershipId: member.membershipId || `MEM-${stamp}-${index + 1}`,
+        anniversaryDate: member.anniversaryDate ? new Date(member.anniversaryDate) : null,
+        maritalStatus: member.maritalStatus,
+        occupation: member.occupation,
+        address: member.address,
+        branchId: null,
+        ministryId: null,
+        photoUrl: null,
+        approvalStatus: 'approved',
+        joinDate: new Date(),
+        notes: member.notes,
+        createdAt: new Date(),
+      });
+
+      // Guards against the same email appearing twice inside one upload.
+      if (email) existingEmails.add(email);
+    });
+
+    const summary = {
+      totalRows: rows.length,
+      imported: dryRun ? 0 : toInsert.length,
+      importable: toInsert.length,
+      skipped: skipped.length,
+      failed: validation.invalidRows.length,
+      duplicateEmailsInFile: validation.duplicateEmails,
+      skippedRows: skipped,
+      failedRows: validation.invalidRows.map((r) => ({ rowNumber: r.rowNumber, errors: r.errors })),
+      warnings: validation.rows
+        .filter((r) => r.warnings.length > 0)
+        .map((r) => ({ rowNumber: r.rowNumber, warnings: r.warnings })),
+    };
+
+    // dryRun gives the UI an authoritative server-side preview, including
+    // duplicate detection against the live register, before anything is written.
+    if (dryRun) {
+      return res.json({ success: true, dryRun: true, ...summary });
+    }
+
+    if (toInsert.length > 0) {
+      await db.transaction(async (trx) => {
+        // Chunked so a large register does not build one enormous statement.
+        for (let i = 0; i < toInsert.length; i += 200) {
+          await trx('members').insert(toInsert.slice(i, i + 200));
+        }
+      });
+    }
+
+    await logActivity(
+      req,
+      'create',
+      'members',
+      undefined,
+      `imported ${toInsert.length} members from spreadsheet (${skipped.length} skipped, ${validation.invalidRows.length} failed)`,
+    );
+
+    res.status(201).json({ success: true, ...summary });
+  } catch (error) {
+    console.error('POST /members/import error:', error);
+    res.status(500).json({ error: 'Failed to import members' });
   }
 });
 
@@ -153,10 +477,30 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
     }
     if (updates.dateOfBirth) updates.dateOfBirth = new Date(updates.dateOfBirth);
     if (updates.anniversaryDate) updates.anniversaryDate = new Date(updates.anniversaryDate);
+
+    // `photo` is handled separately from the `allowed` list because it needs
+    // validation and decoding. Passing photo: null clears the picture.
+    if ('photo' in req.body) {
+      if (req.body.photo === null || req.body.photo === '') {
+        updates.photo = null;
+        updates.photoMimeType = null;
+        updates.photoUpdatedAt = null;
+      } else {
+        const img = decodeImageDataUrl(req.body.photo);
+        updates.photo = img.buffer;
+        updates.photoMimeType = img.mimeType;
+        updates.photoUpdatedAt = new Date();
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No updatable fields were supplied' });
+    }
+
     await db('members').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update member' });
+    handleImageError(error, res, 'Failed to update member');
   }
 });
 
@@ -648,6 +992,65 @@ router.get('/dashboard/stats', async (req: AuthRequest, res) => {
 /* ------------------------------------------------------------------ */
 /* Church-level settings (Paystack, SMS, general)                     */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Church logo                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Serve this church's uploaded logo.
+ *
+ * NOTE: `tenants.logo` already existed as a plain URL string. The uploaded
+ * binary lives in separate columns (`logoImage`/`logoMimeType`), so churches
+ * that already point at an external URL keep working unchanged; an upload
+ * simply takes precedence in the UI.
+ */
+router.get('/branding/logo', async (req: AuthRequest, res) => {
+  try {
+    const row = await db('tenants')
+      .where({ id: tid(req) })
+      .select('logoImage', 'logoMimeType', 'logoUpdatedAt')
+      .first();
+    if (!row || !row.logoImage) {
+      return res.status(404).json({ error: 'No logo has been uploaded' });
+    }
+    sendImage(res, row.logoImage, row.logoMimeType, row.logoUpdatedAt);
+  } catch (error) {
+    console.error('Get church logo error:', error);
+    res.status(500).json({ error: 'Failed to fetch church logo' });
+  }
+});
+
+/** Upload or replace this church's logo (settings screen). */
+router.post('/branding/logo', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const img = decodeImageDataUrl(req.body?.logo ?? req.body?.image ?? req.body?.photo);
+    await db('tenants').where({ id: tid(req) }).update({
+      logoImage: img.buffer,
+      logoMimeType: img.mimeType,
+      logoUpdatedAt: new Date(),
+    });
+    await logActivity(req, 'update', 'tenants', tid(req), 'church logo uploaded');
+    res.json({ success: true, bytes: img.bytes, mimeType: img.mimeType });
+  } catch (error) {
+    handleImageError(error, res, 'Failed to upload church logo');
+  }
+});
+
+/** Remove this church's uploaded logo. */
+router.delete('/branding/logo', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    await db('tenants').where({ id: tid(req) }).update({
+      logoImage: null,
+      logoMimeType: null,
+      logoUpdatedAt: null,
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete church logo error:', error);
+    res.status(500).json({ error: 'Failed to remove church logo' });
+  }
+});
+
 const SETTINGS_KEYS = ['general', 'paystack', 'sms', 'email', 'payment', 'integration', 'financial', 'profile', 'backup'];
 
 async function getTenantSettings(tenantId: string, key: string): Promise<any> {
@@ -1129,6 +1532,58 @@ router.get('/sms/purchases', async (req: AuthRequest, res) => {
 // server-side before credits are granted; otherwise the purchase is recorded
 // directly (e.g. manual/offline settlement by an admin). Credits are added to
 // the tenant balance atomically and the purchase is logged.
+/**
+ * Start a Paystack payment for an SMS bundle.
+ *
+ * This is the missing first half of the SMS purchase flow: it creates the
+ * Paystack transaction and returns the authorization URL. The browser sends
+ * the user there, and on return the resulting `reference` is submitted to
+ * POST /sms/purchase, which verifies it before granting credits.
+ */
+router.post('/sms/purchase/initialize', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const { packageId, email, callbackUrl } = req.body || {};
+    if (!packageId) return res.status(400).json({ error: 'packageId is required' });
+
+    const pkg = await db('sms_packages').where({ id: packageId, active: true }).first();
+    if (!pkg) return res.status(404).json({ error: 'SMS package not found' });
+
+    const paystackSettings = await getTenantSettings(tenantId, 'paystack');
+    const secretKey = paystackSettings.secretKey;
+    if (!isPaystackConfigured(secretKey)) {
+      return res.status(503).json({
+        error: 'Paystack is not configured. Add your Paystack secret key in church settings.',
+      });
+    }
+
+    const payerEmail = email || (req as any).dbUser?.email;
+    if (!payerEmail) return res.status(400).json({ error: 'A payer email is required by Paystack' });
+
+    const reference = genId('sms');
+    const data = await initializeTransaction({
+      secretKey,
+      email: payerEmail,
+      amount: Number(pkg.price || 0),
+      reference,
+      currency: pkg.currency || 'GHS',
+      callback_url: callbackUrl,
+      metadata: { tenantId, packageId: pkg.id, credits: Number(pkg.credits || 0), purpose: 'sms_bundle' },
+    });
+
+    res.json({
+      authorizationUrl: data?.authorization_url,
+      reference,
+      accessCode: data?.access_code,
+      amount: Number(pkg.price || 0),
+      credits: Number(pkg.credits || 0),
+    });
+  } catch (error) {
+    console.error('SMS purchase initialize error:', error);
+    res.status(502).json({ error: 'Failed to initialize payment with Paystack' });
+  }
+});
+
 router.post('/sms/purchase', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
   try {
     const tenantId = tid(req);
@@ -1140,16 +1595,49 @@ router.post('/sms/purchase', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
 
     const tenant = await db('tenants').where({ id: tenantId }).first();
 
-    // If a payment reference is provided, verify it with Paystack before
-    // granting any credits. A failed or mismatched verification is rejected.
-    let status = 'completed';
+    const paystackSettings = await getTenantSettings(tenantId, 'paystack');
+    const paystackReady = isPaystackConfigured(paystackSettings.secretKey);
+    const price = Number(pkg.price || 0);
+
+    /*
+     * SECURITY: `reference` used to be optional. A POST carrying only a
+     * packageId therefore recorded the purchase as 'completed' and credited
+     * the church WITHOUT any payment at all -- any church admin or pastor
+     * could mint unlimited SMS credits. Payment is now mandatory for any
+     * priced package whenever Paystack is configured.
+     */
+    if (price > 0 && !reference) {
+      if (!paystackReady) {
+        return res.status(503).json({
+          error: 'Paystack is not configured, so paid SMS bundles cannot be purchased. Add your Paystack secret key in church settings.',
+        });
+      }
+      return res.status(402).json({
+        error: 'Payment is required. Start the purchase at /sms/purchase/initialize and submit the returned reference.',
+      });
+    }
+
+    const status = 'completed';
     if (reference) {
+      // Replay guard: a reference may only be redeemed once. Without this, a
+      // single real payment could be submitted repeatedly for more credits.
+      const alreadyRedeemed = await db('sms_purchases').where({ reference }).first();
+      if (alreadyRedeemed) {
+        return res.status(409).json({ error: 'This payment reference has already been redeemed.' });
+      }
+
       try {
-        const paystackSettings = await getTenantSettings(tenantId, 'paystack');
         const verification: any = await verifyTransaction(reference, paystackSettings.secretKey);
         const ok = verification?.status === true || verification?.data?.status === 'success';
         if (!ok) {
           return res.status(402).json({ error: 'Payment could not be verified' });
+        }
+
+        // Confirm the amount actually paid covers the package price. Paystack
+        // reports amounts in the minor unit (pesewas), hence the x100.
+        const paidMinor = Number(verification?.data?.amount ?? 0);
+        if (paidMinor > 0 && paidMinor < Math.round(price * 100)) {
+          return res.status(402).json({ error: 'The amount paid does not cover the price of this SMS bundle.' });
         }
       } catch (verr) {
         console.error('SMS purchase verification error:', verr);
@@ -1185,6 +1673,367 @@ router.post('/sms/purchase', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
   } catch (e) {
     console.error('POST /sms/purchase error:', e);
     res.status(500).json({ error: 'Failed to complete SMS purchase' });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Attendance: QR, manual roll call, biometric devices                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Taking attendance is not an admin-only job: the secretary, the pastor on
+ * duty and a ministry leader running a group meeting all need it.
+ */
+const ATTENDANCE_ROLES = ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER'];
+
+/** Members who should appear on a roll call. */
+function rollCallMembersQuery(tenantId: string) {
+  return db('members')
+    .where({ tenantId })
+    // People who died or transferred out should not be listed week after week.
+    .where((qb: any) =>
+      qb.whereNull('membershipStatus').orWhereNotIn('membershipStatus', ['deceased', 'transferred']),
+    )
+    .select('id', 'firstName', 'lastName', 'membershipId')
+    .orderBy(['firstName', 'lastName']);
+}
+
+/**
+ * Issue or rotate an event's QR token.
+ *
+ * Rotation is the point: the displayed code changes every few minutes so a
+ * screenshot forwarded to someone sitting at home stops working.
+ */
+router.post('/events/:id/qr', requireRole(...ATTENDANCE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const event = await db('events').where({ id: req.params.id, tenantId }).first();
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    const { token, expiresAt } = generateQrToken();
+    await db('events')
+      .where({ id: event.id, tenantId })
+      .update({ qrToken: token, qrTokenExpiresAt: expiresAt });
+
+    res.json({
+      eventId: event.id,
+      eventTitle: event.title,
+      payload: buildQrPayload(event.id, token),
+      expiresAt,
+      ttlMinutes: QR_TOKEN_TTL_MINUTES,
+    });
+  } catch (error) {
+    console.error('POST /events/:id/qr error:', error);
+    res.status(500).json({ error: 'Failed to issue an attendance QR code' });
+  }
+});
+
+/**
+ * Fetch the current QR token, issuing a fresh one when it is missing or has
+ * expired, so the display screen can simply poll this endpoint.
+ */
+router.get('/events/:id/qr', requireRole(...ATTENDANCE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const event = await db('events').where({ id: req.params.id, tenantId }).first();
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    let token = event.qrToken;
+    let expiresAt = event.qrTokenExpiresAt;
+
+    if (!checkQrToken(event, token || '').ok) {
+      const issued = generateQrToken();
+      token = issued.token;
+      expiresAt = issued.expiresAt;
+      await db('events')
+        .where({ id: event.id, tenantId })
+        .update({ qrToken: token, qrTokenExpiresAt: expiresAt });
+    }
+
+    res.json({
+      eventId: event.id,
+      eventTitle: event.title,
+      payload: buildQrPayload(event.id, token),
+      expiresAt,
+      ttlMinutes: QR_TOKEN_TTL_MINUTES,
+    });
+  } catch (error) {
+    console.error('GET /events/:id/qr error:', error);
+    res.status(500).json({ error: 'Failed to load the attendance QR code' });
+  }
+});
+
+/**
+ * Roll call for an event: every member, with whoever has already been marked.
+ */
+router.get('/events/:id/rollcall', requireRole(...ATTENDANCE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const event = await db('events').where({ id: req.params.id, tenantId }).first();
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    const [members, rows] = await Promise.all([
+      rollCallMembersQuery(tenantId),
+      db('event_attendance').where({ tenantId, eventId: event.id }),
+    ]);
+
+    const entries = buildRollCall(members as any[], rows as any[]);
+    res.json({
+      event: { id: event.id, title: event.title, startTime: event.startTime },
+      data: entries,
+      summary: summarizeRollCall(entries),
+    });
+  } catch (error) {
+    console.error('GET /events/:id/rollcall error:', error);
+    res.status(500).json({ error: 'Failed to load the roll call' });
+  }
+});
+
+/**
+ * Record a manual roll call.
+ *
+ * Accepts a batch so the secretary can tick a whole list and save once. Marks
+ * are upserted, meaning a correction overwrites the earlier mark instead of
+ * adding a second conflicting row.
+ */
+router.post('/events/:id/rollcall', requireRole(...ATTENDANCE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const event = await db('events').where({ id: req.params.id, tenantId }).first();
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries : null;
+    if (!entries || entries.length === 0) {
+      return res.status(400).json({ error: 'entries must be a non-empty array' });
+    }
+    if (entries.length > 5000) {
+      return res.status(413).json({ error: 'Too many entries in one request' });
+    }
+
+    // Only accept ids that belong to this church, so a crafted request cannot
+    // write attendance rows against another tenant's members.
+    const validIds = new Set(
+      (await db('members').where({ tenantId }).select('id')).map((m: any) => String(m.id)),
+    );
+
+    const markedBy = req.user?.uid || null;
+    const now = new Date();
+    let updated = 0;
+    let inserted = 0;
+    const skipped: string[] = [];
+
+    await db.transaction(async (trx) => {
+      for (const entry of entries) {
+        const memberId = String(entry?.memberId || '');
+        if (!memberId || !validIds.has(memberId)) {
+          if (memberId) skipped.push(memberId);
+          continue;
+        }
+
+        const present = normalizePresent(entry?.present);
+        const existing = await trx('event_attendance')
+          .where({ tenantId, eventId: event.id, memberId })
+          .first();
+
+        const values = {
+          present,
+          method: 'manual',
+          status: present ? 'checked_in' : 'absent',
+          checkedInBy: markedBy,
+          checkInAt: present ? now : null,
+        };
+
+        if (existing) {
+          await trx('event_attendance').where({ id: existing.id }).update(values);
+          updated += 1;
+        } else {
+          await trx('event_attendance').insert({
+            tenantId,
+            eventId: event.id,
+            memberId,
+            createdAt: now,
+            ...values,
+          });
+          inserted += 1;
+        }
+      }
+    });
+
+    const [members, rows] = await Promise.all([
+      rollCallMembersQuery(tenantId),
+      db('event_attendance').where({ tenantId, eventId: event.id }),
+    ]);
+    const merged = buildRollCall(members as any[], rows as any[]);
+
+    res.json({
+      success: true,
+      inserted,
+      updated,
+      skipped,
+      summary: summarizeRollCall(merged),
+    });
+  } catch (error) {
+    console.error('POST /events/:id/rollcall error:', error);
+    res.status(500).json({ error: 'Failed to save the roll call' });
+  }
+});
+
+/* ---- Biometric devices (ZKTeco) ---- */
+
+/** Registered devices. The stored key hash is never returned. */
+router.get('/biometric/devices', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const devices = await db('biometric_devices')
+      .where({ tenantId: tid(req) })
+      .select('id', 'name', 'serialNumber', 'location', 'active', 'lastSeenAt', 'createdAt')
+      .orderBy('createdAt', 'desc');
+    res.json({ data: devices });
+  } catch (error) {
+    console.error('GET /biometric/devices error:', error);
+    res.status(500).json({ error: 'Failed to load biometric devices' });
+  }
+});
+
+/**
+ * Register a device and return its API key.
+ *
+ * The key is shown exactly once and only its hash is stored, so a leaked
+ * database does not hand over the ability to post fake attendance.
+ */
+router.post('/biometric/devices', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const { name, serialNumber, location } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name is required' });
+
+    const { apiKey, apiKeyHash } = generateDeviceApiKey();
+    const id = genId('dev');
+    await db('biometric_devices').insert({
+      id,
+      tenantId,
+      name: String(name).trim(),
+      serialNumber: serialNumber ? String(serialNumber).trim() : null,
+      location: location ? String(location).trim() : null,
+      apiKeyHash,
+      active: true,
+      createdAt: new Date(),
+    });
+
+    res.status(201).json({
+      id,
+      name,
+      serialNumber: serialNumber || null,
+      location: location || null,
+      apiKey,
+      notice: 'Copy this key into the device now. It cannot be shown again.',
+    });
+  } catch (error) {
+    console.error('POST /biometric/devices error:', error);
+    res.status(500).json({ error: 'Failed to register the device' });
+  }
+});
+
+/** Rotate a device key, for when a device is lost or replaced. */
+router.post('/biometric/devices/:id/rotate-key', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const device = await db('biometric_devices').where({ id: req.params.id, tenantId }).first();
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+
+    const { apiKey, apiKeyHash } = generateDeviceApiKey();
+    await db('biometric_devices').where({ id: device.id, tenantId }).update({ apiKeyHash });
+    res.json({
+      id: device.id,
+      apiKey,
+      notice: 'The previous key stopped working immediately.',
+    });
+  } catch (error) {
+    console.error('POST /biometric/devices/:id/rotate-key error:', error);
+    res.status(500).json({ error: 'Failed to rotate the device key' });
+  }
+});
+
+router.put('/biometric/devices/:id', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const { name, serialNumber, location, active } = req.body || {};
+    const patch: any = {};
+    if (name !== undefined) patch.name = String(name).trim();
+    if (serialNumber !== undefined) patch.serialNumber = serialNumber ? String(serialNumber).trim() : null;
+    if (location !== undefined) patch.location = location ? String(location).trim() : null;
+    if (active !== undefined) patch.active = normalizePresent(active);
+
+    const updated = await db('biometric_devices').where({ id: req.params.id, tenantId }).update(patch);
+    if (!updated) return res.status(404).json({ error: 'Device not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('PUT /biometric/devices/:id error:', error);
+    res.status(500).json({ error: 'Failed to update the device' });
+  }
+});
+
+router.delete('/biometric/devices/:id', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const deleted = await db('biometric_devices')
+      .where({ id: req.params.id, tenantId: tid(req) })
+      .delete();
+    if (!deleted) return res.status(404).json({ error: 'Device not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('DELETE /biometric/devices/:id error:', error);
+    res.status(500).json({ error: 'Failed to remove the device' });
+  }
+});
+
+/**
+ * Recent device punches, newest first.
+ *
+ * `?status=unmatched` lists fingerprints the system could not tie to a member,
+ * which is how an operator finds enrolments that were never linked.
+ */
+router.get('/biometric/punches', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    let q = db('biometric_punches').where({ tenantId });
+    if (req.query.status) q = q.where({ status: String(req.query.status) });
+    const rows = await q.orderBy('punchedAt', 'desc').limit(limit);
+    res.json({ data: rows, total: rows.length });
+  } catch (error) {
+    console.error('GET /biometric/punches error:', error);
+    res.status(500).json({ error: 'Failed to load device punches' });
+  }
+});
+
+/** Link a member to a fingerprint id enrolled on the device. */
+router.post('/members/:id/biometric', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const { biometricId } = req.body || {};
+    const value = biometricId === null || biometricId === '' ? null : String(biometricId).trim();
+
+    // The same finger cannot belong to two members, or attendance would be
+    // credited to whichever row happened to be found first.
+    if (value) {
+      const clash = await db('members')
+        .where({ tenantId, biometricId: value })
+        .whereNot({ id: req.params.id })
+        .first();
+      if (clash) {
+        return res.status(409).json({
+          error: `That biometric id is already assigned to ${clash.firstName || ''} ${clash.lastName || ''}`.trim(),
+        });
+      }
+    }
+
+    const updated = await db('members')
+      .where({ id: req.params.id, tenantId })
+      .update({ biometricId: value });
+    if (!updated) return res.status(404).json({ error: 'Member not found' });
+    res.json({ success: true, biometricId: value });
+  } catch (error) {
+    console.error('POST /members/:id/biometric error:', error);
+    res.status(500).json({ error: 'Failed to link the biometric id' });
   }
 });
 

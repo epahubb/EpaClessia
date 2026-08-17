@@ -41,6 +41,27 @@ export const churchApi = {
   getSmsPackages: async () => unwrap((await api.get('/church/sms/packages')).data),
   getSmsBalance: async (): Promise<{ credits: number }> => (await api.get('/church/sms/balance')).data,
   getSmsPurchases: async () => unwrap((await api.get('/church/sms/purchases')).data),
+  /**
+   * Step 1 of an SMS purchase: ask Paystack for a checkout URL.
+   * Send the user to `authorizationUrl`, then call `purchaseSms` with the
+   * returned `reference` once they come back.
+   */
+  initializeSmsPurchase: async (
+    packageId: string,
+    callbackUrl?: string,
+  ): Promise<{
+    authorizationUrl: string;
+    reference: string;
+    accessCode?: string;
+    amount?: number;
+    credits?: number;
+  }> =>
+    (await api.post('/church/sms/purchase/initialize', { packageId, callbackUrl })).data,
+  /**
+   * Step 2: redeem a completed payment for credits. The `reference` is now
+   * REQUIRED for any priced package -- the server verifies it with Paystack and
+   * refuses to grant credits without it.
+   */
   purchaseSms: async (packageId: string, reference?: string) =>
     (await api.post('/church/sms/purchase', { packageId, reference })).data,
 
@@ -49,6 +70,37 @@ export const churchApi = {
   createMember: async (data: any) => (await api.post('/church/members', data)).data,
   updateMember: async (id: string, data: any) => (await api.put(`/church/members/${id}`, data)).data,
   deleteMember: async (id: string) => (await api.delete(`/church/members/${id}`)).data,
+
+  // Member photos. Images are stored in the database and streamed from a
+  // dedicated endpoint, so member lists stay small and fast.
+  uploadMemberPhoto: async (id: string, photo: string) =>
+    (await api.post(`/church/members/${id}/photo`, { photo })).data,
+  deleteMemberPhoto: async (id: string) => (await api.delete(`/church/members/${id}/photo`)).data,
+
+  /**
+   * Bulk import members from a spreadsheet.
+   *
+   * Pass `dryRun: true` first to get an authoritative server-side preview
+   * (including duplicates already in the register) before writing anything.
+   */
+  importMembers: async (
+    rows: Record<string, unknown>[],
+    mapping: Record<string, string>,
+    options?: { skipExistingEmails?: boolean; dryRun?: boolean },
+  ) =>
+    (
+      await api.post('/church/members/import', {
+        rows,
+        mapping,
+        skipExistingEmails: options?.skipExistingEmails ?? true,
+        dryRun: options?.dryRun ?? false,
+      })
+    ).data,
+
+  // Church logo (per-church branding, stored in the database)
+  uploadChurchLogo: async (logo: string) =>
+    (await api.post('/church/branding/logo', { logo })).data,
+  deleteChurchLogo: async () => (await api.delete('/church/branding/logo')).data,
 
   // Families
   getFamilies: async () => unwrap((await api.get('/church/families')).data),

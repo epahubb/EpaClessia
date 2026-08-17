@@ -147,8 +147,8 @@ const SmsManager: React.FC = () => {
                   <TableCell>{Number(p.credits).toLocaleString()}</TableCell>
                   <TableCell><Typography variant="body2" fontWeight={700}>{money(p.amount, p.currency)}</Typography></TableCell>
                   <TableCell><Chip size="small" label={(p.status || 'completed').toUpperCase()} color={p.status === 'completed' ? 'success' : 'warning'} sx={{ fontWeight: 700, fontSize: '0.6rem' }} /></TableCell>
-                  <TableCell><Typography variant="caption">{p.reference || '\u2014'}</Typography></TableCell>
-                  <TableCell><Typography variant="caption">{p.createdAt ? new Date(p.createdAt).toLocaleDateString() : '\u2014'}</Typography></TableCell>
+                  <TableCell><Typography variant="caption">{p.reference || '—'}</Typography></TableCell>
+                  <TableCell><Typography variant="caption">{p.createdAt ? new Date(p.createdAt).toLocaleDateString() : '—'}</Typography></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -174,7 +174,7 @@ const SmsManager: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={save} disabled={saving} sx={{ borderRadius: 2, fontWeight: 700 }}>{saving ? 'Saving\u2026' : 'Save Package'}</Button>
+          <Button variant="contained" onClick={save} disabled={saving} sx={{ borderRadius: 2, fontWeight: 700 }}>{saving ? 'Saving…' : 'Save Package'}</Button>
         </DialogActions>
       </Dialog>
 

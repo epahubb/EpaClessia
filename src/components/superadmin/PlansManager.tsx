@@ -177,7 +177,7 @@ const PlansManager: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={save} disabled={saving} sx={{ borderRadius: 2, fontWeight: 700 }}>{saving ? 'Saving\u2026' : 'Save Plan'}</Button>
+          <Button variant="contained" onClick={save} disabled={saving} sx={{ borderRadius: 2, fontWeight: 700 }}>{saving ? 'Saving…' : 'Save Plan'}</Button>
         </DialogActions>
       </Dialog>
 

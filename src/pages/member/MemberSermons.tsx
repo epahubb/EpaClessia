@@ -152,7 +152,7 @@ export default function MemberSermons() {
                   {s.description && (
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                       {s.description.slice(0, 120)}
-                      {s.description.length > 120 ? '\u2026' : ''}
+                      {s.description.length > 120 ? '…' : ''}
                     </Typography>
                   )}
                 </CardContent>

@@ -214,7 +214,7 @@ export default function RegisterChurchModal({ open, onClose }: { open: boolean, 
                       placeholder="https://mychurch.org"
                       fullWidth 
                       error={!!errors.websiteUrl}
-                      helperText={errors.websiteUrl?.message || 'Optional \u2014 the church\u2019s public website'}
+                      helperText={errors.websiteUrl?.message || 'Optional — the church\u2019s public website'}
                       InputLabelProps={{ sx: { color: '#94a3b8', '&.Mui-focused': { color: '#10b981' } } }}
                       sx={{ '& .MuiOutlinedInput-root': { color: '#f8fafc', bgcolor: '#1e293b', borderRadius: 2, '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' }, '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' }, '&.Mui-focused fieldset': { borderColor: '#10b981' } } }}
                       InputProps={{

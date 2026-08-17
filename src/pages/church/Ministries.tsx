@@ -28,7 +28,7 @@ export const Ministries: React.FC = () => {
   const columns: any[] = [
     { key: 'name', label: 'Name' },
     { key: 'leaderName', label: 'Leader' },
-    { key: 'meets', label: 'Meets', render: (r: any) => [r.meetingDay, r.meetingTime].filter(Boolean).join(' ') || '\u2014' },
+    { key: 'meets', label: 'Meets', render: (r: any) => [r.meetingDay, r.meetingTime].filter(Boolean).join(' ') || '—' },
     { key: 'location', label: 'Location' },
     { key: 'memberCount', label: 'Members' },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'active'} color={r.status === 'inactive' ? 'default' : 'success'} /> },

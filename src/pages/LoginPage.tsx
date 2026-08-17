@@ -187,7 +187,7 @@ const LoginPage: React.FC = () => {
               disabled={loading || (requires2FA && twoFactorCode.length < 6)}
               sx={{ mt: 4, py: 1.5, borderRadius: 2, fontWeight: 700 }}
             >
-              {loading ? 'Signing In\u2026' : requires2FA ? 'Verify & Sign In' : 'Sign In to Platform'}
+              {loading ? 'Signing In…' : requires2FA ? 'Verify & Sign In' : 'Sign In to Platform'}
             </Button>
             {requires2FA && (
               <Button

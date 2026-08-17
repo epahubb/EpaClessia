@@ -92,7 +92,7 @@ const TwoFactorSetup: React.FC = () => {
 
       {!enabled && !setupMode && (
         <Button variant="contained" startIcon={<ShieldCheck size={18} />} onClick={beginSetup} disabled={busy} sx={{ borderRadius: 2, fontWeight: 700 }}>
-          {busy ? 'Preparing\u2026' : 'Set up 2FA'}
+          {busy ? 'Preparing…' : 'Set up 2FA'}
         </Button>
       )}
 

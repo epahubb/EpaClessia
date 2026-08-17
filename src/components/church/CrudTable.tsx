@@ -5,12 +5,20 @@ import {
   MenuItem, CircularProgress, Stack, Checkbox, FormControlLabel, Tooltip
 } from '@mui/material';
 import { Add, Edit, Delete } from '@mui/icons-material';
+import AuthedImageField from '../common/AuthedImageField';
 
 export type CrudField = {
   name: string; label: string;
-  type?: 'text' | 'number' | 'select' | 'date' | 'textarea' | 'checkbox';
+  type?: 'text' | 'number' | 'select' | 'date' | 'textarea' | 'checkbox' | 'image';
   options?: { value: string; label: string }[];
   required?: boolean; defaultValue?: any;
+  /** For `image` fields: whether to preview as a round avatar or a wide logo. */
+  imageVariant?: 'avatar' | 'logo';
+  /**
+   * For `image` fields: API path of the image already stored for this row, used
+   * to show the current picture when editing. Return null when there is none.
+   */
+  imagePath?: (row: any) => string | null;
 };
 export type CrudColumn = { key: string; label: string; render?: (row: any) => React.ReactNode };
 
@@ -24,12 +32,18 @@ type Props = {
   idKey?: string;
   addLabel?: string;
   rowActions?: (row: any, reload: () => void) => React.ReactNode;
+  /**
+   * Extra controls rendered in the toolbar next to the Add button, for things
+   * like spreadsheet import. Receives `reload` so the action can refresh the
+   * table once it has changed data -- the same shape as `rowActions`.
+   */
+  toolbarActions?: (reload: () => void) => React.ReactNode;
   emptyText?: string;
 };
 
 export const CrudTable: React.FC<Props> = ({
   columns, fields, fetchRows, createRow, updateRow, deleteRow,
-  idKey = 'id', addLabel = 'Add New', rowActions, emptyText = 'No records yet.'
+  idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.'
 }) => {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,9 +90,12 @@ export const CrudTable: React.FC<Props> = ({
 
   return (
     <Box>
-      {createRow && (
-        <Stack direction="row" justifyContent="flex-end" sx={{ mb: 2 }}>
-          <Button variant="contained" startIcon={<Add />} onClick={openCreate}>{addLabel}</Button>
+      {(createRow || toolbarActions) && (
+        <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mb: 2 }}>
+          {toolbarActions?.(reload)}
+          {createRow && (
+            <Button variant="contained" startIcon={<Add />} onClick={openCreate}>{addLabel}</Button>
+          )}
         </Stack>
       )}
       <TableContainer component={Paper} variant="outlined">
@@ -96,7 +113,7 @@ export const CrudTable: React.FC<Props> = ({
               <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4, color: 'text.secondary' }}>{emptyText}</TableCell></TableRow>
             ) : rows.map((row, i) => (
               <TableRow key={row[idKey] || i} hover>
-                {columns.map(c => <TableCell key={c.key}>{c.render ? c.render(row) : (row[c.key] ?? '\u2014')}</TableCell>)}
+                {columns.map(c => <TableCell key={c.key}>{c.render ? c.render(row) : (row[c.key] ?? '—')}</TableCell>)}
                 {showActions && (
                   <TableCell align="right">
                     {rowActions && rowActions(row, reload)}
@@ -114,7 +131,16 @@ export const CrudTable: React.FC<Props> = ({
         <DialogTitle>{editing ? 'Edit Record' : addLabel}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            {fields.map(f => f.type === 'checkbox' ? (
+            {fields.map(f => f.type === 'image' ? (
+              <AuthedImageField
+                key={f.name}
+                label={f.label}
+                variant={f.imageVariant || 'avatar'}
+                existingPath={editing && f.imagePath ? f.imagePath(editing) : null}
+                value={form[f.name]}
+                onChange={dataUrl => setForm({ ...form, [f.name]: dataUrl })}
+              />
+            ) : f.type === 'checkbox' ? (
               <FormControlLabel key={f.name} control={<Checkbox checked={!!form[f.name]} onChange={e => setForm({ ...form, [f.name]: e.target.checked })} />} label={f.label} />
             ) : f.type === 'select' ? (
               <TextField key={f.name} select label={f.label} value={form[f.name] ?? ''} required={f.required}
@@ -133,7 +159,7 @@ export const CrudTable: React.FC<Props> = ({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={save} disabled={saving}>{saving ? 'Saving\u2026' : 'Save'}</Button>
+          <Button variant="contained" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
         </DialogActions>
       </Dialog>
     </Box>

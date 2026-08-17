@@ -26,7 +26,7 @@ const LoginHistory: React.FC = () => {
     <Card variant="outlined"><List>
       {rows.length === 0 && <ListItem><ListItemText primary="No activity recorded yet." /></ListItem>}
       {rows.map((r: any, i: number) => (<React.Fragment key={r.id || i}><ListItem>
-        <ListItemText primary={`${r.userName || 'System'} \u2014 ${r.action} ${r.entity}`} secondary={r.createdAt ? new Date(r.createdAt).toLocaleString() : ''} />
+        <ListItemText primary={`${r.userName || 'System'} — ${r.action} ${r.entity}`} secondary={r.createdAt ? new Date(r.createdAt).toLocaleString() : ''} />
       </ListItem>{i < rows.length - 1 && <Divider />}</React.Fragment>))}
     </List></Card>
   );

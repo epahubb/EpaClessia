@@ -6,6 +6,7 @@ import {
   verifyTransaction,
   isPaystackConfigured,
 } from '../services/paystack';
+import { parseQrPayload, checkQrToken } from '../lib/attendance';
 
 /**
  * Member self-service API.
@@ -568,6 +569,130 @@ router.put('/profile', async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Member profile update error:', error);
     res.status(500).json({ error: 'Failed to update your profile' });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* QR self check-in                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Record attendance by scanning the QR code displayed at the service.
+ *
+ * The member is identified from their own session, never from the QR code, so
+ * scanning a code can only ever mark the person actually signed in. The event
+ * lookup is scoped to the member's church, so a code leaked from another
+ * congregation resolves to nothing.
+ */
+router.post('/attendance/scan', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId, user } = ctx(req);
+    const identity = memberIdentity(req);
+
+    const raw = req.body?.payload ?? req.body?.code ?? '';
+    const parsed = parseQrPayload(String(raw));
+    if (!parsed) {
+      return res.status(400).json({
+        error: 'That does not look like an attendance code. Please scan the code shown at your service.',
+      });
+    }
+
+    const event = await db('events').where({ id: parsed.eventId, tenantId }).first();
+    if (!event) return res.status(404).json({ error: 'That attendance code is not for one of your church events.' });
+
+    const check = checkQrToken(event, parsed.token);
+    if (!check.ok) {
+      // 410 for an expired code: the request was well-formed, the code is simply
+      // no longer current, and the member should scan the refreshed one.
+      if (check.reason === 'expired') {
+        return res.status(410).json({
+          error: 'That code has expired. Please scan the current code on the screen.',
+          reason: 'expired',
+        });
+      }
+      return res.status(400).json({
+        error: 'That attendance code is not valid.',
+        reason: check.reason,
+      });
+    }
+
+    const now = new Date();
+    const existing = await db('event_attendance')
+      .where({ tenantId, eventId: event.id, memberId: identity })
+      .first();
+
+    if (existing) {
+      // Already counted present: report success rather than an error, so a
+      // second scan is reassuring instead of alarming.
+      if (existing.present && existing.method === 'qr') {
+        return res.json({
+          success: true,
+          alreadyRecorded: true,
+          eventTitle: event.title,
+          message: 'Your attendance was already recorded. Thank you!',
+        });
+      }
+      await db('event_attendance').where({ id: existing.id }).update({
+        present: true,
+        method: 'qr',
+        status: 'checked_in',
+        checkInAt: now,
+        checkedInBy: user?.uid || null,
+      });
+    } else {
+      await db('event_attendance').insert({
+        tenantId,
+        eventId: event.id,
+        memberId: identity,
+        present: true,
+        method: 'qr',
+        status: 'checked_in',
+        checkInAt: now,
+        checkedInBy: user?.uid || null,
+        createdAt: now,
+      });
+    }
+
+    res.json({
+      success: true,
+      alreadyRecorded: false,
+      eventId: event.id,
+      eventTitle: event.title,
+      message: `Attendance recorded for ${event.title}. Thank you!`,
+    });
+  } catch (error) {
+    console.error('POST /attendance/scan error:', error);
+    res.status(500).json({ error: 'Failed to record your attendance' });
+  }
+});
+
+/** The member's own recent attendance history. */
+router.get('/attendance/history', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId } = ctx(req);
+    const identity = memberIdentity(req);
+    const limit = Math.min(Number(req.query.limit) || 25, 100);
+
+    const rows = await db('event_attendance')
+      .where({ tenantId, memberId: identity })
+      .leftJoin('events', 'events.id', 'event_attendance.eventId')
+      .select(
+        'event_attendance.id',
+        'event_attendance.eventId',
+        'event_attendance.present',
+        'event_attendance.method',
+        'event_attendance.status',
+        'event_attendance.checkInAt',
+        'events.title as eventTitle',
+        'events.startTime as eventStartTime',
+      )
+      .orderBy('event_attendance.checkInAt', 'desc')
+      .limit(limit);
+
+    res.json({ data: rows, total: rows.length });
+  } catch (error) {
+    console.error('GET /attendance/history error:', error);
+    res.status(500).json({ error: 'Failed to load your attendance history' });
   }
 });
 

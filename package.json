@@ -21,6 +21,7 @@
     "reset:superadmin": "tsx scripts/reset-superadmin.ts"
   },
   "dependencies": {
+    "xlsx": "^0.18.5",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@google/genai": "^1.29.0",

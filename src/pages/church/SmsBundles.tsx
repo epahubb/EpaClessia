@@ -20,6 +20,7 @@ const SmsBundles: React.FC = () => {
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [confirm, setConfirm] = useState<SmsPackage | null>(null);
   const [buying, setBuying] = useState(false);
+  const [redeeming, setRedeeming] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -41,18 +42,91 @@ const SmsBundles: React.FC = () => {
 
   useEffect(() => { load(); }, []);
 
+  /**
+   * Completes a purchase after Paystack sends the admin back to this page.
+   *
+   * Paystack appends `reference` (and `trxref`) to the callback URL. Credits are
+   * only granted once the server has verified that reference with Paystack, so
+   * landing here without a real payment grants nothing. The package id is
+   * carried in the callback URL, with sessionStorage as a fallback in case the
+   * query string is stripped along the way.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const reference = params.get('reference') || params.get('trxref');
+    const packageId = params.get('smsPackage') || sessionStorage.getItem('smsPurchasePackage');
+    if (!reference || !packageId) return;
+
+    const clearReturnState = () => {
+      sessionStorage.removeItem('smsPurchasePackage');
+      // Strip the payment params so a page refresh cannot re-trigger redemption.
+      window.history.replaceState({}, '', window.location.pathname);
+    };
+
+    setRedeeming(true);
+    churchApi
+      .purchaseSms(packageId, reference)
+      .then((res: any) => {
+        setBalance(res?.credits ?? 0);
+        setMsg({ type: 'success', text: 'Payment confirmed. Your SMS credits have been added.' });
+      })
+      .catch((err: any) => {
+        const status = err?.response?.status;
+        if (status === 409) {
+          // The reference was already redeemed -- usually a double refresh.
+          setMsg({ type: 'success', text: 'This payment was already applied to your balance.' });
+        } else {
+          setMsg({
+            type: 'error',
+            text: err?.response?.data?.error || 'We could not confirm that payment. No credits were added.',
+          });
+        }
+      })
+      .finally(() => {
+        clearReturnState();
+        setRedeeming(false);
+        load();
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const buy = async () => {
     if (!confirm) return;
     setBuying(true);
+    setMsg(null);
     try {
-      const res = await churchApi.purchaseSms(confirm.id);
-      setBalance(res?.credits ?? balance);
-      setMsg({ type: 'success', text: `Purchased ${confirm.credits.toLocaleString()} SMS credits.` });
-      setConfirm(null);
-      await load();
-    } catch {
-      setMsg({ type: 'error', text: 'Purchase failed. Please try again.' });
-    } finally {
+      // A free bundle has nothing to pay for, so it is redeemed directly.
+      if (Number(confirm.price || 0) <= 0) {
+        const res: any = await churchApi.purchaseSms(confirm.id);
+        setBalance(res?.credits ?? balance);
+        setMsg({ type: 'success', text: `Added ${confirm.credits.toLocaleString()} SMS credits.` });
+        setConfirm(null);
+        await load();
+        setBuying(false);
+        return;
+      }
+
+      // Paid bundles must go through Paystack. The server refuses to grant
+      // credits without a reference it has verified, so we send the admin to
+      // checkout and finish the purchase when they return to this page.
+      const callbackUrl =
+        `${window.location.origin}${window.location.pathname}` +
+        `?smsPackage=${encodeURIComponent(confirm.id)}`;
+      const init = await churchApi.initializeSmsPurchase(confirm.id, callbackUrl);
+      if (!init?.authorizationUrl) {
+        throw new Error('Paystack did not return a checkout link.');
+      }
+      sessionStorage.setItem('smsPurchasePackage', confirm.id);
+      // Leaving the app: no need to reset `buying`, the page is unloading.
+      window.location.assign(init.authorizationUrl);
+    } catch (err: any) {
+      setMsg({
+        type: 'error',
+        text:
+          err?.response?.data?.error ||
+          err?.message ||
+          'The purchase could not be started. Please try again.',
+      });
       setBuying(false);
     }
   };
@@ -75,6 +149,11 @@ const SmsBundles: React.FC = () => {
         </Card>
       </Box>
 
+      {redeeming && (
+        <Alert severity="info" icon={<CircularProgress size={18} />} sx={{ mb: 2 }}>
+          Confirming your payment with Paystack. Please do not close this page.
+        </Alert>
+      )}
       {msg && <Alert severity={msg.type} sx={{ mb: 2 }} onClose={() => setMsg(null)}>{msg.text}</Alert>}
 
       {loading ? (
@@ -101,7 +180,7 @@ const SmsBundles: React.FC = () => {
                   </CardContent>
                   <Divider />
                   <Box sx={{ p: 2 }}>
-                    <Button fullWidth variant="contained" startIcon={<Check size={18} />} onClick={() => setConfirm(p)} sx={{ borderRadius: 2, fontWeight: 700 }}>
+                    <Button fullWidth variant="contained" startIcon={<Check size={18} />} onClick={() => setConfirm(p)} disabled={buying || redeeming} sx={{ borderRadius: 2, fontWeight: 700 }}>
                       Purchase bundle
                     </Button>
                   </Box>
@@ -132,8 +211,8 @@ const SmsBundles: React.FC = () => {
                     <TableCell>{Number(pu.credits).toLocaleString()}</TableCell>
                     <TableCell>{fmt(pu.amount, pu.currency)}</TableCell>
                     <TableCell><Chip size="small" label={pu.status} color={pu.status === 'completed' ? 'success' : 'default'} /></TableCell>
-                    <TableCell>{pu.reference || '\u2014'}</TableCell>
-                    <TableCell>{pu.createdAt ? new Date(pu.createdAt).toLocaleDateString() : '\u2014'}</TableCell>
+                    <TableCell>{pu.reference || '—'}</TableCell>
+                    <TableCell>{pu.createdAt ? new Date(pu.createdAt).toLocaleDateString() : '—'}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -154,7 +233,7 @@ const SmsBundles: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfirm(null)}>Cancel</Button>
-          <Button variant="contained" onClick={buy} disabled={buying}>{buying ? 'Processing\u2026' : 'Confirm'}</Button>
+          <Button variant="contained" onClick={buy} disabled={buying}>{buying ? 'Processing…' : 'Confirm'}</Button>
         </DialogActions>
       </Dialog>
     </Box>

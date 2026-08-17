@@ -121,7 +121,7 @@ if (isPg) {
   console.log(`\u2713 Database: PostgreSQL ${target}`);
   if (!hasExplicitPgTarget) {
     console.warn(
-      '[db] No DATABASE_URL / PGHOST configured \u2014 defaulting to a local ' +
+      '[db] No DATABASE_URL / PGHOST configured — defaulting to a local ' +
         'PostgreSQL instance at localhost:5432/ecclesia. Set DATABASE_URL (or ' +
         'PGHOST/PGUSER/PGPASSWORD/PGDATABASE) in your .env to point at your database.',
     );

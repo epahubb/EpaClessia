@@ -47,6 +47,7 @@ import memberRouter from './src/routes/member';
 import pastorRouter from './src/routes/pastor';
 import ministryLeaderRouter from './src/routes/ministryLeader';
 import superadminExtrasRouter from './src/routes/superadmin-extras';
+import biometricIngestRouter from './src/routes/biometricIngest';
 
 async function startServer() {
   // Fail fast on an insecure or incomplete production configuration BEFORE we
@@ -374,6 +375,11 @@ async function startServer() {
   // Member self-service API (giving, profile). Every route is scoped to the
   // authenticated member's own identity and church.
   app.use('/api/v1/member', authenticate, memberRouter);
+
+  // Biometric terminals have no user session, so this router is intentionally
+  // mounted without `authenticate`. It authenticates each request with a
+  // per-device API key and scopes every write to that device's own tenant.
+  app.use('/api/v1/biometric', biometricIngestRouter);
   app.use('/api/v1/pastor', authenticate, pastorRouter);
   app.use('/api/v1/ministry-leader', authenticate, ministryLeaderRouter);
 
@@ -510,7 +516,13 @@ async function startServer() {
       const { 
         name, contactEmail, adminEmail, adminName, 
         adminPassword, autoGeneratePassword, planId, timezone, phone, street, 
-        city, state, postal_code, country, featureFlags, trialEndDate, sendWelcomeEmail,
+        city, state, postal_code, country, featureFlags, trialEndDate,
+        // Renamed on destructure: the request body carries a BOOLEAN flag whose
+        // name collided with the imported sendWelcomeEmail() function, shadowing
+        // it inside this handler. Calling it then threw
+        // "sendWelcomeEmail2 is not a function" (esbuild renames the shadowed
+        // import to sendWelcomeEmail2 when bundling).
+        sendWelcomeEmail: shouldSendWelcomeEmail,
         websiteUrl 
       } = req.body;
 
@@ -575,7 +587,7 @@ async function startServer() {
 
       // Notifications (After commit)
       const loginUrl = websiteUrl || process.env.APP_URL || 'your church portal';
-      if (sendWelcomeEmail) {
+      if (shouldSendWelcomeEmail) {
         await sendWelcomeEmail({ name, websiteUrl }, { name: adminName, email: adminEmail }, finalPassword);
       }
 
