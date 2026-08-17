@@ -1,51 +1,99 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Box, AppBar, Toolbar, IconButton, Typography, Drawer, 
-  List, ListItem, ListItemButton, ListItemIcon, ListItemText, 
-  Divider, Avatar, Button, Tooltip, useTheme, useMediaQuery,
-  Chip
+import React, { useState } from 'react';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import {
+  Box,
+  Drawer,
+  AppBar,
+  Toolbar,
+  List,
+  Typography,
+  Divider,
+  IconButton,
+  ListItem,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Avatar,
+  Menu,
+  MenuItem,
+  Tooltip,
+  Alert,
+  Button
 } from '@mui/material';
-import { 
-  Menu as MenuIcon, LayoutDashboard, Users, 
-  CreditCard, Calendar, Layers, MessageSquare, 
-  BarChart3, Settings, LogOut, Bell, Search, 
-  ShieldCheck, UserCheck
-} from 'lucide-react';
-import { useNavigate, useLocation, Outlet } from 'react-router-dom';
+import {
+  Menu as MenuIcon,
+  Dashboard as DashboardIcon,
+  People as PeopleIcon,
+  AccountBalance as FinanceIcon,
+  Event as EventIcon,
+  Groups as MinistryIcon,
+  Message as CommunicationIcon,
+  Sms as SmsIcon,
+  CheckCircle as AttendanceIcon,
+  Assessment as ReportsIcon,
+  Settings as SettingsIcon,
+  PersonAddAlt1 as VisitorIcon,
+  ManageAccounts as UsersIcon,
+  Security as SecurityIcon,
+  Logout as LogoutIcon,
+  ChevronLeft as ChevronLeftIcon
+} from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { useColorMode } from '../contexts/ThemeContext';
-import { Sun, Moon } from 'lucide-react';
 
-const drawerWidth = 280;
+const drawerWidth = 240;
 
-const ChurchAdminLayout: React.FC = () => {
-  const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
-  const [open, setOpen] = useState(!isMobile);
+const menuItems = [
+  { text: 'Dashboard', icon: <DashboardIcon />, path: '/church/dashboard' },
+  { text: 'Members', icon: <PeopleIcon />, path: '/church/members' },
+  { text: 'Visitors', icon: <VisitorIcon />, path: '/church/visitors' },
+  { text: 'Attendance', icon: <AttendanceIcon />, path: '/church/attendance' },
+  { text: 'Ministries & Groups', icon: <MinistryIcon />, path: '/church/ministries' },
+  { text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
+  { text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },
+  { text: 'Communication', icon: <CommunicationIcon />, path: '/church/communication' },
+  { text: 'SMS Bundles', icon: <SmsIcon />, path: '/church/sms-bundles' },
+  { text: 'Users & Permissions', icon: <UsersIcon />, path: '/church/users' },
+  { text: 'Reports & Analytics', icon: <ReportsIcon />, path: '/church/reports' },
+  { text: 'Audit & Security', icon: <SecurityIcon />, path: '/church/audit' },
+  { text: 'Settings', icon: <SettingsIcon />, path: '/church/settings' },
+];
+
+export const ChurchAdminLayout: React.FC = () => {
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, logout } = useAuth();
-  const { toggleColorMode, mode } = useColorMode();
+  const [open, setOpen] = useState(true);
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
-  useEffect(() => {
-    setOpen(!isMobile);
-  }, [isMobile]);
+  const isImpersonating = localStorage.getItem('is_impersonating') === 'true';
 
-  const toggleDrawer = () => {
+  const handleExitImpersonation = () => {
+    const originalToken = localStorage.getItem('original_sa_token');
+    const originalUser = localStorage.getItem('original_sa_user');
+    if (originalToken && originalUser) {
+      localStorage.setItem('token', originalToken);
+      localStorage.setItem('user', originalUser);
+      localStorage.removeItem('original_sa_token');
+      localStorage.removeItem('original_sa_user');
+      localStorage.removeItem('is_impersonating');
+      window.location.href = '/superadmin/churches';
+    } else {
+      localStorage.clear();
+      window.location.href = '/login';
+    }
+  };
+
+  const handleDrawerToggle = () => {
     setOpen(!open);
   };
 
-  const menuItems = [
-    { text: 'Dashboard', icon: <LayoutDashboard size={20} />, path: '/admin/dashboard' },
-    { text: 'Members', icon: <Users size={20} />, path: '/admin/members' },
-    { text: 'Finances', icon: <CreditCard size={20} />, path: '/admin/finances' },
-    { text: 'Events', icon: <Calendar size={20} />, path: '/admin/events' },
-    { text: 'Ministries', icon: <Layers size={20} />, path: '/admin/ministries' },
-    { text: 'Communication', icon: <MessageSquare size={20} />, path: '/admin/communication' },
-    { text: 'Attendance', icon: <UserCheck size={20} />, path: '/admin/attendance' },
-    { text: 'Reports', icon: <BarChart3 size={20} />, path: '/admin/reports' },
-    { text: 'Settings', icon: <Settings size={20} />, path: '/admin/settings' },
-  ];
+  const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setAnchorEl(event.currentTarget);
+  };
+
+  const handleMenuClose = () => {
+    setAnchorEl(null);
+  };
 
   const handleLogout = () => {
     logout();
@@ -53,108 +101,183 @@ const ChurchAdminLayout: React.FC = () => {
   };
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
-      <AppBar 
-        position="fixed" 
-        sx={{ 
-          zIndex: theme.zIndex.drawer + 1, 
-          bgcolor: 'background.paper', 
-          color: 'text.primary',
-          boxShadow: 'none',
-          borderBottom: `1px solid ${theme.palette.divider}`
-        }}
-      >
-        <Toolbar sx={{ justifyContent: 'space-between' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
-            <IconButton color="inherit" onClick={toggleDrawer} edge="start" sx={{ mr: 2 }}>
-              <MenuIcon size={20} />
-            </IconButton>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box sx={{ bgcolor: 'primary.main', p: 0.5, borderRadius: 1, display: 'flex' }}>
-                <ShieldCheck size={20} color="white" />
-              </Box>
-              <Typography variant="h6" noWrap fontWeight={700} sx={{ letterSpacing: '-0.5px' }}>
-                Ecclesia
-              </Typography>
-              <Chip label="CHURCH ADMIN" size="small" sx={{ ml: 1, height: 18, fontSize: '0.65rem', fontWeight: 700, bgcolor: 'primary.main', color: 'primary.contrastText' }} />
-            </Box>
-          </Box>
-
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <IconButton size="small" onClick={toggleColorMode} color="inherit">
-              {mode === 'light' ? <Moon size={18} /> : <Sun size={18} />}
-            </IconButton>
-            <IconButton size="small"><Bell size={18} /></IconButton>
-            <Divider orientation="vertical" flexItem sx={{ mx: 1, height: 24, my: 'auto' }} />
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: '0.875rem' }}>
-                {user?.name?.[0] || 'A'}
-              </Avatar>
-              <Typography variant="body2" fontWeight={700} sx={{ display: { xs: 'none', md: 'block' } }}>
-                {user?.name}
-              </Typography>
-            </Box>
-            <Button variant="outlined" color="inherit" size="small" startIcon={<LogOut size={16} />} onClick={handleLogout} sx={{ ml: 1, textTransform: 'none' }}>
-              Logout
+    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      {isImpersonating && (
+        <Alert 
+          severity="warning" 
+          variant="filled"
+          action={
+            <Button color="inherit" size="small" onClick={handleExitImpersonation} sx={{ fontWeight: 800 }}>
+              Return to SuperAdmin Portal
             </Button>
-          </Box>
-        </Toolbar>
-      </AppBar>
+          }
+          sx={{ borderRadius: 0, zIndex: (theme) => theme.zIndex.drawer + 2, py: 0.5 }}
+        >
+          <strong>Impersonation Mode:</strong> You are currently managing <strong>{user?.tenant?.name}</strong> as a SuperAdmin.
+        </Alert>
+      )}
+
+      <Box sx={{ display: 'flex', flexGrow: 1 }}>
+        <AppBar
+          position="fixed"
+          sx={{
+            top: isImpersonating ? 40 : 0,
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+            transition: (theme) =>
+              theme.transitions.create(['width', 'margin', 'top'], {
+                easing: theme.transitions.easing.sharp,
+                duration: theme.transitions.duration.leavingScreen,
+              }),
+            ...(open && {
+              marginLeft: drawerWidth,
+              width: `calc(100% - ${drawerWidth}px)`,
+              transition: (theme) =>
+                theme.transitions.create(['width', 'margin', 'top'], {
+                  easing: theme.transitions.easing.sharp,
+                  duration: theme.transitions.duration.enteringScreen,
+                }),
+            }),
+            backgroundColor: 'background.paper',
+            color: 'text.primary',
+            boxShadow: 'none',
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Toolbar>
+            <IconButton
+              color="inherit"
+              aria-label="open drawer"
+              onClick={handleDrawerToggle}
+              edge="start"
+              sx={{ marginRight: 5, ...(open && { display: 'none' }) }}
+            >
+              <MenuIcon />
+            </IconButton>
+            <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1, fontWeight: 600 }}>
+              {user?.tenant?.name}
+            </Typography>
+            
+            <Tooltip title="Account settings">
+              <IconButton onClick={handleMenuOpen} sx={{ p: 0 }}>
+                <Avatar sx={{ bgcolor: 'primary.main' }}>
+                  {user?.email?.charAt(0).toUpperCase() || 'A'}
+                </Avatar>
+              </IconButton>
+            </Tooltip>
+            <Menu
+              anchorEl={anchorEl}
+              open={Boolean(anchorEl)}
+              onClose={handleMenuClose}
+              onClick={handleMenuClose}
+            >
+              <MenuItem onClick={() => navigate('/church/settings')}>Profile</MenuItem>
+              {isImpersonating && (
+                <MenuItem onClick={handleExitImpersonation} sx={{ color: 'warning.main', fontWeight: 700 }}>
+                  Exit Impersonation
+                </MenuItem>
+              )}
+              <Divider />
+              <MenuItem onClick={handleLogout}>
+                <ListItemIcon>
+                  <LogoutIcon fontSize="small" />
+                </ListItemIcon>
+                Logout
+              </MenuItem>
+            </Menu>
+          </Toolbar>
+        </AppBar>
 
       <Drawer
-        variant={isMobile ? "temporary" : "permanent"}
+        variant="permanent"
         open={open}
-        onClose={toggleDrawer}
         sx={{
           width: drawerWidth,
           flexShrink: 0,
-          [`& .MuiDrawer-paper`]: { 
-            width: drawerWidth, 
-            boxSizing: 'border-box',
-            borderRight: `1px solid ${theme.palette.divider}`,
-            bgcolor: 'background.paper',
-            ...(!open && !isMobile && { width: theme.spacing(9), overflowX: 'hidden' })
-          },
+          whiteSpace: 'nowrap',
+          boxSizing: 'border-box',
+          ...(open && {
+            '& .MuiDrawer-paper': {
+              width: drawerWidth,
+              transition: (theme) =>
+                theme.transitions.create('width', {
+                  easing: theme.transitions.easing.sharp,
+                  duration: theme.transitions.duration.enteringScreen,
+                }),
+              overflowX: 'hidden',
+            },
+          }),
+          ...(!open && {
+            '& .MuiDrawer-paper': {
+              width: (theme) => theme.spacing(7),
+              transition: (theme) =>
+                theme.transitions.create('width', {
+                  easing: theme.transitions.easing.sharp,
+                  duration: theme.transitions.duration.leavingScreen,
+                }),
+              overflowX: 'hidden',
+            },
+          }),
         }}
       >
-        <Toolbar />
-        <Box sx={{ overflow: 'auto', mt: 2, px: 2 }}>
-          <List>
-            {menuItems.map((item) => {
-              const isActive = location.pathname === item.path;
-              return (
-                <ListItem key={item.text} disablePadding sx={{ display: 'block', mb: 0.5 }}>
-                  <ListItemButton
-                    onClick={() => {
-                      navigate(item.path);
-                      if (isMobile) setOpen(false);
-                    }}
-                    sx={{
-                      minHeight: 48,
-                      justifyContent: open ? 'initial' : 'center',
-                      px: 2.5,
-                      borderRadius: 2,
-                      bgcolor: isActive ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
-                      color: isActive ? 'primary.main' : 'text.secondary',
-                    }}
-                  >
-                    <ListItemIcon sx={{ minWidth: 0, mr: open ? 2 : 'auto', justifyContent: 'center', color: isActive ? 'primary.main' : 'inherit' }}>
-                      {item.icon}
-                    </ListItemIcon>
-                    <ListItemText primary={item.text} sx={{ opacity: open ? 1 : 0 }} primaryTypographyProps={{ fontSize: '0.875rem', fontWeight: isActive ? 700 : 500 }} />
-                  </ListItemButton>
-                </ListItem>
-              );
-            })}
-          </List>
-        </Box>
+        <Toolbar sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', px: [1] }}>
+          <IconButton onClick={handleDrawerToggle}>
+            <ChevronLeftIcon />
+          </IconButton>
+        </Toolbar>
+        <Divider />
+        <List>
+          {menuItems.map((item) => (
+            <ListItem key={item.text} disablePadding sx={{ display: 'block' }}>
+              <ListItemButton
+                onClick={() => navigate(item.path)}
+                selected={location.pathname === item.path}
+                sx={{
+                  minHeight: 48,
+                  justifyContent: open ? 'initial' : 'center',
+                  px: 2.5,
+                  '&.Mui-selected': {
+                    backgroundColor: 'primary.light',
+                    color: 'primary.main',
+                    '& .MuiListItemIcon-root': {
+                      color: 'primary.main',
+                    },
+                  },
+                }}
+              >
+                <ListItemIcon
+                  sx={{
+                    minWidth: 0,
+                    mr: open ? 3 : 'auto',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {item.icon}
+                </ListItemIcon>
+                <ListItemText primary={item.text} sx={{ opacity: open ? 1 : 0 }} />
+              </ListItemButton>
+            </ListItem>
+          ))}
+        </List>
       </Drawer>
 
-      <Box component="main" sx={{ flexGrow: 1, p: 3, mt: 8 }}>
+      <Box 
+        component="main" 
+        sx={{ 
+          flexGrow: 1, 
+          p: 3, 
+          backgroundColor: 'background.default', 
+          minHeight: '100vh' 
+        }}
+        className="animate-fade-in"
+      >
+        <Toolbar />
         <Outlet />
       </Box>
     </Box>
-  );
+  </Box>
+);
 };
 
+// Exported both ways so either import style resolves.
 export default ChurchAdminLayout;
