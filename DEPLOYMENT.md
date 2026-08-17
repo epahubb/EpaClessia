@@ -111,3 +111,99 @@ If a secret is ever exposed (for example, committed to git):
    must sign in again. This is expected and desirable after an exposure.
 4. Rotate the database password and any provider API keys (Paystack, mNotify,
    SMTP) that shared the exposure.
+
+---
+
+## 8. Deploying to Railway
+
+Railway is configured via `railway.json`, which pins the **Dockerfile builder**.
+This is deliberate and important — see the two pitfalls below.
+
+### 8.1 Why the Dockerfile builder, not Nixpacks
+
+Build-only packages (`vite`, `esbuild`, `typescript`, `@vitejs/plugin-react`,
+`@tailwindcss/vite`) live in `devDependencies`. If Railway builds with Nixpacks
+while `NODE_ENV=production` is set as a service variable, `npm ci` omits dev
+dependencies and the build fails with `vite: not found`.
+
+The `Dockerfile` avoids this entirely: it installs the full dependency tree in
+its build stage and only sets `NODE_ENV=production` in the final runtime stage.
+
+If you ever switch to Nixpacks, you must set:
+
+```
+NIXPACKS_INSTALL_CMD=npm ci --include=dev
+```
+
+### 8.2 Database TLS on Railway
+
+Use Railway's **private network** hostname, which the Postgres plugin exposes as
+`${{Postgres.DATABASE_URL}}` (host `postgres.railway.internal`).
+
+`src/lib/db.ts` and `src/lib/startup-checks.ts` detect `*.railway.internal` and
+skip TLS, because that traffic never leaves Railway's private network and the
+internal endpoint does not present a verifiable certificate. Forcing
+`PGSSL=true` against it fails with a self-signed-certificate error.
+
+Only if you must connect over Railway's **public TCP proxy** set:
+
+```
+PGSSL=true
+PGSSL_NO_VERIFY=true
+```
+
+`PGSSL_NO_VERIFY` is a documented escape hatch and logs a warning. Prefer the
+private network.
+
+### 8.3 Setup steps
+
+1. **New Project** → *Deploy from GitHub repo* → select `epahubb/EpaClessia`.
+   Railway detects `railway.json` and builds from the `Dockerfile`.
+2. **+ New** → *Database* → **Add PostgreSQL**.
+3. Open the app service → **Variables** → add the values in 8.4.
+4. **Settings → Networking → Generate Domain** to get a public HTTPS URL.
+5. Set `APP_URL` to that domain and redeploy.
+
+### 8.4 Required service variables
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (reference, not a literal) |
+| `NODE_ENV` | `production` |
+| `JWT_SECRET` | fresh `openssl rand -hex 32` |
+| `JWT_REFRESH_SECRET` | a **different** `openssl rand -hex 32` |
+| `SECRETS_ENCRYPTION_KEY` | a **third** `openssl rand -hex 32` |
+| `SUPERADMIN_PASSWORD` | strong, 12+ chars, not a known default |
+| `SEED_DEFAULT_PASSWORD` | strong, 12+ chars |
+| `APP_URL` | your generated Railway HTTPS domain |
+| `ALLOWED_ORIGINS` | same as `APP_URL` (or leave blank for same-origin only) |
+
+Do **not** set `PORT` — Railway injects it and the server already reads it.
+Do **not** set `PGSSL` when using the private network.
+
+Optional, only if the feature is used: `PAYSTACK_PUBLIC_KEY`,
+`PAYSTACK_SECRET_KEY`, `MNOTIFY_API_KEY`, `MNOTIFY_SENDER_ID`,
+`MNOTIFY_CLIENT_ID`, `MNOTIFY_CLIENT_SECRET`, `EMAIL_HOST`, `EMAIL_PORT`,
+`EMAIL_USER`, `EMAIL_PASSWORD`, `GEMINI_API_KEY`.
+
+### 8.5 Verifying the deploy
+
+The startup checks print their verdict in the deploy logs. Look for:
+
+```
+[startup] Configuration validated (production mode).
+✓ Database: PostgreSQL (from connection URL)
+Server running on http://localhost:8080
+```
+
+Then confirm the health endpoint returns `"database": "connected"`:
+
+```bash
+curl https://<your-app>.up.railway.app/api/health
+```
+
+If the container exits immediately, read the log lines beginning `[startup]
+ERROR:` — each names the exact variable to fix.
+
+**Immediately after the first successful deploy:** sign in as the super admin,
+change that password, and enable two-factor authentication.

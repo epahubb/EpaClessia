@@ -97,3 +97,69 @@ test('development mode is lenient about seed passwords', () => {
   } as NodeJS.ProcessEnv);
   assert.deepEqual(errors, []);
 });
+
+test('accepts a Railway private-network database without PGSSL', () => {
+  const { errors, warnings } = evaluateConfig(
+    validProdEnv({
+      DATABASE_URL: 'postgres://postgres:pw@postgres.railway.internal:5432/railway',
+      PGSSL: undefined,
+    }),
+  );
+  assert.deepEqual(errors, []);
+  assert.ok(warnings.some((w) => w.includes('private network')));
+});
+
+test('still requires TLS for a publicly-routed database host', () => {
+  const { errors } = evaluateConfig(
+    validProdEnv({
+      DATABASE_URL: undefined,
+      PGHOST: 'db.public-provider.com',
+      PGSSL: 'false',
+    }),
+  );
+  assert.ok(errors.some((e) => e.includes('TLS')));
+});
+
+test('accepts a Kubernetes cluster-internal database host', () => {
+  const { errors } = evaluateConfig(
+    validProdEnv({
+      DATABASE_URL: undefined,
+      PGHOST: 'postgres.default.svc.cluster.local',
+      PGSSL: undefined,
+    }),
+  );
+  assert.deepEqual(errors, []);
+});
+
+test('accepts a Railway private-network database without PGSSL', () => {
+  const { errors, warnings } = evaluateConfig(
+    validProdEnv({
+      DATABASE_URL: 'postgres://postgres:pw@postgres.railway.internal:5432/railway',
+      PGSSL: undefined,
+    }),
+  );
+  assert.deepEqual(errors, []);
+  assert.ok(warnings.some((w) => w.includes('private network')));
+});
+
+test('still requires TLS for a publicly-routed database host', () => {
+  const { errors } = evaluateConfig(
+    validProdEnv({
+      DATABASE_URL: undefined,
+      PGHOST: 'db.public-provider.com',
+      PGSSL: 'false',
+    }),
+  );
+  assert.ok(errors.some((e) => e.includes('TLS')));
+});
+
+test('accepts a Kubernetes cluster-internal database host', () => {
+  const { errors } = evaluateConfig(
+    validProdEnv({
+      DATABASE_URL: undefined,
+      PGHOST: 'postgres.default.svc.cluster.local',
+      PGSSL: undefined,
+    }),
+  );
+  assert.deepEqual(errors, []);
+});

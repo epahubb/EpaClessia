@@ -29,8 +29,31 @@ if (isPg) {
   //   - PGSSL_CA        : PEM contents of the CA certificate (preferred)
   //   - PGSSL_CA_PATH   : path to a CA certificate file
   //   - PGSSL_NO_VERIFY : escape hatch ("true") to skip verification (discouraged)
+  // Private-network database targets (Railway's *.railway.internal, Fly's
+  // *.internal, Kubernetes cluster DNS) are not routable from outside the
+  // project's own network. They commonly terminate TLS with a self-signed
+  // certificate, or serve plaintext only. Forcing verified TLS there breaks the
+  // connection outright while adding no real confidentiality benefit, because
+  // the traffic never leaves the provider's private network.
+  const sslTarget =
+    connectionUrl || process.env.PGHOST || process.env.DB_HOST || '';
+  const isPrivateNetwork =
+    /\.railway\.internal|\.flycast|\.internal(?::\d+)?(?:\/|$)|\.svc\.cluster\.local/.test(
+      sslTarget,
+    );
+
+  // Explicit PGSSL=true always wins. Otherwise TLS is implied in production for
+  // any publicly-routed connection URL.
   const wantsSsl =
-    process.env.PGSSL === 'true' || (isProduction && Boolean(connectionUrl));
+    process.env.PGSSL === 'true' ||
+    (isProduction && Boolean(connectionUrl) && !isPrivateNetwork);
+
+  if (isProduction && isPrivateNetwork && process.env.PGSSL !== 'true') {
+    console.log(
+      '[db] Private-network database target detected; connecting without TLS ' +
+        '(traffic stays inside the provider network).',
+    );
+  }
   let sslConfig: boolean | Record<string, unknown> = false;
   if (wantsSsl) {
     const caPem =

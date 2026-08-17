@@ -68,10 +68,26 @@ export function evaluateConfig(env: NodeJS.ProcessEnv = process.env): StartupChe
   }
 
   if (isProd) {
-    const usingTls =
-      env.PGSSL === 'true' || Boolean(env.DATABASE_URL || env.POSTGRES_URL);
-    if (!usingTls) {
-      errors.push('Database TLS is disabled in production. Set PGSSL=true.');
+    // Private-network targets (Railway, Fly, Kubernetes) keep traffic inside the
+    // provider network and typically do not offer verifiable TLS, so requiring
+    // it there would block a perfectly valid deployment.
+    const sslTarget =
+      env.DATABASE_URL || env.POSTGRES_URL || env.PGHOST || env.DB_HOST || '';
+    const isPrivateNetwork =
+      /\.railway\.internal|\.flycast|\.internal(?::\d+)?(?:\/|$)|\.svc\.cluster\.local/.test(
+        sslTarget,
+      );
+
+    if (isPrivateNetwork) {
+      warnings.push(
+        'Database target is on a provider private network, so TLS is not enforced. This is expected on Railway/Fly internal networking.',
+      );
+    } else {
+      const usingTls =
+        env.PGSSL === 'true' || Boolean(env.DATABASE_URL || env.POSTGRES_URL);
+      if (!usingTls) {
+        errors.push('Database TLS is disabled in production. Set PGSSL=true.');
+      }
     }
     if (env.PGSSL_NO_VERIFY === 'true') {
       warnings.push(
