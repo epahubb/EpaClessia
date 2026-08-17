@@ -1,0 +1,12 @@
+{
+  "name": "Ecclesia - Church Admin Portal",
+  "description": "Comprehensive Church Administrator Portal for managing members, finances, events, and ministries in a multi-tenant ERP.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
