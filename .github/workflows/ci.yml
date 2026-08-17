@@ -2,50 +2,84 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main]
   pull_request:
-    branches: [main, master, develop]
+    branches: [main]
 
 jobs:
   verify:
-    name: Typecheck, test and build
+    name: Typecheck, test, build
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: '22'
 
+      # `npm ci` requires a committed package-lock.json and hard-fails without
+      # one. Fall back to `npm install` so the pipeline still runs, and surface a
+      # warning so the missing lockfile does not go unnoticed.
       - name: Install dependencies
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::No package-lock.json found. Builds are not reproducible; run 'npm install' locally and commit the lockfile."
+            npm install
+          fi
 
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests
+      - name: Test
         run: npm test
 
       - name: Build
         run: npm run build
 
-      - name: Audit dependencies (high severity)
+      - name: Audit dependencies
         run: npm audit --audit-level=high
         continue-on-error: true
 
   secrets:
-    name: Guard against committed secrets
+    name: Ensure no committed secrets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fail if a real .env file is committed
+      - name: Fail if a .env file is tracked
         run: |
           if git ls-files --error-unmatch .env 2>/dev/null; then
-            echo "::error::A .env file is tracked by git. Remove it and rotate every secret it contained."
+            echo "::error::A .env file is tracked in git. Remove it and rotate every secret it contained."
             exit 1
           fi
-          echo "No tracked .env file. Good."
+          echo "OK: no tracked .env file."
+
+  paths:
+    name: Ensure Windows-safe paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Paths differing only in case (e.g. components/Layout vs
+      # components/layout) cannot coexist on Windows or macOS. They silently
+      # merge on checkout, so imports that resolve on Linux break for other
+      # developers -- and vice versa. Linux CI is the only place this is
+      # detectable, so it must be enforced here.
+      - name: Fail on case-only path collisions
+        run: |
+          files=$(git ls-files)
+          dirs=$(git ls-files | xargs -r -n1 dirname | sort -u)
+          collisions=$(printf '%s\n%s\n' "$files" "$dirs" | awk '
+            { low = tolower($0)
+              if (seen[low] != "" && seen[low] != $0)
+                print "  " seen[low] "  <->  " $0
+              else
+                seen[low] = $0 }')
+          if [ -n "$collisions" ]; then
+            echo "::error::Paths differing only in case were found. These break on Windows and macOS checkouts."
+            echo "$collisions"
+            exit 1
+          fi
+          echo "OK: no case-only path collisions."

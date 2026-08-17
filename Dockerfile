@@ -7,7 +7,10 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+# Prefer `npm ci` for a reproducible build, but fall back to `npm install` when
+# no package-lock.json has been committed yet (`npm ci` hard-fails without one).
+# Commit a package-lock.json to get deterministic builds.
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 # ---- Stage 2: build the frontend bundle and the server bundle ---------------
 FROM node:22-alpine AS build
@@ -20,7 +23,7 @@ RUN npm run build
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
 # ---- Stage 4: runtime -------------------------------------------------------
 FROM node:22-alpine AS runtime
