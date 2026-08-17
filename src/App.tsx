@@ -4,7 +4,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { BrandingProvider } from './contexts/BrandingContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import SuperAdminLayout from './layouts/SuperAdminLayout';
-import { ChurchAdminLayout } from './layouts/ChurchAdminLayout';
+import { ChurchAdminLayout } from './components/layout/ChurchAdminLayout';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
 

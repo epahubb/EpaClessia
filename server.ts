@@ -53,8 +53,25 @@ async function startServer() {
   // touch the database or bind a port.
   runStartupChecks();
 
-  // Initialize Database
-  await initializeDatabase();
+  // Database initialization is started but deliberately NOT awaited before the
+  // port is bound. Container platforms (Railway, Cloud Run, Kubernetes) begin
+  // probing the health endpoint as soon as the container starts. Blocking here
+  // on schema creation, seeding, or an unreachable database means we never call
+  // app.listen(), so every probe returns "service unavailable" and the platform
+  // kills the deployment without ever surfacing the underlying cause.
+  let dbState: 'initializing' | 'ready' | 'failed' = 'initializing';
+  let dbError: string | null = null;
+
+  initializeDatabase()
+    .then(() => {
+      dbState = 'ready';
+      console.log('[startup] Database initialized.');
+    })
+    .catch((err: unknown) => {
+      dbState = 'failed';
+      dbError = err instanceof Error ? err.message : String(err);
+      console.error('[startup] Database initialization FAILED:', dbError);
+    });
 
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -243,10 +260,38 @@ async function startServer() {
   });
 
   // API routes
+  // Readiness probe: reports whether the database finished initializing.
+  // Returns 503 until it does, so it is suitable for deploy gating -- but NOT
+  // as the platform health check, or a database problem would roll the deploy
+  // back before the logs could be read.
+  app.get("/api/ready", (req, res) => {
+    if (dbState === 'ready') {
+      res.json({ status: 'ready', database: 'connected' });
+      return;
+    }
+    res.status(503).json({
+      status: dbState,
+      database: dbState === 'failed' ? 'error' : 'initializing',
+      error: dbError,
+    });
+  });
+
+  // Liveness probe: must always answer 200 quickly, even when the database is
+  // unreachable. A hanging or non-200 response is indistinguishable from a dead
+  // process, so the platform would restart a container whose only fault is a
+  // misconfigured database -- masking the real error.
   app.get("/api/health", async (req, res) => {
     let dbStatus = "unknown";
     try {
-      await db.raw('select 1');
+      // Bounded probe. An unbounded query against an unreachable host hangs
+      // until the platform's own timeout fires, which looks exactly like a
+      // crashed process in the logs.
+      await Promise.race([
+        db.raw('select 1'),
+        new Promise((_resolve, reject) =>
+          setTimeout(() => reject(new Error('health probe timed out')), 2000),
+        ),
+      ]);
       dbStatus = "connected";
     } catch (e) {
       dbStatus = "error";

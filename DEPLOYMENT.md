@@ -207,3 +207,28 @@ ERROR:` — each names the exact variable to fix.
 
 **Immediately after the first successful deploy:** sign in as the super admin,
 change that password, and enable two-factor authentication.
+
+### 8.6 Health vs readiness probes
+
+Two distinct endpoints, and the distinction matters for deployment safety:
+
+| Endpoint | Meaning | Behaviour |
+|---|---|---|
+| `/api/health` | **Liveness** — is the process alive? | Always `200`, even when the database is down. Database status is reported in the body. The probe is bounded to 2s. |
+| `/api/ready` | **Readiness** — did schema init finish? | `200` when ready, `503` while initializing or on failure, with the error message. |
+
+`railway.json` points the platform health check at `/api/health` **deliberately**.
+If it pointed at `/api/ready`, any database misconfiguration would mark the
+replica unhealthy and roll the deploy back before you could read the logs that
+explain why.
+
+The port is bound *before* database initialization completes, so a slow or
+unreachable database produces a running container with a diagnostic
+`/api/health` response instead of a container that never listens at all.
+
+To diagnose a failing deploy:
+
+```bash
+curl https://<your-app>.up.railway.app/api/health   # expect 200
+curl https://<your-app>.up.railway.app/api/ready    # 503 body names the failure
+```
