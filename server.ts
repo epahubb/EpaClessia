@@ -710,7 +710,12 @@ async function startServer() {
       const { search = '', status = 'all', plan = 'all', page = 1, limit = 20 } = req.query;
       const offset = (Number(page) - 1) * Number(limit);
 
-      let query = db('invoices').select('*');
+      // NOTE: no .select('*') here. knex's .count() APPENDS to the select list
+      // rather than replacing it, so a cloned builder carrying select('*')
+      // produces `select *, count("id") ...`, which PostgreSQL rejects with
+      // 42803 (column must appear in GROUP BY). SQLite tolerated it, which is
+      // why this only surfaced after moving to Postgres.
+      let query = db('invoices');
 
       if (search) {
         query = query.where(function() {
@@ -728,7 +733,9 @@ async function startServer() {
         query = query.where('planId', plan);
       }
 
-      const totalCount = await query.clone().count('id as count').first();
+      // clearSelect() keeps the count query valid even if a select is added to
+      // the base builder later.
+      const totalCount = await query.clone().clearSelect().count('id as count').first();
       const invoices = await query.orderBy('issueDate', 'desc').limit(Number(limit)).offset(offset);
 
       res.json({
@@ -838,7 +845,10 @@ async function startServer() {
     try {
       const { search = '', status = 'all', priority = 'all', category = 'all' } = req.query;
 
-      let query = db('support_tickets').select('*');
+      // select('*') is knex's default and is deliberately omitted: leaving it in
+      // place breaks any future `.clone().count()` pagination on this builder
+      // under PostgreSQL (error 42803). See the invoices endpoint above.
+      let query = db('support_tickets');
 
       if (search) {
         query = query.where(function() {
