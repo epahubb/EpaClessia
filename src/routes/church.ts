@@ -212,7 +212,7 @@ router.get('/members/:id/photo', async (req: AuthRequest, res) => {
  */
 router.post(
   '/members/:id/photo',
-  requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'),
+  requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'),
   async (req: AuthRequest, res) => {
     try {
       const exists = await db('members')
@@ -241,7 +241,7 @@ router.post(
 /** Remove a member's profile picture. */
 router.delete(
   '/members/:id/photo',
-  requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'),
+  requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'),
   async (req: AuthRequest, res) => {
     try {
       const updated = await db('members')
@@ -256,7 +256,7 @@ router.delete(
   },
 );
 
-router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const { firstName, lastName, email, phone, gender, dateOfBirth, familyId, membershipStatus, notes,
       membershipId, anniversaryDate, maritalStatus, occupation, address, branchId, ministryId, photoUrl,
@@ -325,7 +325,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER')
  *  - Members whose email already exists in this church are skipped by default,
  *    so re-uploading a corrected file does not create duplicates.
  */
-router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const { rows, mapping, skipExistingEmails = true, dryRun = false } = req.body || {};
 
@@ -463,7 +463,7 @@ router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req
   }
 });
 
-router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const existing = await db('members')
       .where({ id: req.params.id, tenantId: tid(req) })
@@ -565,7 +565,7 @@ router.get('/events', async (req: AuthRequest, res) => {
   }
 });
 
-router.post('/events', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.post('/events', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const { title, description, location, startTime, endTime, category } = req.body;
     if (!title || !startTime) {
@@ -590,7 +590,7 @@ router.post('/events', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'),
   }
 });
 
-router.put('/events/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.put('/events/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const existing = await db('events')
       .where({ id: req.params.id, tenantId: tid(req) })
@@ -710,7 +710,7 @@ router.get('/giving', async (req: AuthRequest, res) => {
 });
 
 // Manually record an offline gift (cash / cheque / bank).
-router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'FINANCE'), async (req: AuthRequest, res) => {
   try {
     const { amount, currency, donorName, paymentMethod, purpose, memberId } = req.body;
     if (!amount || Number(amount) <= 0) {
@@ -1149,7 +1149,13 @@ type CrudOpts = {
 };
 
 function registerCrud(basePath: string, table: string, opts: CrudOpts) {
-  const writeRoles = opts.writeRoles || ['CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'];
+  // Tables a finance officer owns. FINANCE is *appended* rather than swapped in
+  // so no role that could already write here loses access.
+  const FINANCE_TABLES = ['expenses', 'budgets', 'pledges'];
+  const baseWriteRoles = opts.writeRoles || ['CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'];
+  const writeRoles = FINANCE_TABLES.includes(table)
+    ? [...baseWriteRoles, 'FINANCE']
+    : baseWriteRoles;
   const coerce = (body: any) => {
     const row: any = {};
     for (const f of opts.fields) {
@@ -1281,7 +1287,7 @@ router.get('/visitors', async (req: AuthRequest, res) => {
     res.status(500).json({ error: 'Failed to load visitors' });
   }
 });
-router.post('/visitors', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.post('/visitors', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const b = req.body || {};
     if (!b.firstName) return res.status(400).json({ error: 'firstName is required' });
@@ -1310,7 +1316,7 @@ router.post('/visitors', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'
     res.status(500).json({ error: 'Failed to create visitor' });
   }
 });
-router.put('/visitors/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+router.put('/visitors/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
     const existing = await db('visitors').where({ id: req.params.id, tenantId: tid(req) }).first();
     if (!existing) return res.status(404).json({ error: 'Visitor not found' });

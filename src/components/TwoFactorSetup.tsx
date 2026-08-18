@@ -5,6 +5,7 @@ import {
 } from '@mui/material';
 import { ShieldCheck, ShieldOff, Copy } from 'lucide-react';
 import { twoFactorService } from '../services/brandingService';
+import QrCodeCanvas from './attendance/QrCodeCanvas';
 
 // Reusable 2FA self-service panel used by the super admin System Settings and
 // by church admins in their own settings screen.
@@ -71,10 +72,6 @@ const TwoFactorSetup: React.FC = () => {
     } finally { setBusy(false); }
   };
 
-  const qrSrc = otpauthUrl
-    ? 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(otpauthUrl)
-    : '';
-
   if (loading) return <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}><CircularProgress /></Box>;
 
   return (
@@ -110,7 +107,13 @@ const TwoFactorSetup: React.FC = () => {
             <Step><StepLabel>Done</StepLabel></Step>
           </Stepper>
           <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 3, alignItems: 'center' }}>
-            {qrSrc && <Box component="img" src={qrSrc} alt="2FA QR code" sx={{ width: 180, height: 180, borderRadius: 2, border: '1px solid', borderColor: 'divider' }} />}
+            {/*
+              Rendered locally on purpose. This previously used an external QR
+              image service, which meant the TOTP secret -- the one thing that
+              must never leave this system -- was placed in a URL and sent to a
+              third party on every 2FA setup.
+            */}
+            {otpauthUrl && <QrCodeCanvas value={otpauthUrl} size={180} />}
             <Box sx={{ flex: 1 }}>
               <Typography variant="body2" fontWeight={700} sx={{ mb: 0.5 }}>1. Scan the QR code</Typography>
               <Typography variant="caption" color="text.secondary">Or enter this secret manually:</Typography>
