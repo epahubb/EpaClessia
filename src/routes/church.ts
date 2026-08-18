@@ -27,6 +27,14 @@ import {
   generateDeviceApiKey,
   QR_TOKEN_TTL_MINUTES,
 } from '../lib/attendance';
+import {
+  PERMISSION_CODES,
+  PLATFORM_ONLY_PERMISSIONS,
+  isChurchEditableRole,
+  sanitizePermissions,
+  serializePermissions,
+  resolveRolePermissions,
+} from '../lib/permissions';
 
 /**
  * Tenant-scoped church application API.
@@ -1273,6 +1281,131 @@ registerCrud('/service-schedules', 'service_schedules', {
   orderBy: 'name',
 });
 
+/* ---- Church positions (Usher, Treasurer, Choir Lead, ...) ----
+ *
+ * ROLE decides what the portal permits. POSITION describes a person's place in
+ * the church. A member can hold several positions at once, which is why the
+ * assignments live in their own table rather than a column on `members`.
+ *
+ * The position catalogue uses the standard tenant-scoped CRUD helper. The
+ * member <-> position assignments need their own endpoints because they join
+ * two tables and must validate that both sides belong to the calling church.
+ *
+ * NOTE: `linkedRole` is descriptive only. Assigning a position does NOT change
+ * a member's portal role; that is done from Users & Permissions. Making
+ * linkedRole actually grant a role would let anyone who can assign positions
+ * escalate privileges, so it stays a label until it is guarded properly.
+ */
+registerCrud('/positions', 'church_positions', {
+  idPrefix: 'pos',
+  fields: ['name', 'category', 'description', 'linkedRole', 'active'],
+  filterFields: ['category'],
+  orderBy: 'name',
+  writeRoles: ['CHURCH_ADMIN', 'PASTOR'],
+});
+
+/** Every position assignment in this church, with member and position names. */
+router.get('/position-assignments', async (req: AuthRequest, res) => {
+  try {
+    const rows = await db('member_positions as mp')
+      .where({ 'mp.tenantId': tid(req) })
+      .leftJoin('members as m', 'm.id', 'mp.memberId')
+      .leftJoin('church_positions as p', 'p.id', 'mp.positionId')
+      .select(
+        'mp.id as id',
+        'mp.memberId',
+        'mp.positionId',
+        'mp.ministryId',
+        'mp.startDate',
+        'mp.endDate',
+        'mp.active',
+        'm.firstName as memberFirstName',
+        'm.lastName as memberLastName',
+        'p.name as positionName',
+        'p.category as positionCategory',
+        'p.linkedRole as positionLinkedRole',
+      )
+      .orderBy('mp.createdAt', 'desc');
+    res.json({ data: rows });
+  } catch {
+    res.status(500).json({ error: 'Failed to load position assignments' });
+  }
+});
+
+/** Positions held by one member. */
+router.get('/members/:id/positions', async (req: AuthRequest, res) => {
+  try {
+    const rows = await db('member_positions as mp')
+      .where({ 'mp.tenantId': tid(req), 'mp.memberId': String(req.params.id) })
+      .leftJoin('church_positions as p', 'p.id', 'mp.positionId')
+      .select(
+        'mp.id as id',
+        'mp.positionId',
+        'mp.ministryId',
+        'mp.startDate',
+        'mp.active',
+        'p.name as positionName',
+        'p.category as positionCategory',
+      )
+      .orderBy('mp.createdAt', 'desc');
+    res.json({ data: rows });
+  } catch {
+    res.status(500).json({ error: 'Failed to load member positions' });
+  }
+});
+
+/** Assign a position to a member. */
+router.post('/position-assignments', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const { memberId, positionId, ministryId, startDate } = req.body || {};
+    if (!memberId || !positionId) {
+      return res.status(400).json({ error: 'A member and a position are both required.' });
+    }
+    const tenantId = tid(req);
+
+    // Both sides must belong to the calling church. Without these two checks a
+    // church admin could attach their own position to another church's member,
+    // or assign a position belonging to a different tenant.
+    const member = await db('members').where({ id: String(memberId), tenantId }).first();
+    if (!member) return res.status(404).json({ error: 'Member not found in this church.' });
+    const position = await db('church_positions').where({ id: String(positionId), tenantId }).first();
+    if (!position) return res.status(404).json({ error: 'Position not found in this church.' });
+
+    const duplicate = await db('member_positions')
+      .where({ tenantId, memberId: String(memberId), positionId: String(positionId), active: true })
+      .first();
+    if (duplicate) return res.status(409).json({ error: 'That member already holds this position.' });
+
+    await db('member_positions').insert({
+      tenantId,
+      memberId: String(memberId),
+      positionId: String(positionId),
+      ministryId: ministryId ? String(ministryId) : null,
+      startDate: startDate ? new Date(startDate) : new Date(),
+      active: true,
+      assignedBy: (req as any).user?.uid || null,
+      createdAt: new Date(),
+    });
+    return res.json({ success: true });
+  } catch {
+    return res.status(500).json({ error: 'Failed to assign position' });
+  }
+});
+
+/** Remove a position assignment. */
+router.delete('/position-assignments/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    // member_positions uses an auto-incrementing integer id, not a prefixed string.
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid assignment id.' });
+    const removed = await db('member_positions').where({ id, tenantId: tid(req) }).del();
+    if (!removed) return res.status(404).json({ error: 'Assignment not found.' });
+    return res.json({ success: true });
+  } catch {
+    return res.status(500).json({ error: 'Failed to remove position assignment' });
+  }
+});
+
 /* ---- Visitors (first-time / returning + convert to member) ---- */
 router.get('/visitors', async (req: AuthRequest, res) => {
   try {
@@ -1409,10 +1542,87 @@ const CHURCH_ROLES = [
   { role: 'CHURCH_ADMIN', label: 'Church Admin', permissions: ['Full access to all church modules', 'Manage users & roles', 'Manage settings & billing'] },
   { role: 'PASTOR', label: 'Pastor', permissions: ['Members & visitors', 'Finance & giving', 'Events & communication', 'Reports'] },
   { role: 'MINISTRY_LEADER', label: 'Ministry Leader', permissions: ['Assigned ministry members', 'Attendance & events', 'Send communication'] },
+  { role: 'FINANCE', label: 'Finance Officer', permissions: ['Record giving', 'Expenses, budgets & pledges', 'Finance reports'] },
+  { role: 'SECRETARY', label: 'Secretary', permissions: ['Members & visitors', 'Mark attendance (QR, roll call, biometric)', 'Events & service calendar'] },
   { role: 'MEMBER', label: 'Member', permissions: ['View own profile', 'Give online', 'View events'] },
 ];
 router.get('/roles', async (_req: AuthRequest, res) => {
   res.json({ data: CHURCH_ROLES });
+});
+
+/* ---- Role permission matrix, customisable per church ----
+ *
+ * Two layers are combined on read:
+ *   `role_permissions`        platform-wide defaults, set by the super admin
+ *   `church_role_permissions` this church's overrides, keyed (tenantId, role)
+ *
+ * Because the override table is keyed on the tenant, one church editing
+ * "Secretary" is invisible to every other church. A role with no override row
+ * reports the platform default and `customised: false`.
+ *
+ * Platform-level permissions (churches.manage, billing.manage) are stripped on
+ * both read and write, so a church admin cannot award their own church control
+ * of other tenants or of platform billing.
+ *
+ * IMPORTANT: these codes currently drive what the UI offers. Route access in
+ * this file is still enforced by role name via requireRole(...), so unticking a
+ * box here does not by itself revoke an endpoint. Enforcement needs to be moved
+ * onto this matrix before it is described to anyone as a security boundary.
+ */
+router.get('/roles-permissions', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const defaults = await db('role_permissions').catch(() => [] as any[]);
+    const overrides = await db('church_role_permissions')
+      .where({ tenantId: tid(req) })
+      .catch(() => [] as any[]);
+    res.json({
+      data: resolveRolePermissions(defaults as any[], overrides as any[]),
+      catalog: (PERMISSION_CODES as readonly string[]).filter(
+        (c) => !PLATFORM_ONLY_PERMISSIONS.includes(c),
+      ),
+    });
+  } catch {
+    res.status(500).json({ error: 'Failed to load role permissions' });
+  }
+});
+
+/** Save an override for one role, scoped to the calling church. */
+router.put('/roles-permissions/:role', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const role = String(req.params.role || '').toUpperCase();
+    if (!isChurchEditableRole(role)) {
+      return res.status(400).json({ error: 'That role cannot be customised by a church.' });
+    }
+    const codes = sanitizePermissions(req.body?.permissions);
+    const tenantId = tid(req);
+    const existing = await db('church_role_permissions').where({ tenantId, role }).first();
+    if (existing) {
+      await db('church_role_permissions')
+        .where({ tenantId, role })
+        .update({ permissions: serializePermissions(codes), updatedAt: new Date() });
+    } else {
+      await db('church_role_permissions').insert({
+        tenantId,
+        role,
+        permissions: serializePermissions(codes),
+        updatedAt: new Date(),
+      });
+    }
+    return res.json({ success: true, role, permissions: codes });
+  } catch {
+    return res.status(500).json({ error: 'Failed to save role permissions' });
+  }
+});
+
+/** Remove this church's override so the role falls back to the platform default. */
+router.delete('/roles-permissions/:role', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const role = String(req.params.role || '').toUpperCase();
+    await db('church_role_permissions').where({ tenantId: tid(req), role }).del();
+    return res.json({ success: true, role });
+  } catch {
+    return res.status(500).json({ error: 'Failed to reset role permissions' });
+  }
 });
 router.get('/users', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
   try {
@@ -1433,7 +1643,7 @@ router.post('/users', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res)
     if (exists) return res.status(409).json({ error: 'A user with this email already exists' });
     const bcrypt = (await import('bcryptjs')).default;
     const hash = await bcrypt.hash(password || 'ChangeMe123!', 12);
-    const allowedRoles = ['CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'MEMBER'];
+    const allowedRoles = ['CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'FINANCE', 'SECRETARY', 'MEMBER'];
     const finalRole = allowedRoles.includes(role) ? role : 'MEMBER';
     const uid = genId('user');
     await db('users').insert({

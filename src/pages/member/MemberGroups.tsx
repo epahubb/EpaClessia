@@ -104,7 +104,7 @@ export default function MemberGroups() {
       ) : (
         <Grid container spacing={3}>
           {filtered.map((g) => (
-            <Grid item xs={12} sm={6} md={4} key={g.id}>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }} key={g.id}>
               <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                 <CardContent sx={{ flexGrow: 1 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1 }}>

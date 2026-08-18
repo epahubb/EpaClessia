@@ -177,7 +177,7 @@ export default function MemberDirectory() {
       ) : (
         <Grid container spacing={2}>
           {filtered.map((e) => (
-            <Grid item xs={12} sm={6} md={4} key={e.id}>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }} key={e.id}>
               <Card>
                 <CardContent>
                   <Stack direction="row" spacing={2} alignItems="center">

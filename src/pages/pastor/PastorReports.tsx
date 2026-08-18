@@ -106,7 +106,7 @@ export default function PastorReports() {
         {STAT_CARDS(data.summary).map((c) => {
           const Icon = c.icon;
           return (
-            <Grid item xs={12} sm={6} md={4} lg={2} key={c.label}>
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }} key={c.label}>
               <Card>
                 <CardContent>
                   <Stack direction="row" spacing={1.5} alignItems="center">
@@ -141,7 +141,7 @@ export default function PastorReports() {
       </Grid>
 
       <Grid container spacing={3} sx={{ mt: 0.5 }}>
-        <Grid item xs={12} md={6}>
+        <Grid size={{ xs: 12, md: 6 }}>
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6" gutterBottom>
               Giving Trend (GHS)
@@ -157,7 +157,7 @@ export default function PastorReports() {
             </ResponsiveContainer>
           </Paper>
         </Grid>
-        <Grid item xs={12} md={6}>
+        <Grid size={{ xs: 12, md: 6 }}>
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6" gutterBottom>
               Attendance Trend
@@ -173,7 +173,7 @@ export default function PastorReports() {
             </ResponsiveContainer>
           </Paper>
         </Grid>
-        <Grid item xs={12} md={6}>
+        <Grid size={{ xs: 12, md: 6 }}>
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6" gutterBottom>
               New Members Trend
@@ -189,7 +189,7 @@ export default function PastorReports() {
             </ResponsiveContainer>
           </Paper>
         </Grid>
-        <Grid item xs={12} md={6}>
+        <Grid size={{ xs: 12, md: 6 }}>
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6" gutterBottom>
               Pastoral Care Summary

@@ -134,7 +134,7 @@ export default function MemberPrayer() {
       </Box>
 
       <Grid container spacing={3}>
-        <Grid item xs={12} md={5}>
+        <Grid size={{ xs: 12, md: 5 }}>
           <Paper sx={{ p: 3 }}>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
               <HandHeart size={20} />
@@ -184,7 +184,7 @@ export default function MemberPrayer() {
           </Paper>
         </Grid>
 
-        <Grid item xs={12} md={7}>
+        <Grid size={{ xs: 12, md: 7 }}>
           <Paper sx={{ p: 3 }}>
             <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
               <Tab label={`My Requests (${feed.mine.length})`} />

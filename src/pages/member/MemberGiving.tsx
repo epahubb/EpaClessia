@@ -214,7 +214,7 @@ const MemberGiving: React.FC = () => {
 
       {/* Summary cards */}
       <Grid container spacing={2} sx={{ mb: 1 }}>
-        <Grid item xs={12} sm={4}>
+        <Grid size={{ xs: 12, sm: 4 }}>
           <Card variant="outlined" sx={{ borderRadius: 3 }}>
             <CardContent>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ color: 'success.main', mb: 1 }}>
@@ -224,7 +224,7 @@ const MemberGiving: React.FC = () => {
             </CardContent>
           </Card>
         </Grid>
-        <Grid item xs={12} sm={4}>
+        <Grid size={{ xs: 12, sm: 4 }}>
           <Card variant="outlined" sx={{ borderRadius: 3 }}>
             <CardContent>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ color: 'primary.main', mb: 1 }}>
@@ -235,7 +235,7 @@ const MemberGiving: React.FC = () => {
             </CardContent>
           </Card>
         </Grid>
-        <Grid item xs={12} sm={4}>
+        <Grid size={{ xs: 12, sm: 4 }}>
           <Card variant="outlined" sx={{ borderRadius: 3 }}>
             <CardContent>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ color: 'info.main', mb: 1 }}>
@@ -250,7 +250,7 @@ const MemberGiving: React.FC = () => {
 
       <Grid container spacing={3} sx={{ mt: 0 }}>
         {/* Give now */}
-        <Grid item xs={12} md={4}>
+        <Grid size={{ xs: 12, md: 4 }}>
           <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
               <CreditCard size={20} /><Typography variant="h6" fontWeight={700}>Give Now</Typography>
@@ -298,7 +298,7 @@ const MemberGiving: React.FC = () => {
         </Grid>
 
         {/* History */}
-        <Grid item xs={12} md={8}>
+        <Grid size={{ xs: 12, md: 8 }}>
           <Paper variant="outlined" sx={{ borderRadius: 3, overflow: 'hidden' }}>
             <Box sx={{ p: 2.5, pb: 1.5 }}>
               <Typography variant="h6" fontWeight={700}>Giving History</Typography>

@@ -34,6 +34,7 @@ import {
   Settings as SettingsIcon,
   PersonAddAlt1 as VisitorIcon,
   ManageAccounts as UsersIcon,
+  Badge as PositionIcon,
   Security as SecurityIcon,
   Logout as LogoutIcon,
   ChevronLeft as ChevronLeftIcon
@@ -53,6 +54,9 @@ const menuItems = [
   { text: 'Communication', icon: <CommunicationIcon />, path: '/church/communication' },
   { text: 'SMS Bundles', icon: <SmsIcon />, path: '/church/sms-bundles' },
   { text: 'Users & Permissions', icon: <UsersIcon />, path: '/church/users' },
+  // Keep this list in step with the router in App.tsx. A nav entry whose path is
+  // not a registered route falls through to the catch-all and lands on /login.
+  { text: 'Roles & Positions', icon: <PositionIcon />, path: '/church/positions' },
   { text: 'Reports & Analytics', icon: <ReportsIcon />, path: '/church/reports' },
   { text: 'Audit & Security', icon: <SecurityIcon />, path: '/church/audit' },
   { text: 'Settings', icon: <SettingsIcon />, path: '/church/settings' },

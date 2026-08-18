@@ -174,6 +174,46 @@ export const churchApi = {
   deleteUser: async (uid: string) => (await api.delete(`/church/users/${uid}`)).data,
   getRoles: async () => unwrap((await api.get('/church/roles')).data),
 
+  /**
+   * Read this church's role -> permission matrix. Roles the church has not
+   * customised come back with the platform default and `customised: false`.
+   */
+  getRolePermissions: async (): Promise<{
+    data: Array<{ role: string; permissions: string[]; customised: boolean }>;
+    catalog: string[];
+  }> => (await api.get('/church/roles-permissions')).data,
+  /** Save an override for one role in this church only. */
+  saveRolePermissions: async (role: string, permissions: string[]) =>
+    (await api.put(`/church/roles-permissions/${role}`, { permissions })).data,
+  /** Drop this church's override so the role falls back to the platform default. */
+  resetRolePermissions: async (role: string) =>
+    (await api.delete(`/church/roles-permissions/${role}`)).data,
+
+  // ---------------------------------------------------------------------------
+  // Positions (a member's place in the church: Usher, Treasurer, Choir Lead...)
+  // Distinct from ROLE, which controls portal access.
+  // ---------------------------------------------------------------------------
+
+  getPositions: async (params?: any) => unwrap((await api.get('/church/positions', { params })).data),
+  createPosition: async (data: any) => (await api.post('/church/positions', data)).data,
+  updatePosition: async (id: string, data: any) => (await api.put(`/church/positions/${id}`, data)).data,
+  deletePosition: async (id: string) => (await api.delete(`/church/positions/${id}`)).data,
+
+  /** Every assignment in this church, with member and position names resolved. */
+  getPositionAssignments: async () => unwrap((await api.get('/church/position-assignments')).data),
+  /** Positions held by one member. */
+  getMemberPositions: async (memberId: string) =>
+    unwrap((await api.get(`/church/members/${memberId}/positions`)).data),
+  /** Assign a position to a member. Rejects duplicates with 409. */
+  assignPosition: async (data: {
+    memberId: string;
+    positionId: string;
+    ministryId?: string;
+    startDate?: string;
+  }) => (await api.post('/church/position-assignments', data)).data,
+  removePositionAssignment: async (id: number | string) =>
+    (await api.delete(`/church/position-assignments/${id}`)).data,
+
   // ---------------------------------------------------------------------------
   // Attendance: QR codes, manual roll call, biometric devices
   // ---------------------------------------------------------------------------

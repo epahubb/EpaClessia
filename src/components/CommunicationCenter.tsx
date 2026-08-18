@@ -210,7 +210,7 @@ export default function CommunicationCenter({ title = 'Communication' }: { title
 
       {tab === 0 && (
         <Grid container spacing={3}>
-          <Grid item xs={12} md={7}>
+          <Grid size={{ xs: 12, md: 7 }}>
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
@@ -271,7 +271,7 @@ export default function CommunicationCenter({ title = 'Communication' }: { title
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={5}>
+          <Grid size={{ xs: 12, md: 5 }}>
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>

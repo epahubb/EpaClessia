@@ -152,7 +152,7 @@ export default function PastorPrayers() {
       ) : (
         <Grid container spacing={2}>
           {visible.map((p) => (
-            <Grid item xs={12} md={6} key={p.id}>
+            <Grid size={{ xs: 12, md: 6 }} key={p.id}>
               <Card sx={{ height: '100%' }}>
                 <CardContent>
                   <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>

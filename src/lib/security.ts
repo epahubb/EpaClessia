@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import type { SignOptions } from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import db from './db';
@@ -50,7 +51,11 @@ export const comparePassword = async (password: string, hashed: string): Promise
 export const generateToken = (user: AuthUser): string => {
   return jwt.sign(user, JWT_SECRET, {
     algorithm: 'HS256',
-    expiresIn: JWT_EXPIRES_IN,
+    // The expiry comes from config as a plain string ('24h'), while the current
+    // @types/jsonwebtoken narrows expiresIn to its own StringValue template
+    // type. The value is validated at startup, so assert the option type here
+    // rather than loosening the config type everywhere it is used.
+    expiresIn: JWT_EXPIRES_IN as SignOptions['expiresIn'],
   });
 };
 
@@ -69,7 +74,7 @@ export const verifyToken = (token: string): AuthUser | null => {
 export const signAccessToken = (payload: Record<string, unknown>): string => {
   return jwt.sign(payload, JWT_SECRET, {
     algorithm: 'HS256',
-    expiresIn: ACCESS_TOKEN_EXPIRES_IN,
+    expiresIn: ACCESS_TOKEN_EXPIRES_IN as SignOptions['expiresIn'],
   });
 };
 
@@ -80,7 +85,7 @@ export const signAccessToken = (payload: Record<string, unknown>): string => {
 export const signRefreshToken = (payload: Record<string, unknown>): string => {
   return jwt.sign({ ...payload, type: 'refresh' }, JWT_REFRESH_SECRET, {
     algorithm: 'HS256',
-    expiresIn: REFRESH_TOKEN_EXPIRES_IN,
+    expiresIn: REFRESH_TOKEN_EXPIRES_IN as SignOptions['expiresIn'],
   });
 };
 

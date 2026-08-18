@@ -795,6 +795,31 @@ export async function initializeDatabase() {
       console.log('Table "role_permissions" created.');
     }
 
+    /*
+     * Per-church overrides of the role -> permission matrix.
+     *
+     * `role_permissions` above is keyed on `role` alone, so editing it changes
+     * that role for every church on the platform. This table carries a composite
+     * (tenantId, role) key, so one church's customisation is invisible to every
+     * other church. A church with no row here inherits the platform default,
+     * which is why introducing this table changed no existing behaviour.
+     *
+     * The platform table is deliberately left intact rather than having its
+     * primary key widened: rebuilding a live table holding the permission matrix
+     * of every tenant is not a risk worth taking, and SQLite cannot alter a
+     * primary key in place at all.
+     */
+    if (!(await db.schema.hasTable('church_role_permissions'))) {
+      await db.schema.createTable('church_role_permissions', (t) => {
+        t.string('tenantId').notNullable();
+        t.string('role').notNullable();
+        t.text('permissions'); // JSON string array of permission codes
+        t.timestamp('updatedAt').defaultTo(db.fn.now());
+        t.primary(['tenantId', 'role']);
+      });
+      console.log('Table "church_role_permissions" created.');
+    }
+
     /* ==================================================================
      * FEATURE SCHEMA: per-member billing, image storage, church positions,
      * and multi-method attendance.

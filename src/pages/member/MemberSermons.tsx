@@ -118,7 +118,7 @@ export default function MemberSermons() {
       ) : (
         <Grid container spacing={3}>
           {filtered.map((s) => (
-            <Grid item xs={12} sm={6} md={4} key={s.id}>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }} key={s.id}>
               <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                 {s.thumbnailUrl ? (
                   <CardMedia component="img" height="160" image={s.thumbnailUrl} alt={s.title} />

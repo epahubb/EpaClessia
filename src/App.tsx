@@ -13,6 +13,8 @@ import Dashboard from './pages/Dashboard';
 import PastorLayout from './layouts/PastorLayout';
 import MinistryLeaderLayout from './layouts/MinistryLeaderLayout';
 import MemberLayout from './layouts/MemberLayout';
+import FinanceLayout from './layouts/FinanceLayout';
+import SecretaryLayout from './layouts/SecretaryLayout';
 
 // Portal Dashboards
 import PastorDashboard from './pages/pastor/PastorDashboard';
@@ -59,6 +61,7 @@ import ChurchVisitorsPage from './pages/church/Visitors';
 import ChurchMinistriesPage from './pages/church/Ministries';
 import ChurchFinancePage from './pages/church/Finance';
 import ChurchUsersPage from './pages/church/UsersPermissions';
+import ChurchPositionsPage from './pages/church/Positions';
 import ChurchReportsPage from './pages/church/Reports';
 import ChurchSmsBundlesPage from './pages/church/SmsBundles';
 import ChurchAuditPage from './pages/church/AuditSecurity';
@@ -106,6 +109,7 @@ const App: React.FC = () => {
             <Route path="/church/communication" element={<ChurchCommunicationPage />} />
             <Route path="/church/sms-bundles" element={<ChurchSmsBundlesPage />} />
             <Route path="/church/users" element={<ChurchUsersPage />} />
+            <Route path="/church/positions" element={<ChurchPositionsPage />} />
             <Route path="/church/reports" element={<ChurchReportsPage />} />
             <Route path="/church/audit" element={<ChurchAuditPage />} />
             <Route path="/church/settings" element={<ChurchSettingsPage />} />
@@ -147,6 +151,34 @@ const App: React.FC = () => {
             <Route path="/member/directory" element={<MemberDirectory />} />
             <Route path="/member/attendance" element={<MemberAttendance />} />
             <Route path="/member" element={<Navigate to="/member/dashboard" replace />} />
+          </Route>
+
+          {/*
+            Finance Portal
+
+            Reuses the church finance and reports screens. A finance officer may
+            record giving and manage expenses, budgets and pledges; the server
+            grants FINANCE write access to exactly those tables and nothing else.
+          */}
+          <Route element={<ProtectedRoute allowedRoles={['FINANCE', 'CHURCH_ADMIN', 'PASTOR']}><FinanceLayout /></ProtectedRoute>}>
+            <Route path="/finance/dashboard" element={<ChurchFinancePage />} />
+            <Route path="/finance/reports" element={<ChurchReportsPage />} />
+            <Route path="/finance" element={<Navigate to="/finance/dashboard" replace />} />
+          </Route>
+
+          {/*
+            Secretary Portal
+
+            Attendance is the landing screen because marking the roll is the
+            secretary's core task. SECRETARY is included in ATTENDANCE_ROLES on
+            the server, so the QR, roll-call and biometric tabs all work here.
+          */}
+          <Route element={<ProtectedRoute allowedRoles={['SECRETARY', 'CHURCH_ADMIN', 'PASTOR']}><SecretaryLayout /></ProtectedRoute>}>
+            <Route path="/secretary/dashboard" element={<ChurchAttendancePage />} />
+            <Route path="/secretary/members" element={<MemberList />} />
+            <Route path="/secretary/visitors" element={<ChurchVisitorsPage />} />
+            <Route path="/secretary/events" element={<ChurchEventsPage />} />
+            <Route path="/secretary" element={<Navigate to="/secretary/dashboard" replace />} />
           </Route>
 
           {/* Fallback routes */}

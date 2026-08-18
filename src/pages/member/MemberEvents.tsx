@@ -238,7 +238,7 @@ export default function MemberEvents() {
       ) : (
         <Grid container spacing={3}>
           {events.map((ev) => (
-            <Grid item xs={12} md={6} lg={4} key={ev.id}>
+            <Grid size={{ xs: 12, md: 6, lg: 4 }} key={ev.id}>
               <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                 <CardContent sx={{ flexGrow: 1 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>

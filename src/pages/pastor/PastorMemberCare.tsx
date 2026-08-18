@@ -113,7 +113,7 @@ export default function PastorMemberCare() {
       </Box>
 
       <Grid container spacing={3}>
-        <Grid item xs={12} md={4}>
+        <Grid size={{ xs: 12, md: 4 }}>
           <Paper sx={{ p: 2 }}>
             <TextField
               fullWidth
@@ -155,7 +155,7 @@ export default function PastorMemberCare() {
           </Paper>
         </Grid>
 
-        <Grid item xs={12} md={8}>
+        <Grid size={{ xs: 12, md: 8 }}>
           {!selected ? (
             <Paper sx={{ p: 6, textAlign: 'center' }}>
               <User size={40} style={{ opacity: 0.4 }} />
@@ -230,7 +230,7 @@ export default function PastorMemberCare() {
               </Paper>
 
               <Grid container spacing={3}>
-                <Grid item xs={12} sm={6}>
+                <Grid size={{ xs: 12, sm: 6 }}>
                   <Paper sx={{ p: 3, height: '100%' }}>
                     <Typography variant="subtitle1" fontWeight={700} gutterBottom>
                       Prayer history
@@ -248,7 +248,7 @@ export default function PastorMemberCare() {
                     )}
                   </Paper>
                 </Grid>
-                <Grid item xs={12} sm={6}>
+                <Grid size={{ xs: 12, sm: 6 }}>
                   <Paper sx={{ p: 3, height: '100%' }}>
                     <Typography variant="subtitle1" fontWeight={700} gutterBottom>
                       Visit history

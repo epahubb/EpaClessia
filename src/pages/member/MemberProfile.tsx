@@ -152,7 +152,7 @@ export default function MemberProfile() {
 
       <Grid container spacing={3}>
         {/* Left: editable form */}
-        <Grid item xs={12} md={8}>
+        <Grid size={{ xs: 12, md: 8 }}>
           <Paper sx={{ p: 3 }}>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
               <User size={18} />
@@ -177,26 +177,26 @@ export default function MemberProfile() {
             </Stack>
 
             <Grid container spacing={2}>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="First name" fullWidth value={form.firstName || ''} onChange={(e) => setField('firstName', e.target.value)} />
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="Last name" fullWidth value={form.lastName || ''} onChange={(e) => setField('lastName', e.target.value)} />
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="Email" fullWidth value={data?.account.email || ''} disabled helperText="Managed by your login" />
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="Phone" fullWidth value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} />
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField select label="Gender" fullWidth value={form.gender || ''} onChange={(e) => setField('gender', e.target.value)}>
                   <MenuItem value="">Prefer not to say</MenuItem>
                   <MenuItem value="Male">Male</MenuItem>
                   <MenuItem value="Female">Female</MenuItem>
                 </TextField>
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField select label="Marital status" fullWidth value={form.maritalStatus || ''} onChange={(e) => setField('maritalStatus', e.target.value)}>
                   <MenuItem value="">—</MenuItem>
                   <MenuItem value="Single">Single</MenuItem>
@@ -205,16 +205,16 @@ export default function MemberProfile() {
                   <MenuItem value="Divorced">Divorced</MenuItem>
                 </TextField>
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="Date of birth" type="date" fullWidth InputLabelProps={{ shrink: true }} value={form.dateOfBirth || ''} onChange={(e) => setField('dateOfBirth', e.target.value)} />
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="Anniversary" type="date" fullWidth InputLabelProps={{ shrink: true }} value={form.anniversaryDate || ''} onChange={(e) => setField('anniversaryDate', e.target.value)} />
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <TextField label="Occupation" fullWidth value={form.occupation || ''} onChange={(e) => setField('occupation', e.target.value)} />
               </Grid>
-              <Grid item xs={12}>
+              <Grid size={{ xs: 12 }}>
                 <TextField label="Address" fullWidth multiline minRows={2} value={form.address || ''} onChange={(e) => setField('address', e.target.value)} />
               </Grid>
             </Grid>
@@ -231,7 +231,7 @@ export default function MemberProfile() {
               How would you like to hear from your church?
             </Typography>
             <Grid container spacing={2} sx={{ mt: 0.5 }}>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <Typography variant="subtitle2" gutterBottom>
                   Channels
                 </Typography>
@@ -250,7 +250,7 @@ export default function MemberProfile() {
                   ))}
                 </FormGroup>
               </Grid>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <Typography variant="subtitle2" gutterBottom>
                   Topics
                 </Typography>
@@ -280,7 +280,7 @@ export default function MemberProfile() {
         </Grid>
 
         {/* Right: digital member card + family */}
-        <Grid item xs={12} md={4}>
+        <Grid size={{ xs: 12, md: 4 }}>
           <Card
             sx={{
               mb: 3,

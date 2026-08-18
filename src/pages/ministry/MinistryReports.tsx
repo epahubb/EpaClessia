@@ -136,7 +136,7 @@ export default function MinistryReports() {
             {cards.map((c) => {
               const Icon = c.icon;
               return (
-                <Grid item xs={12} sm={6} md={3} key={c.label}>
+                <Grid size={{ xs: 12, sm: 6, md: 3 }} key={c.label}>
                   <Card>
                     <CardContent>
                       <Stack direction="row" spacing={1.5} alignItems="center">
@@ -171,7 +171,7 @@ export default function MinistryReports() {
           </Grid>
 
           <Grid container spacing={3} sx={{ mt: 0.5 }}>
-            <Grid item xs={12} md={6}>
+            <Grid size={{ xs: 12, md: 6 }}>
               <Paper sx={{ p: 3 }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
                   <Percent size={18} />
@@ -190,7 +190,7 @@ export default function MinistryReports() {
                 </Typography>
               </Paper>
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid size={{ xs: 12, md: 6 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h6" gutterBottom>
                   Attendance Rate (%)
@@ -206,7 +206,7 @@ export default function MinistryReports() {
                 </ResponsiveContainer>
               </Paper>
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid size={{ xs: 12, md: 6 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h6" gutterBottom>
                   Tasks Completed
@@ -222,7 +222,7 @@ export default function MinistryReports() {
                 </ResponsiveContainer>
               </Paper>
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid size={{ xs: 12, md: 6 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h6" gutterBottom>
                   Roster Growth

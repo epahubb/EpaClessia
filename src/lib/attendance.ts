@@ -92,8 +92,12 @@ export function safeEquals(a: string, b: string): boolean {
   return timingSafeEqual(hashA, hashB);
 }
 
+// `reason` is declared (as undefined) on the success branch too. This project
+// compiles with strictNullChecks off, which stops TypeScript from narrowing a
+// union on a boolean discriminant, so callers inside `if (!check.ok)` could not
+// otherwise read `check.reason` without a cast.
 export type QrCheckResult =
-  | { ok: true }
+  | { ok: true; reason?: undefined }
   | { ok: false; reason: 'no_token' | 'expired' | 'mismatch' };
 
 /**

@@ -1,6 +1,13 @@
 export * from './church';
 
-export type UserRole = 'SUPER_ADMIN' | 'CHURCH_ADMIN' | 'PASTOR' | 'MINISTRY_LEADER' | 'MEMBER';
+export type UserRole =
+  | 'SUPER_ADMIN'
+  | 'CHURCH_ADMIN'
+  | 'PASTOR'
+  | 'MINISTRY_LEADER'
+  | 'FINANCE'
+  | 'SECRETARY'
+  | 'MEMBER';
 
 export interface User {
   id: string;
@@ -74,6 +81,9 @@ export interface Tenant {
   city: string;
   street: string;
   logo?: string;
+  // Rendered by the super-admin churches table. Optional because older tenant
+  // rows predate the column.
+  websiteUrl?: string;
 }
 
 export interface SubscriptionPlan {
