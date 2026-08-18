@@ -17,13 +17,18 @@ jobs:
         with:
           node-version: '22'
 
-      # `npm ci` requires a committed package-lock.json and hard-fails without
-      # one. Fall back to `npm install` so the pipeline still runs, and surface a
-      # warning so the missing lockfile does not go unnoticed.
+      # `npm ci` hard-fails both when no package-lock.json is committed and when
+      # the lockfile has drifted out of sync with package.json (error EUSAGE,
+      # "Missing: <pkg> from lock file"). Fall back to `npm install` in both
+      # cases so the pipeline still reports real test and typecheck results,
+      # but annotate the run so the drift is visible rather than silent.
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
-            npm ci
+            if ! npm ci; then
+              echo "::warning::package-lock.json is out of sync with package.json. Run 'npm install' locally and commit the updated lockfile to restore reproducible builds."
+              npm install
+            fi
           else
             echo "::warning::No package-lock.json found. Builds are not reproducible; run 'npm install' locally and commit the lockfile."
             npm install

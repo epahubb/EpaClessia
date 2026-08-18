@@ -7,10 +7,25 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-# Prefer `npm ci` for a reproducible build, but fall back to `npm install` when
-# no package-lock.json has been committed yet (`npm ci` hard-fails without one).
-# Commit a package-lock.json to get deterministic builds.
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# Prefer `npm ci` for a reproducible build. Two separate things make `npm ci`
+# hard-fail, and neither should be able to take a deployment down:
+#   1. No package-lock.json committed at all.
+#   2. package.json and package-lock.json have drifted apart, because a
+#      dependency was added without regenerating the lock (npm error EUSAGE,
+#      "Missing: <pkg> from lock file").
+# In both cases fall back to `npm install`, which resolves from package.json,
+# and print a loud warning. Commit a regenerated lockfile to get determinism
+# back: a fallback build is correct but not byte-for-byte reproducible.
+RUN if [ -f package-lock.json ]; then \
+      npm ci || { \
+        echo "WARNING: package-lock.json is out of sync with package.json."; \
+        echo "WARNING: falling back to 'npm install'. Run 'npm install' locally and commit package-lock.json."; \
+        npm install; \
+      }; \
+    else \
+      echo "WARNING: no package-lock.json committed. This build is not reproducible."; \
+      npm install; \
+    fi
 
 # ---- Stage 2: build the frontend bundle and the server bundle ---------------
 FROM node:22-alpine AS build
@@ -23,7 +38,14 @@ RUN npm run build
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
 COPY package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+RUN if [ -f package-lock.json ]; then \
+      npm ci --omit=dev || { \
+        echo "WARNING: package-lock.json is out of sync with package.json. Falling back to 'npm install'."; \
+        npm install --omit=dev; \
+      }; \
+    else \
+      npm install --omit=dev; \
+    fi
 
 # ---- Stage 4: runtime -------------------------------------------------------
 FROM node:22-alpine AS runtime
