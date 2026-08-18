@@ -174,6 +174,66 @@ export const churchApi = {
   deleteUser: async (uid: string) => (await api.delete(`/church/users/${uid}`)).data,
   getRoles: async () => unwrap((await api.get('/church/roles')).data),
 
+  // ---------------------------------------------------------------------------
+  // Attendance: QR codes, manual roll call, biometric devices
+  // ---------------------------------------------------------------------------
+
+  /** Issue a fresh QR token (server TTL is 10 minutes). */
+  issueEventQr: async (
+    eventId: string,
+  ): Promise<{ payload: string; token: string; expiresAt: string; ttlMinutes: number }> =>
+    (await api.post(`/church/events/${eventId}/qr`, {})).data,
+  /** Read the current token, if one is still valid. */
+  getEventQr: async (
+    eventId: string,
+  ): Promise<{ payload?: string; expiresAt?: string; active?: boolean; ttlMinutes?: number }> =>
+    (await api.get(`/church/events/${eventId}/qr`)).data,
+
+  /** Roll call sheet. `present` is true, false, or null when unmarked. */
+  getRollCall: async (
+    eventId: string,
+  ): Promise<{
+    entries: Array<{
+      memberId: string;
+      name: string;
+      present: boolean | null;
+      method?: string | null;
+      recordedAt?: string | null;
+    }>;
+    summary?: { present: number; absent: number; unmarked: number; total: number };
+  }> => (await api.get(`/church/events/${eventId}/rollcall`)).data,
+  /** Save changed marks only. Unmarked members are left untouched. */
+  saveRollCall: async (
+    eventId: string,
+    entries: Array<{ memberId: string; present: boolean }>,
+  ) => (await api.post(`/church/events/${eventId}/rollcall`, { entries })).data,
+
+  getBiometricDevices: async () => unwrap((await api.get('/church/biometric/devices')).data),
+  /**
+   * Register a device. `apiKey` comes back in plain text ONCE and is never
+   * retrievable again -- the server keeps only a hash.
+   */
+  createBiometricDevice: async (data: {
+    name: string;
+    serialNumber?: string;
+    location?: string;
+  }): Promise<{ id: string; name: string; apiKey: string }> =>
+    (await api.post('/church/biometric/devices', data)).data,
+  updateBiometricDevice: async (id: string, data: any) =>
+    (await api.put(`/church/biometric/devices/${id}`, data)).data,
+  deleteBiometricDevice: async (id: string) =>
+    (await api.delete(`/church/biometric/devices/${id}`)).data,
+  /** New key, old key invalidated. Same one-time display rule. */
+  rotateBiometricDeviceKey: async (id: string): Promise<{ apiKey: string }> =>
+    (await api.post(`/church/biometric/devices/${id}/rotate-key`, {})).data,
+
+  /** Device punches. Use status 'unmatched' to find unknown fingerprints. */
+  getBiometricPunches: async (params?: { status?: string; limit?: number }) =>
+    unwrap((await api.get('/church/biometric/punches', { params })).data),
+  /** Link a member to the fingerprint ID enrolled on the device. */
+  linkMemberBiometric: async (memberId: string, biometricId: string) =>
+    (await api.post(`/church/members/${memberId}/biometric`, { biometricId })).data,
+
   // Audit & security
   getActivityLog: async () => unwrap((await api.get('/church/activity-log')).data),
 };

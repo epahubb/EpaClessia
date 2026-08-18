@@ -7,8 +7,7 @@ import {
 import { 
   Menu as MenuIcon, LayoutDashboard, User, 
   CreditCard, Calendar, Users, MessageCircle, 
-  PlayCircle, BookOpen, LogOut, Bell, ShieldCheck
-} from 'lucide-react';
+  PlayCircle, BookOpen, LogOut, Bell, ShieldCheck, QrCode } from 'lucide-react';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useColorMode } from '../contexts/ThemeContext';
@@ -38,6 +37,7 @@ const MemberLayout: React.FC = () => {
     { text: 'My Profile', icon: <User size={20} />, path: '/member/profile' },
     { text: 'Giving', icon: <CreditCard size={20} />, path: '/member/giving' },
     { text: 'Events', icon: <Calendar size={20} />, path: '/member/events' },
+    { text: 'Attendance', icon: <QrCode size={20} />, path: '/member/attendance' },
     { text: 'Groups', icon: <Users size={20} />, path: '/member/groups' },
     { text: 'Prayer', icon: <MessageCircle size={20} />, path: '/member/prayer' },
     { text: 'Sermons', icon: <PlayCircle size={20} />, path: '/member/sermons' },

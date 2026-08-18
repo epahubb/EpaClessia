@@ -36,6 +36,7 @@ import MemberGroups from './pages/member/MemberGroups';
 import MemberPrayer from './pages/member/MemberPrayer';
 import MemberSermons from './pages/member/MemberSermons';
 import MemberDirectory from './pages/member/MemberDirectory';
+import MemberAttendance from './pages/member/MemberAttendance';
 import Churches from './pages/Churches';
 import Subscriptions from './pages/Subscriptions';
 import Users from './pages/Users';
@@ -144,6 +145,7 @@ const App: React.FC = () => {
             <Route path="/member/prayer" element={<MemberPrayer />} />
             <Route path="/member/sermons" element={<MemberSermons />} />
             <Route path="/member/directory" element={<MemberDirectory />} />
+            <Route path="/member/attendance" element={<MemberAttendance />} />
             <Route path="/member" element={<Navigate to="/member/dashboard" replace />} />
           </Route>
 
