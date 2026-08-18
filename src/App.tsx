@@ -6,6 +6,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import SuperAdminLayout from './layouts/SuperAdminLayout';
 import { ChurchAdminLayout } from './layouts/ChurchAdminLayout';
 import LoginPage from './pages/LoginPage';
+import RoleLanding from './components/RoleLanding';
 import Dashboard from './pages/Dashboard';
 
 // Portal Layouts (Pastor / Ministry Leader / Member)
@@ -83,8 +84,14 @@ const App: React.FC = () => {
             <Route path="settings" element={<Settings />} />
           </Route>
 
-          <Route path="/dashboard" element={<Navigate to="/super-admin" replace />} />
-          <Route path="/" element={<Navigate to="/super-admin" replace />} />
+          {/*
+            Land people according to their actual role. These two paths used to
+            redirect unconditionally to /super-admin, which pushed every visitor
+            into the platform-admin area and produced a 403 wall for anyone who
+            was not a super admin, with no route back to the login screen.
+          */}
+          <Route path="/dashboard" element={<RoleLanding />} />
+          <Route path="/" element={<RoleLanding />} />
 
           {/* Church Admin Routes */}
           <Route element={<ProtectedRoute allowedRoles={['CHURCH_ADMIN']}><ChurchAdminLayout /></ProtectedRoute>}>
