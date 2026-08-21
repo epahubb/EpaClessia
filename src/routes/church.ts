@@ -575,9 +575,27 @@ router.get('/events', async (req: AuthRequest, res) => {
 
 router.post('/events', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
   try {
-    const { title, description, location, startTime, endTime, category } = req.body;
+    const { description, location, startTime, endTime, category } = req.body;
+    // Accept `name` as an alias for `title`. The church Events form posted `name`
+    // for a long time and every create was rejected here with a 400 that the UI
+    // reported as a generic "Failed to create event." The UI now sends `title`,
+    // but accepting both means no other caller can fall into the same trap.
+    const title = req.body?.title || req.body?.name;
     if (!title || !startTime) {
-      return res.status(400).json({ error: 'title and startTime are required' });
+      return res.status(400).json({
+        error: 'An event name and a start time are both required.',
+      });
+    }
+    const start = new Date(startTime);
+    if (Number.isNaN(start.getTime())) {
+      return res.status(400).json({ error: 'That start time is not a valid date and time.' });
+    }
+    const end = endTime ? new Date(endTime) : null;
+    if (end && Number.isNaN(end.getTime())) {
+      return res.status(400).json({ error: 'That end time is not a valid date and time.' });
+    }
+    if (end && end.getTime() < start.getTime()) {
+      return res.status(400).json({ error: 'The end time cannot be before the start time.' });
     }
     const event = {
       id: genId('event'),
@@ -585,15 +603,19 @@ router.post('/events', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 
       title,
       description: description || null,
       location: location || null,
-      startTime: new Date(startTime),
-      endTime: endTime ? new Date(endTime) : null,
+      startTime: start,
+      endTime: end,
       category: category || 'service',
       createdBy: req.user?.uid || null,
       createdAt: new Date(),
     };
     await db('events').insert(event);
+    await logActivity(req, 'create', 'events', event.id);
     res.status(201).json(event);
   } catch (error) {
+    // This catch was silent, which is why the failure never appeared in the
+    // deploy logs and had to be diagnosed by reading both sides of the call.
+    console.error('POST /events error:', error);
     res.status(500).json({ error: 'Failed to create event' });
   }
 });

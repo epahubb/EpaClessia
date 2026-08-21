@@ -31,14 +31,29 @@ export const ChurchEventsPage: React.FC = () => {
 
   const create = async () => {
     setSaving(true);
+    setMsg(null);
     try {
-      await churchApi.createEvent(form);
+      // The API field is `title`, but this form has always held it as `name` and
+      // posted the raw form object. The server therefore saw no title and replied
+      // 400 "title and startTime are required", which the old bare `catch` threw
+      // away and reported as a generic failure. Map it explicitly.
+      await churchApi.createEvent({
+        title: form.name,
+        startTime: form.startTime,
+        location: form.location || undefined,
+        description: form.description || undefined,
+      });
       setMsg({ type: 'success', text: 'Event created.' });
       setOpen(false);
       setForm({ name: '', location: '', startTime: '', description: '' });
       await load();
-    } catch {
-      setMsg({ type: 'error', text: 'Failed to create event.' });
+    } catch (e: any) {
+      // Surface what the server actually said, so a validation problem is
+      // readable instead of hidden behind one generic sentence.
+      setMsg({
+        type: 'error',
+        text: e?.friendlyMessage || e?.response?.data?.error || 'Failed to create event.',
+      });
     } finally {
       setSaving(false);
     }
@@ -122,14 +137,14 @@ export const ChurchEventsPage: React.FC = () => {
         <DialogContent>
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid size={{ xs: 12 }}><TextField fullWidth label="Event name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Grid>
-            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth type="datetime-local" label="Start time" InputLabelProps={{ shrink: true }} value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth required type="datetime-local" label="Start time" InputLabelProps={{ shrink: true }} value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} helperText="Required" /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Grid>
             <Grid size={{ xs: 12 }}><TextField fullWidth multiline minRows={2} label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Grid>
           </Grid>
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
           <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={create} disabled={saving || !form.name} sx={{ fontWeight: 700 }}>Create</Button>
+          <Button variant="contained" onClick={create} disabled={saving || !form.name || !form.startTime} sx={{ fontWeight: 700 }}>Create</Button>
         </DialogActions>
       </Dialog>
 
