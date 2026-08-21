@@ -65,10 +65,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    // Ask the server to clear the httpOnly `token` / `refreshToken` cookies,
+    // which this code cannot touch itself. Fire-and-forget with a bare fetch:
+    // it must not go through the axios interceptor (which reacts to 401s by
+    // forcing a redirect), and local state must be cleared even if the request
+    // fails. `keepalive` lets it survive the navigation that follows.
+    try {
+      const base = import.meta.env.VITE_API_URL || '/api/v1';
+      void fetch(`${base}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) {
+      // Never block signing out on a network failure.
+    }
+
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
+    // These two were left behind before: the active tenant context, and the
+    // super admin's own token stashed while impersonating a church.
+    localStorage.removeItem('currentContext');
+    localStorage.removeItem('original_sa_token');
     setUser(null);
     setCurrentContext(null);
   };

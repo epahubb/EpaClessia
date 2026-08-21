@@ -260,6 +260,29 @@ async function startServer() {
     }
   });
 
+  // End the session. Deliberately unauthenticated: signing out has to work even
+  // when the access token has already expired, which is the usual case.
+  //
+  // The login route sets httpOnly `token` and `refreshToken` cookies. Browser
+  // JavaScript cannot delete an httpOnly cookie, so before this route existed a
+  // "logged out" browser still held a valid refreshToken cookie for 30 days and
+  // could mint fresh access tokens from POST /auth/refresh, which reads
+  // req.cookies.refreshToken. Clearing them here is what actually ends the
+  // session rather than just hiding it from the UI.
+  app.post("/api/v1/auth/logout", (req, res) => {
+    const clearOpts = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict' as const,
+      path: '/',
+    };
+    // Options must match those used when setting the cookie or the browser
+    // keeps the original.
+    res.clearCookie('token', clearOpts);
+    res.clearCookie('refreshToken', clearOpts);
+    return res.status(204).end();
+  });
+
   // API routes
   // Readiness probe: reports whether the database finished initializing.
   // Returns 503 until it does, so it is suitable for deploy gating -- but NOT
