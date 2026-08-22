@@ -22,6 +22,9 @@ export async function sendSMS(
   }
 
   try {
+    // The braces that used to wrap this template literal were part of the URL
+    // string itself, so every request went to an invalid host and no SMS was
+    // ever delivered.
     const url = `https://api.mnotify.com/syapi/bulk_sms?key=${MNOTIFY_API_KEY}`;
     const response = await axios.post(url, {
       recipient: [recipient],

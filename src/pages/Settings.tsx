@@ -47,6 +47,17 @@ const SECTIONS: Section[] = [
     { key: 'secretKey', label: 'Secret key', type: 'password' },
     { key: 'currency', label: 'Currency', type: 'select', options: ['GHS', 'NGN', 'USD'] },
     { key: 'enabled', label: 'Enable online payments', type: 'bool' },
+    /*
+     * Transaction charge applied to every transaction that runs through the
+     * platform: online giving, SMS bundle purchases and invoices. "Payer"
+     * adds the charge on top of the amount; "recipient" deducts it from what
+     * the church receives.
+     */
+    { key: 'transactionChargeEnabled', label: 'Apply a transaction charge', type: 'bool' },
+    { key: 'transactionChargePercent', label: 'Charge percentage (%)', type: 'number' },
+    { key: 'transactionChargeFlat', label: 'Flat charge per transaction', type: 'number' },
+    { key: 'transactionChargeCap', label: 'Maximum charge (0 = no cap)', type: 'number' },
+    { key: 'transactionChargeBearer', label: 'Who pays the charge', type: 'select', options: ['payer', 'recipient'] },
   ] },
   { key: 'security', label: 'Security', icon: <ShieldCheck size={18} />, description: 'Authentication & session policy.', fields: [
     { key: 'passwordMinLength', label: 'Minimum password length', type: 'number' },

@@ -347,6 +347,89 @@ async function startServer() {
     }
   });
 
+  /*
+   * Public absence questionnaire.
+   *
+   * A member who missed a service receives an SMS and an email containing a
+   * link to this questionnaire. The token in the link is the only credential:
+   * these two routes are therefore deliberately unauthenticated, but they are
+   * also strictly limited -- a token identifies exactly one follow-up, can be
+   * answered once, expires, and reveals nothing beyond the member's own first
+   * name and the service they missed.
+   */
+  const absenceReasonOptions = [
+    'I was unwell',
+    'I was travelling',
+    'Work or business commitment',
+    'Family responsibility',
+    'Transport or distance',
+    'I have joined another church',
+    'I felt hurt or unwelcome',
+    'Other',
+  ];
+
+  app.get("/api/v1/public/absence-survey/:token", async (req, res) => {
+    try {
+      const survey = await db('absence_surveys').where({ token: req.params.token }).first();
+      if (!survey) {
+        return res.status(404).json({ error: 'This questionnaire link is not valid.' });
+      }
+      if (survey.expiresAt && new Date(survey.expiresAt).getTime() < Date.now()) {
+        return res.status(410).json({ error: 'This questionnaire link has expired. Please contact your church directly.' });
+      }
+      const tenant = await db('tenants').where({ id: survey.tenantId }).first();
+      res.json({
+        churchName: tenant?.name || 'Your church',
+        memberFirstName: String(survey.memberName || '').split(' ')[0] || null,
+        eventName: survey.eventName || null,
+        alreadyResponded: survey.status === 'responded',
+        respondedAt: survey.respondedAt || null,
+        reasonOptions: absenceReasonOptions,
+      });
+    } catch (error) {
+      console.error('GET /public/absence-survey error:', error);
+      res.status(500).json({ error: 'Could not open this questionnaire. Please try again.' });
+    }
+  });
+
+  app.post("/api/v1/public/absence-survey/:token", async (req, res) => {
+    try {
+      const survey = await db('absence_surveys').where({ token: req.params.token }).first();
+      if (!survey) {
+        return res.status(404).json({ error: 'This questionnaire link is not valid.' });
+      }
+      if (survey.expiresAt && new Date(survey.expiresAt).getTime() < Date.now()) {
+        return res.status(410).json({ error: 'This questionnaire link has expired.' });
+      }
+      // Answer once: without this a public link could be used to spam the
+      // pastoral team's follow-up list.
+      if (survey.status === 'responded') {
+        return res.status(409).json({ error: 'Thank you - a response has already been recorded for this link.' });
+      }
+
+      const reasonCategory = String(req.body?.reasonCategory || '').trim();
+      const reason = String(req.body?.reason || '').trim();
+      if (!reasonCategory && !reason) {
+        return res.status(400).json({ error: 'Please choose a reason or write a short note.' });
+      }
+
+      await db('absence_surveys').where({ id: survey.id }).update({
+        status: 'responded',
+        reasonCategory: reasonCategory ? reasonCategory.slice(0, 120) : null,
+        reason: reason ? reason.slice(0, 2000) : null,
+        // A member can ask for a visit or a call; the pastoral team sees this
+        // flag on the follow-up list.
+        needsFollowUp: req.body?.needsFollowUp ? 'yes' : 'no',
+        respondedAt: new Date(),
+      });
+
+      res.json({ success: true, message: 'Thank you for letting us know.' });
+    } catch (error) {
+      console.error('POST /public/absence-survey error:', error);
+      res.status(500).json({ error: 'Could not save your response. Please try again.' });
+    }
+  });
+
   // ---- Two-factor authentication self-service (any authenticated user) ----
   app.get("/api/v1/auth/2fa/status", authenticate, async (req, res) => {
     try {

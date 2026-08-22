@@ -48,6 +48,7 @@ const menuItems = [
   { text: 'Members', icon: <PeopleIcon />, path: '/church/members' },
   { text: 'Visitors', icon: <VisitorIcon />, path: '/church/visitors' },
   { text: 'Attendance', icon: <AttendanceIcon />, path: '/church/attendance' },
+  { text: 'Engagement & Follow-up', icon: <AttendanceIcon />, path: '/church/engagement' },
   { text: 'Ministries & Groups', icon: <MinistryIcon />, path: '/church/ministries' },
   { text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
   { text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },

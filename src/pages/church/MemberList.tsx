@@ -40,6 +40,17 @@ const MemberAvatar: React.FC<{ row: any }> = ({ row }) => {
   );
 };
 
+/**
+ * Engagement is calculated from attendance (see Engagement & Follow-up), so it
+ * is shown here read-only alongside the membership status a church sets itself.
+ */
+const engagementColor = (status: string): any => ({
+  active: 'success',
+  inactive: 'warning',
+  backslider: 'error',
+  new: 'info',
+}[String(status).toLowerCase()] || 'default');
+
 export const MemberList: React.FC = () => {
   const [importOpen, setImportOpen] = useState(false);
 
@@ -58,6 +69,15 @@ export const MemberList: React.FC = () => {
           { key: 'email', label: 'Email' },
           { key: 'phone', label: 'Phone' },
           { key: 'membershipStatus', label: 'Status', render: (r: any) => <Chip size="small" label={r.membershipStatus || 'active'} color={statusColor(r.membershipStatus || 'active')} sx={{ textTransform: 'capitalize' }} /> },
+          {
+            // Worked out from attendance, not typed by hand. Blank until the
+            // church runs a recalculation from Engagement & Follow-up.
+            key: 'engagementStatus',
+            label: 'Engagement',
+            render: (r: any) => r.engagementStatus
+              ? <Chip size="small" label={r.engagementStatus} color={engagementColor(r.engagementStatus)} sx={{ textTransform: 'capitalize' }} />
+              : '—',
+          },
           { key: 'occupation', label: 'Occupation' },
         ]}
         fields={[

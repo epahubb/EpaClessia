@@ -1,5 +1,6 @@
 import db from './db';
 import bcrypt from 'bcryptjs';
+import { applyFeatureMigrations } from './db-migrations-features';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -1192,6 +1193,10 @@ export async function initializeDatabase() {
       }
       console.log('Seed: Default SMS packages initialized.');
     }
+
+    // Additive migrations for newer features (payment details, transaction
+    // charges, member engagement, absence follow-ups, custom purposes).
+    await applyFeatureMigrations(db);
 
     console.log('Database initialization complete.');
   } catch (error) {

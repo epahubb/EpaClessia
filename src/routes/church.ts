@@ -35,6 +35,26 @@ import {
   serializePermissions,
   resolveRolePermissions,
 } from '../lib/permissions';
+import {
+  getPlatformGateway,
+  getTransactionCharge,
+  applyTransactionCharge,
+  isSuperadminManagedSetting,
+  SUPERADMIN_MANAGED_CHURCH_SETTINGS,
+  getPlatformSettings,
+} from '../lib/platformSettings';
+import {
+  normalizePaymentDetails,
+  validatePaymentDetails,
+  paymentDetailSchema,
+  PAYMENT_DETAIL_FIELDS,
+} from '../lib/paymentDetails';
+import {
+  classifyMember,
+  resolveThresholds,
+  shouldFollowUp,
+} from '../lib/engagement';
+import { sendEmail, emailTemplate, getEmailConfig } from '../services/email';
 
 /**
  * Tenant-scoped church application API.
@@ -712,6 +732,26 @@ router.get('/events/:id/attendance', async (req: AuthRequest, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Payment gateway resolution                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The gateway credentials to use for a church's own collections (member
+ * giving). The payment gateway is provisioned by the super admin, either
+ * per-church (written into church_settings by the platform admin) or once for
+ * the whole platform, so a church never has to hold API keys itself.
+ */
+async function resolveGateway(tenantId: string): Promise<{ secretKey: string; currency: string; provider: string }> {
+  const perChurch = await getTenantSettings(tenantId, 'paystack');
+  const platform = await getPlatformGateway();
+  return {
+    secretKey: perChurch?.secretKey || platform.secretKey,
+    currency: perChurch?.currency || platform.currency || 'GHS',
+    provider: perChurch?.provider || platform.provider || 'Paystack',
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Giving (donations + Paystack)                                      */
 /* ------------------------------------------------------------------ */
 router.get('/giving', async (req: AuthRequest, res) => {
@@ -742,19 +782,27 @@ router.get('/giving', async (req: AuthRequest, res) => {
 // Manually record an offline gift (cash / cheque / bank).
 router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'FINANCE'), async (req: AuthRequest, res) => {
   try {
-    const { amount, currency, donorName, paymentMethod, purpose, memberId } = req.body;
+    const { amount, currency, donorName, paymentMethod, purpose, memberId, email } = req.body;
     if (!amount || Number(amount) <= 0) {
       return res.status(400).json({ error: 'A positive amount is required' });
     }
+    const method = paymentMethod || 'cash';
+    // Mobile money, bank transfer, card and cheque gifts must carry enough
+    // detail to be reconciled against the wallet or statement later.
+    const detailError = validatePaymentDetails(method, req.body);
+    if (detailError) return res.status(400).json({ error: detailError });
+
     const record = {
       tenantId: tid(req),
       amount: Number(amount),
       currency: currency || 'GHS',
       donorName: donorName || 'Anonymous',
-      paymentMethod: paymentMethod || 'cash',
+      paymentMethod: method,
       purpose: purpose || 'General',
       memberId: memberId || null,
+      email: email || null,
       status: 'completed',
+      ...normalizePaymentDetails(method, req.body),
       createdAt: new Date(),
     };
     const [insertedId] = await db('donations').insert(record).returning('id');
@@ -769,20 +817,25 @@ router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 
 // Start an online (Paystack) gift. Returns the authorization URL to redirect to.
 router.post('/giving/initialize', async (req: AuthRequest, res) => {
   try {
-    const paystackSettings = await getTenantSettings(tid(req), 'paystack');
-    const secretKey = paystackSettings.secretKey;
+    const gateway = await resolveGateway(tid(req));
+    const secretKey = gateway.secretKey;
     if (!isPaystackConfigured(secretKey)) {
-      return res.status(503).json({ error: 'Online giving is not configured. Add your Paystack secret key in church settings.' });
+      return res.status(503).json({ error: 'Online giving is not configured yet. Your platform administrator sets up the payment gateway.' });
     }
     const { amount, email, donorName, purpose, memberId, callbackUrl } = req.body;
     if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'A positive amount is required' });
     if (!email) return res.status(400).json({ error: 'A payer email is required by Paystack' });
 
+    // The platform transaction charge configured by the super admin applies to
+    // every transaction: added on top when the payer bears it, deducted from
+    // the church's settlement when the recipient does.
+    const charge = applyTransactionCharge(Number(amount), await getTransactionCharge());
+
     const reference = genId('gift');
     await db('donations').insert({
       tenantId: tid(req),
-      amount: Number(amount),
-      currency: 'GHS',
+      amount: charge.baseAmount,
+      currency: gateway.currency,
       donorName: donorName || 'Anonymous',
       paymentMethod: 'paystack',
       purpose: purpose || 'General',
@@ -790,19 +843,37 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       email,
       reference,
       status: 'pending',
+      chargeAmount: charge.chargeAmount,
+      netAmount: charge.netAmount,
+      chargeBearer: charge.chargeBearer,
       createdAt: new Date(),
     });
 
     const data = await initializeTransaction({
       secretKey,
       email,
-      amount: Number(amount),
+      // What the payer is actually billed.
+      amount: charge.totalAmount,
       reference,
-      currency: 'GHS',
+      currency: gateway.currency,
       callback_url: callbackUrl,
-      metadata: { tenantId: tid(req), purpose: purpose || 'General', donorName },
+      metadata: {
+        tenantId: tid(req),
+        purpose: purpose || 'General',
+        donorName,
+        baseAmount: charge.baseAmount,
+        transactionCharge: charge.chargeAmount,
+      },
     });
-    res.json({ authorizationUrl: data?.authorization_url, reference, accessCode: data?.access_code });
+    res.json({
+      authorizationUrl: data?.authorization_url,
+      reference,
+      accessCode: data?.access_code,
+      amount: charge.baseAmount,
+      transactionCharge: charge.chargeAmount,
+      totalPayable: charge.totalAmount,
+      chargeBearer: charge.chargeBearer,
+    });
   } catch (error) {
     console.error('Giving initialize error:', error);
     res.status(502).json({ error: 'Failed to initialize payment with Paystack' });
@@ -818,8 +889,8 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
       .first();
     if (!donation) return res.status(404).json({ error: 'Gift not found' });
 
-    const paystackSettings = await getTenantSettings(tid(req), 'paystack');
-    const data = await verifyTransaction(reference, paystackSettings.secretKey);
+    const gateway = await resolveGateway(tid(req));
+    const data = await verifyTransaction(reference, gateway.secretKey);
     const newStatus = data?.status === 'success' ? 'completed' : 'failed';
     await db('donations').where({ reference, tenantId: tid(req) }).update({ status: newStatus });
     res.json({ status: newStatus, reference });
@@ -1081,7 +1152,15 @@ router.delete('/branding/logo', requireRole('CHURCH_ADMIN', 'PASTOR'), async (re
   }
 });
 
-const SETTINGS_KEYS = ['general', 'paystack', 'sms', 'email', 'payment', 'integration', 'financial', 'profile', 'backup'];
+const SETTINGS_KEYS = ['general', 'paystack', 'sms', 'email', 'payment', 'integration', 'financial', 'profile', 'backup', 'engagement'];
+
+/**
+ * Sections a church may still edit for itself. Everything else in
+ * SETTINGS_KEYS -- SMS, email, the payment gateway, integrations and the
+ * backup policy -- is provisioned by the super admin on the church's behalf,
+ * so those sections are readable here but not writable.
+ */
+const CHURCH_WRITABLE_SETTINGS = ['general', 'financial', 'profile', 'engagement'];
 
 async function getTenantSettings(tenantId: string, key: string): Promise<any> {
   const row = await db('church_settings').where({ tenantId, key }).first();
@@ -1110,10 +1189,32 @@ router.get('/settings', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthR
         /* ignore malformed rows */
       }
     }
+
+    /*
+     * Centrally-managed sections: when the super admin has not set anything
+     * specific for this church, fall back to the platform-wide configuration
+     * so the church can still see what is in force for them. Values are shown
+     * read-only; `managedSections` tells the UI which tabs to lock.
+     */
+    for (const key of SUPERADMIN_MANAGED_CHURCH_SETTINGS) {
+      const platform = await getPlatformSettings(key === 'paystack' ? 'payment' : key);
+      out[key] = { ...platform, ...(out[key] || {}) };
+    }
+
     // Never expose full secrets to the browser.
-    if (out.paystack?.secretKey) out.paystack.secretKey = maskSecret(out.paystack.secretKey);
-    if (out.sms?.apiKey) out.sms.apiKey = maskSecret(out.sms.apiKey);
-    res.json(out);
+    for (const section of Object.keys(out)) {
+      for (const field of ['secretKey', 'apiKey', 'password', 'privateKey', 'token']) {
+        if (out[section] && typeof out[section][field] === 'string' && out[section][field]) {
+          out[section][field] = maskSecret(out[section][field]);
+        }
+      }
+    }
+
+    res.json({
+      ...out,
+      managedSections: SUPERADMIN_MANAGED_CHURCH_SETTINGS,
+      editableSections: CHURCH_WRITABLE_SETTINGS,
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load church settings' });
   }
@@ -1124,6 +1225,17 @@ router.put('/settings/:key', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
     const key = req.params.key;
     if (!SETTINGS_KEYS.includes(key)) {
       return res.status(400).json({ error: 'Unknown settings section' });
+    }
+    /*
+     * SMS, email, payment gateway, integrations and backup are configured by
+     * the platform administrator for every church, so a church admin cannot
+     * overwrite them here. A super admin acting on a church (resolveTenant
+     * lets them pass ?tenantId=) is still allowed through.
+     */
+    if (isSuperadminManagedSetting(key) && req.user?.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: `The ${key} settings are managed by your platform administrator. Please contact support to change them.`,
+      });
     }
     const existing = await getTenantSettings(tid(req), key);
     const incoming = { ...(req.body || {}) };
@@ -1176,6 +1288,18 @@ type CrudOpts = {
   filterFields?: string[];
   orderBy?: string;
   writeRoles?: string[];
+  /**
+   * Name of the field holding the payment method (usually 'paymentMethod').
+   * When set, the matching transaction details (mobile money sender, bank
+   * account, card holder...) are validated and kept with the record.
+   */
+  paymentDetails?: string;
+  /**
+   * Returns a message to show the user when the submitted record is not
+   * acceptable, or null when it is fine. Runs before anything touches the
+   * database, so the user gets a real explanation instead of "Failed to save".
+   */
+  validate?: (body: any) => string | null | undefined;
 };
 
 function registerCrud(basePath: string, table: string, opts: CrudOpts) {
@@ -1188,14 +1312,34 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
     : baseWriteRoles;
   const coerce = (body: any) => {
     const row: any = {};
+    // Mobile money / bank / card details arrive as their own fields; normalising
+    // first means only the ones that belong to the chosen method are stored.
+    const source = opts.paymentDetails
+      ? { ...body, ...normalizePaymentDetails(body[opts.paymentDetails], body) }
+      : body;
     for (const f of opts.fields) {
-      if (!(f in body)) continue;
-      let v = body[f];
+      if (!(f in source)) continue;
+      let v = source[f];
       if (opts.dateFields?.includes(f)) v = v ? new Date(v) : null;
       else if (opts.numberFields?.includes(f)) v = v === '' || v == null ? null : Number(v);
       row[f] = v;
     }
     return row;
+  };
+
+  /**
+   * Returns an error message for a bad submission, or null when it can be
+   * saved. Payment details are checked here too, so a mobile money entry
+   * without a transaction ID is refused with a clear reason.
+   */
+  const checkBody = (body: any): string | null => {
+    const custom = opts.validate?.(body);
+    if (custom) return custom;
+    if (opts.paymentDetails) {
+      const problem = validatePaymentDetails(body[opts.paymentDetails], body);
+      if (problem) return problem;
+    }
+    return null;
   };
 
   router.get(basePath, async (req: AuthRequest, res) => {
@@ -1215,13 +1359,20 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
 
   router.post(basePath, requireRole(...writeRoles), async (req: AuthRequest, res) => {
     try {
+      const problem = checkBody(req.body);
+      if (problem) return res.status(400).json({ error: problem });
       const row = { id: genId(opts.idPrefix), tenantId: tid(req), ...coerce(req.body), createdAt: new Date() };
       await db(table).insert(row);
       await logActivity(req, 'create', table, row.id);
       res.status(201).json(row);
-    } catch (e) {
+    } catch (e: any) {
       console.error(`POST ${basePath} error:`, e);
-      res.status(500).json({ error: `Failed to create ${table} record` });
+      // A generic message here is what made "Failed to create..." impossible to
+      // act on. The database's own complaint (a missing column, a bad date) is
+      // far more useful to whoever has to fix it.
+      res.status(500).json({
+        error: `Failed to save this record${e?.message ? `: ${e.message}` : '.'}`,
+      });
     }
   });
 
@@ -1229,11 +1380,16 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
     try {
       const existing = await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).first();
       if (!existing) return res.status(404).json({ error: 'Not found' });
+      const problem = checkBody({ ...existing, ...req.body });
+      if (problem) return res.status(400).json({ error: problem });
       await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).update(coerce(req.body));
       await logActivity(req, 'update', table, (req as any).params.id);
       res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: `Failed to update ${table} record` });
+    } catch (e: any) {
+      console.error(`PUT ${basePath} error:`, e);
+      res.status(500).json({
+        error: `Failed to update this record${e?.message ? `: ${e.message}` : '.'}`,
+      });
     }
   });
 
@@ -1258,7 +1414,12 @@ registerCrud('/ministries', 'ministries', {
 });
 registerCrud('/expenses', 'expenses', {
   idPrefix: 'exp',
-  fields: ['category', 'description', 'amount', 'currency', 'paymentMethod', 'vendor', 'status', 'recordedBy', 'date'],
+  fields: [
+    'category', 'description', 'amount', 'currency', 'paymentMethod', 'vendor',
+    'status', 'recordedBy', 'date',
+    ...PAYMENT_DETAIL_FIELDS,
+  ],
+  paymentDetails: 'paymentMethod',
   numberFields: ['amount'],
   dateFields: ['date'],
   filterFields: ['category', 'status'],
@@ -1271,7 +1432,12 @@ registerCrud('/budgets', 'budgets', {
 });
 registerCrud('/pledges', 'pledges', {
   idPrefix: 'pld',
-  fields: ['memberId', 'memberName', 'purpose', 'amountPledged', 'amountPaid', 'currency', 'status', 'dueDate'],
+  fields: [
+    'memberId', 'memberName', 'purpose', 'amountPledged', 'amountPaid',
+    'currency', 'status', 'dueDate', 'paymentMethod',
+    ...PAYMENT_DETAIL_FIELDS,
+  ],
+  paymentDetails: 'paymentMethod',
   numberFields: ['amountPledged', 'amountPaid'],
   dateFields: ['dueDate'],
   filterFields: ['status'],
@@ -1279,6 +1445,14 @@ registerCrud('/pledges', 'pledges', {
 registerCrud('/inventory', 'inventory', {
   idPrefix: 'inv',
   fields: ['name', 'category', 'quantity', 'unitValue', 'condition', 'location', 'notes'],
+  // The category is whatever the church types, so the only rules are that it
+  // is present and short enough to display in a table.
+  validate: (body: any) => {
+    const category = String(body?.category ?? '').trim();
+    if (!category) return 'Please give this item a category, for example Instruments or Chairs.';
+    if (category.length > 60) return 'Please use a shorter category name (60 characters or fewer).';
+    return null;
+  },
   numberFields: ['quantity', 'unitValue'],
   filterFields: ['category', 'condition'],
   orderBy: 'name',
@@ -1299,8 +1473,18 @@ registerCrud('/sermons', 'sermons', {
 });
 registerCrud('/service-schedules', 'service_schedules', {
   idPrefix: 'svc',
-  fields: ['name', 'dayOfWeek', 'startTime', 'endTime', 'location', 'branchId'],
+  // `description` and `active` were missing here, so a form that posted them
+  // had those values silently dropped.
+  fields: ['name', 'dayOfWeek', 'startTime', 'endTime', 'location', 'branchId', 'description', 'active'],
   orderBy: 'name',
+  validate: (body) => {
+    if (!String(body?.name || '').trim()) return 'Give the service a name, for example "Sunday First Service".';
+    if (!String(body?.dayOfWeek || '').trim()) return 'Choose the day of the week this service runs.';
+    if (body?.startTime && body?.endTime && String(body.endTime) < String(body.startTime)) {
+      return 'The end time cannot be before the start time.';
+    }
+    return null;
+  },
 });
 
 /* ---- Church positions (Usher, Treasurer, Choir Lead, ...) ----
@@ -2274,5 +2458,509 @@ router.post('/members/:id/biometric', requireRole('CHURCH_ADMIN', 'PASTOR', 'SEC
     res.status(500).json({ error: 'Failed to link the biometric id' });
   }
 });
+
+
+/* ================================================================== */
+/* Church-defined finance purposes (feature: user-added purposes)      */
+/* ================================================================== */
+
+/**
+ * Purposes used to be a hard-coded list in the finance screen, so a church
+ * could not record a gift for anything the developers had not thought of.
+ * They are now rows a church owns, and the finance form lets a user type a new
+ * one while recording money.
+ */
+const DEFAULT_FINANCE_PURPOSES = [
+  'Tithe',
+  'Offering',
+  'Welfare',
+  'Donation',
+  'Building Fund',
+  'Missions',
+];
+
+registerCrud('/finance-purposes', 'finance_purposes', {
+  idPrefix: 'fpp',
+  fields: ['name', 'category', 'description', 'active'],
+  filterFields: ['category', 'active'],
+  orderBy: 'name',
+  writeRoles: ['CHURCH_ADMIN', 'PASTOR', 'FINANCE'],
+  validate: (body) => {
+    const name = String(body?.name || '').trim();
+    if (!name) return 'A purpose name is required.';
+    if (name.length > 60) return 'A purpose name cannot be longer than 60 characters.';
+    return null;
+  },
+});
+
+/**
+ * The list the finance form shows: the church's own purposes, plus the common
+ * defaults for a church that has not defined any yet. Duplicates are removed
+ * case-insensitively so "Tithe" and "tithe" never appear twice.
+ */
+router.get('/finance-purposes/options', async (req: AuthRequest, res) => {
+  try {
+    const category = req.query.category ? String(req.query.category) : null;
+    let q = db('finance_purposes').where({ tenantId: tid(req) });
+    if (category) q = q.where((b) => b.where('category', category).orWhereNull('category'));
+    const rows = await q.orderBy('name', 'asc').catch(() => [] as any[]);
+    const custom = rows.filter((r: any) => r.active !== false).map((r: any) => String(r.name));
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const name of [...custom, ...DEFAULT_FINANCE_PURPOSES]) {
+      const key = name.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      options.push(name.trim());
+    }
+    res.json({ data: options, custom });
+  } catch (e) {
+    console.error('GET /finance-purposes/options error:', e);
+    res.json({ data: DEFAULT_FINANCE_PURPOSES, custom: [] });
+  }
+});
+
+/**
+ * Records a purpose typed straight into the giving/pledge form so it is
+ * offered next time. Idempotent: re-saving an existing name is a no-op.
+ */
+router.post('/finance-purposes/remember', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const category = String(req.body?.category || 'giving');
+    if (!name) return res.status(400).json({ error: 'A purpose name is required.' });
+    if (name.length > 60) return res.status(400).json({ error: 'A purpose name cannot be longer than 60 characters.' });
+    if (DEFAULT_FINANCE_PURPOSES.some((p) => p.toLowerCase() === name.toLowerCase())) {
+      return res.json({ success: true, existing: true });
+    }
+    const existing = await db('finance_purposes')
+      .where({ tenantId: tid(req) })
+      .whereRaw('LOWER(name) = ?', [name.toLowerCase()])
+      .first();
+    if (existing) return res.json({ success: true, existing: true });
+    const row = {
+      id: genId('fpp'),
+      tenantId: tid(req),
+      name,
+      category,
+      active: true,
+      createdBy: req.user?.uid || null,
+      createdAt: new Date(),
+    };
+    await db('finance_purposes').insert(row);
+    res.status(201).json({ success: true, data: row });
+  } catch (e) {
+    console.error('POST /finance-purposes/remember error:', e);
+    res.status(500).json({ error: 'Failed to save that purpose' });
+  }
+});
+
+/* ================================================================== */
+/* Inventory categories typed by the church                            */
+/* ================================================================== */
+
+const DEFAULT_INVENTORY_CATEGORIES = [
+  'Equipment',
+  'Instruments',
+  'Furniture',
+  'Electronics',
+  'Vehicles',
+];
+
+router.get('/inventory-categories', async (req: AuthRequest, res) => {
+  try {
+    // Categories come from two places: ones deliberately saved, and ones
+    // already in use on existing items, so nothing a church typed is lost.
+    const [saved, used] = await Promise.all([
+      db('inventory_categories').where({ tenantId: tid(req) }).orderBy('name').catch(() => [] as any[]),
+      db('inventory').where({ tenantId: tid(req) }).distinct('category').catch(() => [] as any[]),
+    ]);
+    const seen = new Set<string>();
+    const options: string[] = [];
+    const push = (value: unknown) => {
+      const name = String(value || '').trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) return;
+      seen.add(key);
+      options.push(name);
+    };
+    saved.forEach((r: any) => push(r.name));
+    used.forEach((r: any) => push(r.category));
+    DEFAULT_INVENTORY_CATEGORIES.forEach(push);
+    res.json({ data: options });
+  } catch (e) {
+    console.error('GET /inventory-categories error:', e);
+    res.json({ data: DEFAULT_INVENTORY_CATEGORIES });
+  }
+});
+
+router.post('/inventory-categories', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'A category name is required.' });
+    if (name.length > 60) return res.status(400).json({ error: 'A category name cannot be longer than 60 characters.' });
+    const existing = await db('inventory_categories')
+      .where({ tenantId: tid(req) })
+      .whereRaw('LOWER(name) = ?', [name.toLowerCase()])
+      .first();
+    if (existing) return res.json({ success: true, existing: true });
+    await db('inventory_categories').insert({
+      id: genId('invcat'),
+      tenantId: tid(req),
+      name,
+      createdAt: new Date(),
+    });
+    res.status(201).json({ success: true, name });
+  } catch (e) {
+    console.error('POST /inventory-categories error:', e);
+    res.status(500).json({ error: 'Failed to save that category' });
+  }
+});
+
+/* ================================================================== */
+/* Member engagement: active / inactive / backslider                   */
+/* ================================================================== */
+
+/** Church-tunable thresholds, stored in the church's 'engagement' settings. */
+async function engagementThresholds(tenantId: string) {
+  const saved = await getTenantSettings(tenantId, 'engagement');
+  return resolveThresholds(saved);
+}
+
+/**
+ * Loads every member with their attendance facts and classifies them.
+ *
+ * Attendance is aggregated in SQL (two grouped queries, not one per member) so
+ * this stays a couple of queries regardless of church size.
+ */
+async function computeEngagement(tenantId: string) {
+  const thresholds = await engagementThresholds(tenantId);
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - thresholds.windowDays * 86400000);
+
+  const cols = await memberColumns();
+  const members = await db('members').where({ tenantId }).select(cols);
+
+  const [totals, windowed] = await Promise.all([
+    db('event_attendance')
+      .where({ tenantId })
+      .whereNotNull('memberId')
+      .select('memberId')
+      .max('checkInAt as lastAt')
+      .count('id as total')
+      .groupBy('memberId'),
+    db('event_attendance')
+      .where({ tenantId })
+      .whereNotNull('memberId')
+      .where('checkInAt', '>=', windowStart)
+      .select('memberId')
+      .count('id as recent')
+      .groupBy('memberId'),
+  ]);
+
+  const lastByMember = new Map<string, { lastAt: any; total: number }>();
+  totals.forEach((r: any) => lastByMember.set(String(r.memberId), { lastAt: r.lastAt, total: Number(r.total || 0) }));
+  const recentByMember = new Map<string, number>();
+  windowed.forEach((r: any) => recentByMember.set(String(r.memberId), Number(r.recent || 0)));
+
+  const results = members.map((m: any) => {
+    const agg = lastByMember.get(String(m.id));
+    const classified = classifyMember(
+      {
+        lastAttendedAt: agg?.lastAt || null,
+        attendancesInWindow: recentByMember.get(String(m.id)) || 0,
+        joinDate: m.joinDate || m.createdAt || null,
+      },
+      thresholds,
+      now,
+    );
+    // An admin can pin a label (e.g. a member away on a long trip), and the
+    // automatic result must not silently override that decision.
+    const locked = Boolean(m.engagementLocked);
+    return {
+      id: m.id,
+      firstName: m.firstName,
+      lastName: m.lastName,
+      name: `${m.firstName || ''} ${m.lastName || ''}`.trim(),
+      email: m.email,
+      phone: m.phone,
+      membershipStatus: m.membershipStatus,
+      engagementStatus: locked ? m.engagementStatus || classified.status : classified.status,
+      engagementLocked: locked,
+      computedStatus: classified.status,
+      reason: locked ? m.engagementReason || classified.reason : classified.reason,
+      lastAttendanceAt: agg?.lastAt || null,
+      daysSinceLastAttendance: classified.daysSinceLastAttendance,
+      attendancesInWindow: classified.attendancesInWindow,
+      totalAttendances: agg?.total || 0,
+    };
+  });
+
+  return { thresholds, results };
+}
+
+/** Engagement breakdown for the whole church. */
+router.get('/members/engagement', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const { thresholds, results } = await computeEngagement(tid(req));
+    const status = req.query.status ? String(req.query.status) : 'all';
+    const filtered = status === 'all' ? results : results.filter((r) => r.engagementStatus === status);
+    const summary = results.reduce(
+      (acc: Record<string, number>, r) => {
+        acc[r.engagementStatus] = (acc[r.engagementStatus] || 0) + 1;
+        return acc;
+      },
+      { active: 0, inactive: 0, backslider: 0, new: 0 },
+    );
+    res.json({ data: filtered, summary, thresholds, total: results.length });
+  } catch (e) {
+    console.error('GET /members/engagement error:', e);
+    res.status(500).json({ error: 'Failed to work out member engagement' });
+  }
+});
+
+/** Writes the computed labels onto the member records. */
+router.post('/members/engagement/recalculate', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const { results } = await computeEngagement(tenantId);
+    const now = new Date();
+    let updated = 0;
+    // Chunked so a large church does not build one enormous transaction.
+    for (const r of results) {
+      if (r.engagementLocked) continue;
+      await db('members').where({ id: r.id, tenantId }).update({
+        engagementStatus: r.computedStatus,
+        engagementReason: r.reason,
+        engagementUpdatedAt: now,
+        lastAttendanceAt: r.lastAttendanceAt || null,
+        attendanceCount: r.totalAttendances,
+      });
+      updated += 1;
+    }
+    await logActivity(req, 'recalculate', 'member_engagement', undefined, `${updated} member(s)`);
+    res.json({ success: true, updated });
+  } catch (e) {
+    console.error('POST /members/engagement/recalculate error:', e);
+    res.status(500).json({ error: 'Failed to update member engagement' });
+  }
+});
+
+/** Manual override: an admin describes a member directly. */
+router.put('/members/:id/engagement', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const allowed = ['active', 'inactive', 'backslider', 'new'];
+    const status = String(req.body?.engagementStatus || '').toLowerCase();
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: `Status must be one of: ${allowed.join(', ')}.` });
+    }
+    const updated = await db('members')
+      .where({ id: req.params.id, tenantId: tid(req) })
+      .update({
+        engagementStatus: status,
+        engagementReason: req.body?.reason ? String(req.body.reason).slice(0, 250) : 'Set manually by a church administrator.',
+        // Locking by default is the point of a manual override: the next
+        // recalculation must not undo the admin's decision.
+        engagementLocked: req.body?.lock === false ? false : true,
+        engagementUpdatedAt: new Date(),
+      });
+    if (!updated) return res.status(404).json({ error: 'Member not found' });
+    await logActivity(req, 'update', 'member_engagement', req.params.id, status);
+    res.json({ success: true, engagementStatus: status });
+  } catch (e) {
+    console.error('PUT /members/:id/engagement error:', e);
+    res.status(500).json({ error: 'Failed to update that member' });
+  }
+});
+
+/* ================================================================== */
+/* Absence follow-up questionnaires                                    */
+/* ================================================================== */
+
+/** Public base URL used to build the questionnaire link. */
+function publicBaseUrl(req: AuthRequest): string {
+  const configured = process.env.APP_URL || process.env.PUBLIC_URL;
+  if (configured) return String(configured).replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] as string) || (req as any).protocol || 'https';
+  return `${proto}://${req.headers.host}`;
+}
+
+/** Long random token: this link is the only credential the member needs. */
+const surveyToken = () =>
+  `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+
+/** Follow-ups already sent, newest first. */
+router.get('/absence/surveys', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const status = req.query.status ? String(req.query.status) : 'all';
+    let q = db('absence_surveys').where({ tenantId: tid(req) });
+    if (status !== 'all') q = q.where('status', status);
+    const rows = await q.orderBy('createdAt', 'desc').limit(500);
+    const summary = {
+      sent: rows.length,
+      responded: rows.filter((r: any) => r.status === 'responded').length,
+      awaiting: rows.filter((r: any) => r.status !== 'responded').length,
+    };
+    res.json({ data: rows, summary });
+  } catch (e) {
+    console.error('GET /absence/surveys error:', e);
+    res.status(500).json({ error: 'Failed to load absence follow-ups' });
+  }
+});
+
+/**
+ * Sends the absence questionnaire.
+ *
+ * Two ways to choose who gets it:
+ *  - `eventId`   : everyone who was not checked in at that service
+ *  - otherwise   : members classified inactive or backslider by attendance
+ *
+ * Each recipient gets an SMS and an email carrying a unique link. Send
+ * failures are recorded per-recipient rather than aborting the whole batch, so
+ * one bad phone number cannot stop the rest.
+ */
+router.post('/absence/surveys/send', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const { eventId, memberIds } = req.body || {};
+
+    const cols = await memberColumns();
+    let targets: any[] = [];
+    let event: any = null;
+
+    if (Array.isArray(memberIds) && memberIds.length > 0) {
+      targets = await db('members').where({ tenantId }).whereIn('id', memberIds.map(String)).select(cols);
+    } else if (eventId) {
+      event = await db('events').where({ id: String(eventId), tenantId }).first();
+      if (!event) return res.status(404).json({ error: 'Event not found' });
+      const present = await db('event_attendance')
+        .where({ tenantId, eventId: event.id })
+        .whereNotNull('memberId')
+        .pluck('memberId');
+      const q = db('members').where({ tenantId }).select(cols);
+      if (present.length > 0) q.whereNotIn('id', present.map(String));
+      targets = await q;
+    } else {
+      const { results } = await computeEngagement(tenantId);
+      const absentees = results.filter((r) => shouldFollowUp({
+        status: r.engagementStatus as any,
+        daysSinceLastAttendance: r.daysSinceLastAttendance,
+        attendancesInWindow: r.attendancesInWindow,
+        reason: r.reason,
+      }));
+      if (absentees.length === 0) {
+        return res.json({ success: true, sent: 0, skipped: 0, message: 'No members are currently absent enough to follow up.' });
+      }
+      targets = await db('members').where({ tenantId }).whereIn('id', absentees.map((a) => a.id)).select(cols);
+    }
+
+    if (targets.length === 0) {
+      return res.json({ success: true, sent: 0, skipped: 0, message: 'Nobody matched, so no messages were sent.' });
+    }
+    if (targets.length > 1000) {
+      return res.status(413).json({ error: 'Too many recipients for one batch. Narrow the selection and try again.' });
+    }
+
+    const tenant = await db('tenants').where({ id: tenantId }).first();
+    const churchName = tenant?.name || 'your church';
+    const smsConfig = await getPlatformSettings('sms');
+    const emailConfig = await getEmailConfig();
+    const base = publicBaseUrl(req);
+    const expiresAt = new Date(Date.now() + 30 * 86400000);
+
+    let sent = 0;
+    let skipped = 0;
+    const details: any[] = [];
+
+    for (const m of targets) {
+      const phone = m.phone ? String(m.phone).trim() : '';
+      const email = m.email ? String(m.email).trim() : '';
+      if (!phone && !email) {
+        skipped += 1;
+        details.push({ memberId: m.id, skipped: 'No phone number or email address on file.' });
+        continue;
+      }
+
+      const token = surveyToken();
+      const link = `${base}/absence-survey/${token}`;
+      const name = `${m.firstName || ''} ${m.lastName || ''}`.trim() || 'Beloved';
+      const message =
+        `Hello ${m.firstName || name}, we missed you at ${churchName}` +
+        `${event?.title ? ` (${event.title})` : ''}. Please tell us why in one minute: ${link}`;
+
+      let smsStatus = 'not_sent';
+      if (phone) {
+        const smsResult = await sendSMS(phone, message, {
+          apiKey: smsConfig.apiKey,
+          senderId: smsConfig.senderId,
+        });
+        smsStatus = smsResult?.success ? 'sent' : 'failed';
+      }
+
+      let emailStatus = 'not_sent';
+      if (email) {
+        const emailResult = await sendEmail({
+          to: email,
+          subject: `We missed you at ${churchName}`,
+          html: emailTemplate({
+            title: `We missed you, ${m.firstName || name}`,
+            body:
+              `<p>We noticed you were not with us${event?.title ? ` at <b>${event.title}</b>` : ' recently'} and we want to check in on you.</p>` +
+              '<p>Would you take a moment to tell us the reason? It goes straight to the pastoral team, and it helps us know how to support you.</p>',
+            ctaLabel: 'Tell us why',
+            ctaUrl: link,
+            footer: `Sent by ${churchName}.`,
+          }),
+          config: emailConfig,
+        });
+        emailStatus = emailResult.success ? 'sent' : 'failed';
+      }
+
+      await db('absence_surveys').insert({
+        id: genId('abs'),
+        tenantId,
+        memberId: m.id,
+        memberName: name,
+        eventId: event?.id || null,
+        eventName: event?.title || null,
+        token,
+        status: 'sent',
+        smsStatus,
+        emailStatus,
+        phone: phone || null,
+        email: email || null,
+        sentAt: new Date(),
+        expiresAt,
+        createdBy: req.user?.uid || null,
+        createdAt: new Date(),
+      });
+
+      // Log to the communications trail the church already reviews.
+      try {
+        await db('communications_log').insert({
+          tenantId,
+          channel: phone ? 'sms' : 'email',
+          recipient: phone || email,
+          subject: 'Absence follow-up',
+          message,
+          status: smsStatus === 'sent' || emailStatus === 'sent' ? 'sent' : 'failed',
+          sentBy: req.user?.uid || null,
+          createdAt: new Date(),
+        });
+      } catch { /* non-fatal */ }
+
+      if (smsStatus === 'sent' || emailStatus === 'sent') sent += 1;
+      else skipped += 1;
+      details.push({ memberId: m.id, name, smsStatus, emailStatus });
+    }
+
+    await logActivity(req, 'send', 'absence_surveys', event?.id, `${sent} follow-up(s)`);
+    res.status(201).json({ success: true, sent, skipped, total: targets.length, details });
+  } catch (e) {
+    console.error('POST /absence/surveys/send error:', e);
+    res.status(500).json({ error: 'Failed to send the absence follow-up' });
+  }
+});
+
 
 export default router;

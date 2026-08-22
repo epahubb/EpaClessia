@@ -2,14 +2,15 @@ import React, { useEffect, useState } from 'react';
 import {
   Box, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Paper, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, TextField,
-  MenuItem, CircularProgress, Stack, Checkbox, FormControlLabel, Tooltip
+  MenuItem, CircularProgress, Stack, Checkbox, FormControlLabel, Tooltip,
+  Autocomplete, Divider, Typography
 } from '@mui/material';
 import { Add, Edit, Delete } from '@mui/icons-material';
 import AuthedImageField from '../common/AuthedImageField';
 
 export type CrudField = {
   name: string; label: string;
-  type?: 'text' | 'number' | 'select' | 'date' | 'textarea' | 'checkbox' | 'image';
+  type?: 'text' | 'number' | 'select' | 'date' | 'datetime' | 'textarea' | 'checkbox' | 'image' | 'autocomplete' | 'section';
   options?: { value: string; label: string }[];
   required?: boolean; defaultValue?: any;
   /** For `image` fields: whether to preview as a round avatar or a wide logo. */
@@ -19,6 +20,19 @@ export type CrudField = {
    * to show the current picture when editing. Return null when there is none.
    */
   imagePath?: (row: any) => string | null;
+  /**
+   * Shows this field only when the current form values satisfy the predicate.
+   * Used for detail fields that only apply to one payment method, so a cash
+   * entry is not cluttered with bank-transfer boxes.
+   */
+  showIf?: (form: any) => boolean;
+  /** Small grey hint shown under the input. */
+  helperText?: string;
+  /**
+   * For `autocomplete` fields: allows a value that is not in `options`, so a
+   * user can type their own (a new giving purpose, a new inventory category).
+   */
+  freeSolo?: boolean;
 };
 export type CrudColumn = { key: string; label: string; render?: (row: any) => React.ReactNode };
 
@@ -51,6 +65,7 @@ export const CrudTable: React.FC<Props> = ({
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>({});
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const reload = async () => {
     setLoading(true);
@@ -62,21 +77,35 @@ export const CrudTable: React.FC<Props> = ({
   const openCreate = () => {
     const init: any = {};
     fields.forEach(f => { init[f.name] = f.defaultValue ?? (f.type === 'checkbox' ? false : ''); });
-    setForm(init); setEditing(null); setOpen(true);
+    setForm(init); setEditing(null); setError(null); setOpen(true);
   };
   const openEdit = (row: any) => {
     const init: any = {};
     fields.forEach(f => { init[f.name] = row[f.name] ?? (f.type === 'checkbox' ? false : ''); });
-    setForm(init); setEditing(row); setOpen(true);
+    setForm(init); setEditing(row); setError(null); setOpen(true);
   };
+  /** Fields currently applicable, given what the user has chosen so far. */
+  const visibleFields = fields.filter(f => !f.showIf || f.showIf(form));
+
   const save = async () => {
     setSaving(true);
+    setError(null);
     try {
-      if (editing && updateRow) await updateRow(editing[idKey], form);
-      else if (createRow) await createRow(form);
+      // Only submit fields that are actually shown. Switching the payment
+      // method from bank transfer to cash must not silently keep the bank
+      // details the user had already typed.
+      const payload: any = {};
+      visibleFields.forEach(f => {
+        if (f.type === 'section') return;
+        payload[f.name] = form[f.name];
+      });
+      if (editing && updateRow) await updateRow(editing[idKey], payload);
+      else if (createRow) await createRow(payload);
       setOpen(false); await reload();
     } catch (e: any) {
-      alert(e?.response?.data?.error || 'Failed to save');
+      // Shown inside the dialog instead of an alert() so the user keeps their
+      // typed input and can see which requirement was missed.
+      setError(e?.friendlyMessage || e?.response?.data?.error || 'Failed to save. Please check the form and try again.');
     } finally { setSaving(false); }
   };
   const del = async (row: any) => {
@@ -131,7 +160,30 @@ export const CrudTable: React.FC<Props> = ({
         <DialogTitle>{editing ? 'Edit Record' : addLabel}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            {fields.map(f => f.type === 'image' ? (
+            {error && (
+              <Typography color="error" variant="body2" sx={{ fontWeight: 600 }}>{error}</Typography>
+            )}
+            {visibleFields.map(f => f.type === 'section' ? (
+              <Box key={f.name}>
+                <Divider sx={{ mb: 1.5 }} />
+                <Typography variant="subtitle2" fontWeight={700}>{f.label}</Typography>
+                {f.helperText && <Typography variant="caption" color="text.secondary">{f.helperText}</Typography>}
+              </Box>
+            ) : f.type === 'autocomplete' ? (
+              <Autocomplete
+                key={f.name}
+                freeSolo={f.freeSolo !== false}
+                options={(f.options || []).map(o => o.value)}
+                value={form[f.name] ?? ''}
+                // `onInputChange` (not just onChange) is what captures a value
+                // the user types but never picks from the dropdown.
+                onInputChange={(_, v) => setForm({ ...form, [f.name]: v })}
+                onChange={(_, v) => setForm({ ...form, [f.name]: v ?? '' })}
+                renderInput={(params) => (
+                  <TextField {...params} label={f.label} required={f.required} helperText={f.helperText} fullWidth />
+                )}
+              />
+            ) : f.type === 'image' ? (
               <AuthedImageField
                 key={f.name}
                 label={f.label}
@@ -144,16 +196,17 @@ export const CrudTable: React.FC<Props> = ({
               <FormControlLabel key={f.name} control={<Checkbox checked={!!form[f.name]} onChange={e => setForm({ ...form, [f.name]: e.target.checked })} />} label={f.label} />
             ) : f.type === 'select' ? (
               <TextField key={f.name} select label={f.label} value={form[f.name] ?? ''} required={f.required}
+                helperText={f.helperText}
                 onChange={e => setForm({ ...form, [f.name]: e.target.value })} fullWidth>
                 {(f.options || []).map(o => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
               </TextField>
             ) : (
               <TextField key={f.name} label={f.label}
-                type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
-                value={form[f.name] ?? ''} required={f.required}
+                type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'datetime' ? 'datetime-local' : 'text'}
+                value={form[f.name] ?? ''} required={f.required} helperText={f.helperText}
                 multiline={f.type === 'textarea'} minRows={f.type === 'textarea' ? 3 : undefined}
                 onChange={e => setForm({ ...form, [f.name]: e.target.value })} fullWidth
-                InputLabelProps={f.type === 'date' ? { shrink: true } : undefined} />
+                InputLabelProps={f.type === 'date' || f.type === 'datetime' ? { shrink: true } : undefined} />
             ))}
           </Stack>
         </DialogContent>

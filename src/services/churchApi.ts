@@ -274,6 +274,37 @@ export const churchApi = {
   linkMemberBiometric: async (memberId: string, biometricId: string) =>
     (await api.post(`/church/members/${memberId}/biometric`, { biometricId })).data,
 
+  // ---- Giving purposes defined by the church ----
+  /** Purpose names for the finance forms (church's own + common defaults). */
+  getPurposeOptions: async (category?: string): Promise<string[]> =>
+    (await api.get('/church/finance-purposes/options', { params: category ? { category } : undefined })).data?.data || [],
+  /** Saves a purpose typed straight into a form so it is offered next time. */
+  rememberPurpose: async (name: string, category = 'giving') =>
+    (await api.post('/church/finance-purposes/remember', { name, category })).data,
+  getPurposes: async () => unwrap((await api.get('/church/finance-purposes')).data),
+  createPurpose: async (data: any) => (await api.post('/church/finance-purposes', data)).data,
+  updatePurpose: async (id: string, data: any) => (await api.put(`/church/finance-purposes/${id}`, data)).data,
+  deletePurpose: async (id: string) => (await api.delete(`/church/finance-purposes/${id}`)).data,
+
+  // ---- Inventory categories typed by the church ----
+  getInventoryCategories: async (): Promise<string[]> =>
+    (await api.get('/church/inventory-categories')).data?.data || [],
+  rememberInventoryCategory: async (name: string) =>
+    (await api.post('/church/inventory-categories', { name })).data,
+
+  // ---- Member engagement (active / inactive / backslider) ----
+  getMemberEngagement: async (status?: string) =>
+    (await api.get('/church/members/engagement', { params: status && status !== 'all' ? { status } : undefined })).data,
+  recalculateEngagement: async () => (await api.post('/church/members/engagement/recalculate', {})).data,
+  setMemberEngagement: async (memberId: string, engagementStatus: string, reason?: string, lock = true) =>
+    (await api.put(`/church/members/${memberId}/engagement`, { engagementStatus, reason, lock })).data,
+
+  // ---- Absence follow-up questionnaires ----
+  getAbsenceSurveys: async (status?: string) =>
+    (await api.get('/church/absence/surveys', { params: status && status !== 'all' ? { status } : undefined })).data,
+  sendAbsenceSurveys: async (body: { eventId?: string; memberIds?: string[] }) =>
+    (await api.post('/church/absence/surveys/send', body)).data,
+
   // Audit & security
   getActivityLog: async () => unwrap((await api.get('/church/activity-log')).data),
 };

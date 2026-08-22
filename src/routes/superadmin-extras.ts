@@ -1,5 +1,14 @@
 import { Router } from 'express';
 import db from '../lib/db';
+import {
+  encryptSensitiveFields,
+  decryptSensitiveFields,
+  SENSITIVE_SETTING_KEYS,
+} from '../lib/crypto';
+import {
+  getTransactionCharge,
+  applyTransactionCharge,
+} from '../lib/platformSettings';
 
 /**
  * Additional platform (super-admin) endpoints that the frontend expects but
@@ -376,6 +385,191 @@ router.put('/user-tenant-roles/:id/permissions', async (req, res) => {
     await db('user_tenant_roles').where({ id: req.params.id }).update(update);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Failed to update user permissions' }); }
+});
+
+
+/* ================================================================== */
+/* Church configuration owned by the platform administrator            */
+/* ================================================================== */
+
+/**
+ * SMS, email, payment gateway, integrations and backup are configured by the
+ * super admin on behalf of each church, so these endpoints read and write a
+ * specific tenant's `church_settings` rows. The church-facing API refuses
+ * writes to the same sections.
+ */
+const MANAGED_SECTIONS = ['sms', 'email', 'payment', 'paystack', 'integration', 'backup'];
+
+router.get('/churches/:tenantId/settings', async (req, res) => {
+  try {
+    const { tenantId } = req.params;
+    const tenant = await db('tenants').where({ id: tenantId }).first();
+    if (!tenant) return res.status(404).json({ error: 'Church not found' });
+
+    const rows = await db('church_settings').where({ tenantId });
+    const out: Record<string, any> = {};
+    for (const r of rows) {
+      try {
+        out[r.key] = JSON.parse(r.value);
+      } catch { /* ignore malformed rows */ }
+    }
+    // Secrets are masked on the way out; a re-save that leaves the mask in
+    // place keeps the stored value (see the PUT below).
+    const masked = decryptSensitiveFields(out, true);
+    res.json({
+      churchName: tenant.name,
+      tenantId,
+      managedSections: MANAGED_SECTIONS,
+      settings: masked,
+    });
+  } catch (e) {
+    console.error('GET /churches/:tenantId/settings error:', e);
+    res.status(500).json({ error: 'Failed to load church settings' });
+  }
+});
+
+router.put('/churches/:tenantId/settings/:key', async (req, res) => {
+  try {
+    const { tenantId, key } = req.params;
+    if (!MANAGED_SECTIONS.includes(key)) {
+      return res.status(400).json({
+        error: `'${key}' is not a platform-managed section. Managed sections are: ${MANAGED_SECTIONS.join(', ')}.`,
+      });
+    }
+    const tenant = await db('tenants').where({ id: tenantId }).first();
+    if (!tenant) return res.status(404).json({ error: 'Church not found' });
+
+    const row = await db('church_settings').where({ tenantId, key }).first();
+    let previous: Record<string, any> = {};
+    if (row?.value) {
+      try { previous = JSON.parse(row.value); } catch { previous = {}; }
+    }
+
+    // Preserve a stored secret when the form posts back the mask rather than a
+    // new value, so an unrelated edit cannot wipe live credentials.
+    const incoming: Record<string, any> = { ...(req.body || {}) };
+    for (const field of SENSITIVE_SETTING_KEYS) {
+      if (field in incoming) {
+        const v = incoming[field];
+        if (v === '' || v === null || v === undefined || (typeof v === 'string' && v.includes('\u2022'))) {
+          if (field in previous) incoming[field] = previous[field];
+          else delete incoming[field];
+        }
+      }
+    }
+
+    const merged = encryptSensitiveFields({ ...previous, ...incoming });
+    const value = JSON.stringify(merged);
+    const stamp = { value, updatedAt: new Date(), managedBy: 'superadmin', updatedBy: (req as any).user?.uid || null };
+
+    if (row) {
+      await db('church_settings').where({ tenantId, key }).update(stamp);
+    } else {
+      await db('church_settings').insert({ tenantId, key, ...stamp });
+    }
+    res.json({ success: true, message: `${key} settings saved for ${tenant.name}.` });
+  } catch (e) {
+    console.error('PUT /churches/:tenantId/settings/:key error:', e);
+    res.status(500).json({ error: 'Failed to save church settings' });
+  }
+});
+
+/**
+ * Pushes the platform defaults for one section to every church at once, which
+ * is how a new gateway or SMS account gets rolled out without visiting each
+ * church individually.
+ */
+router.post('/churches/settings/apply-to-all/:key', async (req, res) => {
+  try {
+    const { key } = req.params;
+    if (!MANAGED_SECTIONS.includes(key)) {
+      return res.status(400).json({ error: `'${key}' is not a platform-managed section.` });
+    }
+    const platformKey = key === 'paystack' ? 'payment' : key;
+    const platformRow = await db('system_settings').where({ key: platformKey }).first();
+    if (!platformRow?.value) {
+      return res.status(400).json({ error: `Configure the platform ${platformKey} settings first.` });
+    }
+
+    const overwrite = req.body?.overwrite !== false;
+    const tenants = await db('tenants').select('id');
+    let applied = 0;
+    for (const t of tenants) {
+      const existing = await db('church_settings').where({ tenantId: t.id, key }).first();
+      if (existing && !overwrite) continue;
+      const stamp = {
+        value: platformRow.value,
+        updatedAt: new Date(),
+        managedBy: 'superadmin',
+        updatedBy: (req as any).user?.uid || null,
+      };
+      if (existing) await db('church_settings').where({ tenantId: t.id, key }).update(stamp);
+      else await db('church_settings').insert({ tenantId: t.id, key, ...stamp });
+      applied += 1;
+    }
+    res.json({ success: true, applied, churches: tenants.length });
+  } catch (e) {
+    console.error('POST /churches/settings/apply-to-all error:', e);
+    res.status(500).json({ error: 'Failed to apply settings to all churches' });
+  }
+});
+
+/* ================================================================== */
+/* Platform transaction charge                                         */
+/* ================================================================== */
+
+/**
+ * The charge applied to every transaction that flows through the platform
+ * (member giving, SMS bundle purchases, invoices). Stored with the payment
+ * gateway configuration so there is one place where charging lives.
+ */
+router.get('/transaction-charge', async (_req, res) => {
+  try {
+    const charge = await getTransactionCharge();
+    // Show a worked example so the effect of the numbers is obvious.
+    const example = applyTransactionCharge(100, charge);
+    res.json({ ...charge, example });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to load the transaction charge' });
+  }
+});
+
+router.put('/transaction-charge', async (req, res) => {
+  try {
+    const num = (v: unknown) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+    const percent = num(req.body?.percent);
+    const flat = num(req.body?.flat);
+    const cap = num(req.body?.cap);
+    if (percent > 100) {
+      return res.status(400).json({ error: 'A percentage charge cannot exceed 100%.' });
+    }
+
+    const row = await db('system_settings').where({ key: 'payment' }).first();
+    let payment: Record<string, any> = {};
+    if (row?.value) {
+      try { payment = JSON.parse(row.value); } catch { payment = {}; }
+    }
+    // Only the charge fields are touched: the gateway credentials in this same
+    // blob are already encrypted and must be written back untouched.
+    payment.transactionChargePercent = percent;
+    payment.transactionChargeFlat = flat;
+    payment.transactionChargeCap = cap;
+    payment.transactionChargeBearer = req.body?.bearer === 'recipient' ? 'recipient' : 'payer';
+    payment.transactionChargeEnabled = req.body?.enabled === false ? false : true;
+
+    const value = JSON.stringify(payment);
+    if (row) await db('system_settings').where({ key: 'payment' }).update({ value, updatedAt: new Date() });
+    else await db('system_settings').insert({ key: 'payment', value, updatedAt: new Date() });
+
+    const charge = await getTransactionCharge();
+    res.json({ success: true, ...charge, example: applyTransactionCharge(100, charge) });
+  } catch (e) {
+    console.error('PUT /transaction-charge error:', e);
+    res.status(500).json({ error: 'Failed to save the transaction charge' });
+  }
 });
 
 export default router;

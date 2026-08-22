@@ -25,6 +25,7 @@ const menuItems = [
   { label: 'User & Access Control', icon: Users, path: '/super-admin/users' },
   { label: 'Communication & Support', icon: MessageSquare, path: '/super-admin/communication' },
   { label: 'Platform Analytics & Logs', icon: BarChart3, path: '/super-admin/analytics' },
+  { label: 'Church Configuration', icon: Settings, path: '/super-admin/church-settings' },
   { label: 'System Settings', icon: Settings, path: '/super-admin/settings' },
 ];
 

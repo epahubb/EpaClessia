@@ -3,6 +3,7 @@ import {
   Box, Typography, Paper, Button, Grid, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, Chip, IconButton, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Alert, CircularProgress, Tooltip,
+  MenuItem,
 } from '@mui/material';
 import { CalendarPlus, Users, QrCode, Trash2, RefreshCw, Calendar } from 'lucide-react';
 import { churchApi } from '../../services/churchApi';
@@ -13,7 +14,8 @@ export const ChurchEventsPage: React.FC = () => {
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<any>({ name: '', location: '', startTime: '', description: '' });
+  const emptyForm = { name: '', location: '', startTime: '', endTime: '', category: 'service', description: '' };
+  const [form, setForm] = useState<any>(emptyForm);
   const [checkinFor, setCheckinFor] = useState<any | null>(null);
   const [code, setCode] = useState('');
 
@@ -37,15 +39,25 @@ export const ChurchEventsPage: React.FC = () => {
       // posted the raw form object. The server therefore saw no title and replied
       // 400 "title and startTime are required", which the old bare `catch` threw
       // away and reported as a generic failure. Map it explicitly.
+      if (!form.name?.trim()) throw { friendlyMessage: 'Please give the event a name.' };
+      if (!form.startTime) throw { friendlyMessage: 'Please choose a start time.' };
+      if (form.endTime && form.endTime < form.startTime) {
+        throw { friendlyMessage: 'The end time cannot be before the start time.' };
+      }
       await churchApi.createEvent({
-        title: form.name,
-        startTime: form.startTime,
+        title: form.name.trim(),
+        // `datetime-local` gives "2026-08-22T09:30" with no zone. Sending it as
+        // an ISO string keeps the time the user actually typed instead of
+        // letting the server reinterpret a half-formed value.
+        startTime: new Date(form.startTime).toISOString(),
+        endTime: form.endTime ? new Date(form.endTime).toISOString() : undefined,
+        category: form.category || 'service',
         location: form.location || undefined,
         description: form.description || undefined,
       });
       setMsg({ type: 'success', text: 'Event created.' });
       setOpen(false);
-      setForm({ name: '', location: '', startTime: '', description: '' });
+      setForm(emptyForm);
       await load();
     } catch (e: any) {
       // Surface what the server actually said, so a validation problem is
@@ -138,6 +150,12 @@ export const ChurchEventsPage: React.FC = () => {
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid size={{ xs: 12 }}><TextField fullWidth label="Event name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth required type="datetime-local" label="Start time" InputLabelProps={{ shrink: true }} value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} helperText="Required" /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth type="datetime-local" label="End time" InputLabelProps={{ shrink: true }} value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} helperText="Optional" /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth select label="Type" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+              {[['service', 'Service'], ['programme', 'Programme'], ['meeting', 'Meeting'], ['conference', 'Conference'], ['outreach', 'Outreach'], ['other', 'Other']].map(([v, l]) => (
+                <MenuItem key={v} value={v}>{l}</MenuItem>
+              ))}
+            </TextField></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Grid>
             <Grid size={{ xs: 12 }}><TextField fullWidth multiline minRows={2} label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Grid>
           </Grid>

@@ -57,6 +57,7 @@ const SuperAdminSidebar: React.FC = () => {
     { id: 'billing', label: 'Billing', icon: CreditCard, path: '/super-admin/billing' },
     { id: 'tickets', label: 'Support Tickets', icon: Ticket, path: '/super-admin/tickets', badge: stats?.pendingTickets },
     { id: 'reports', label: 'Reports', icon: BarChart3, path: '/super-admin/reports' },
+    { id: 'church-settings', label: 'Church Configuration', icon: Settings, path: '/super-admin/church-settings' },
     { id: 'settings', label: 'System Settings', icon: Settings, path: '/super-admin/settings' },
   ];
 

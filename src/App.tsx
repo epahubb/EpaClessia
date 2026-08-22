@@ -54,6 +54,9 @@ import Unauthorized from './pages/Unauthorized';
 import { Dashboard as ChurchDashboard } from './pages/church/Dashboard';
 import { MemberList } from './pages/church/MemberList';
 import ChurchSettingsPage from './pages/church/Settings';
+import MemberEngagementPage from './pages/church/MemberEngagement';
+import ChurchConfigurationPage from './pages/ChurchConfiguration';
+import AbsenceSurveyPage from './pages/AbsenceSurvey';
 import ChurchEventsPage from './pages/church/Events';
 import ChurchCommunicationPage from './pages/church/Communication';
 import ChurchAttendancePage from './pages/church/Attendance';
@@ -74,6 +77,13 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
+          {/*
+            Absence questionnaire. Deliberately outside ProtectedRoute: the
+            member who receives the SMS/email link is not signed in, and the
+            unguessable token in the URL is what authorises the page.
+          */}
+          <Route path="/absence-survey/:token" element={<AbsenceSurveyPage />} />
+
           {/* Super Admin Routes */}
           <Route path="/super-admin" element={<ProtectedRoute allowedRoles={['SUPER_ADMIN']}><SuperAdminLayout /></ProtectedRoute>}>
             <Route index element={<Dashboard />} />
@@ -86,6 +96,8 @@ const App: React.FC = () => {
             <Route path="tickets" element={<Tickets />} />
             <Route path="reports" element={<Reports />} />
             <Route path="settings" element={<Settings />} />
+            {/* SMS, email, gateway, integrations and backup, per church. */}
+            <Route path="church-settings" element={<ChurchConfigurationPage />} />
           </Route>
 
           {/*
@@ -112,6 +124,7 @@ const App: React.FC = () => {
             <Route path="/church/positions" element={<ChurchPositionsPage />} />
             <Route path="/church/reports" element={<ChurchReportsPage />} />
             <Route path="/church/audit" element={<ChurchAuditPage />} />
+            <Route path="/church/engagement" element={<MemberEngagementPage />} />
             <Route path="/church/settings" element={<ChurchSettingsPage />} />
             <Route path="/church" element={<Navigate to="/church/dashboard" replace />} />
           </Route>
