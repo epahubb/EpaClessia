@@ -48,6 +48,7 @@ import pastorRouter from './src/routes/pastor';
 import ministryLeaderRouter from './src/routes/ministryLeader';
 import superadminExtrasRouter from './src/routes/superadmin-extras';
 import biometricIngestRouter from './src/routes/biometricIngest';
+import { isKnownDenomination, normalizeDenomination } from './src/lib/denominations';
 
 async function startServer() {
   // Fail fast on an insecure or incomplete production configuration BEFORE we
@@ -629,8 +630,15 @@ async function startServer() {
         // "sendWelcomeEmail2 is not a function" (esbuild renames the shadowed
         // import to sendWelcomeEmail2 when bundling).
         sendWelcomeEmail: shouldSendWelcomeEmail,
-        websiteUrl 
+        websiteUrl,
+        denomination
       } = req.body;
+
+      // The denomination decides the shape of the church admin's portal, so it
+      // has to be one of the six we support rather than free text.
+      if (!isKnownDenomination(denomination)) {
+        throw new Error('Please select the church\u2019s denomination.');
+      }
 
       const existingUser = await trx('users').where({ email: adminEmail }).first();
       if (existingUser) throw new Error('Admin email already in use');
@@ -659,6 +667,7 @@ async function startServer() {
         state,
         postal_code,
         websiteUrl: websiteUrl || null,
+        denomination: normalizeDenomination(denomination),
         planId: planId || 'free_trial',
         status: planId === 'free_trial' ? 'trial' : 'active',
         featureFlags: typeof finalFeatureFlags === 'string' ? finalFeatureFlags : JSON.stringify(finalFeatureFlags),
@@ -712,11 +721,20 @@ async function startServer() {
 
   app.put("/api/v1/superadmin/churches/:id", authenticate, authorizeSuperAdmin, auditLog('UPDATE_CHURCH', 'tenants'), async (req, res) => {
     try {
-      const { featureFlags, ...rest } = req.body;
+      const { featureFlags, denomination, ...rest } = req.body;
       const updateData: any = { ...rest };
       
       if (featureFlags) {
         updateData.featureFlags = JSON.stringify(featureFlags);
+      }
+
+      // Changing the denomination changes the portal the church admin sees, so
+      // only a recognised value is accepted; anything else is left untouched.
+      if (denomination !== undefined) {
+        if (!isKnownDenomination(denomination)) {
+          return res.status(400).json({ error: 'Unknown denomination.' });
+        }
+        updateData.denomination = normalizeDenomination(denomination);
       }
 
       await db('tenants').where({ id: req.params.id }).update(updateData);

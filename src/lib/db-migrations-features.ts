@@ -53,6 +53,13 @@ async function addChargeColumns(db: Knex, table: string): Promise<void> {
 
 export async function applyFeatureMigrations(db: Knex): Promise<void> {
   /* ---------------------------------------------------------------- */
+  /* Denomination: decides which portal the church admin gets         */
+  /* ---------------------------------------------------------------- */
+  // Churches registered before this existed keep a null value, which resolves
+  // to the default portal, so no existing church loses anything.
+  await addColumn(db, 'tenants', 'denomination', (t) => t.string('denomination'));
+
+  /* ---------------------------------------------------------------- */
   /* Events: guarantee every column the create endpoint writes exists */
   /* ---------------------------------------------------------------- */
   // Databases created by older builds of this app are missing some of these,

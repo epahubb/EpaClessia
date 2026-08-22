@@ -10,10 +10,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Globe, Shield, CheckCircle } from 'lucide-react';
 import { Church, FeatureFlags } from '../../types/church';
+import { DENOMINATIONS, DEFAULT_DENOMINATION, normalizeDenomination } from '../../lib/denominations';
 
 const editChurchSchema = z.object({
   name: z.string().min(3, 'Church name must be at least 3 characters'),
   contactEmail: z.string().email('Invalid contact email'),
+  denomination: z.enum(['pentecostal_charismatic', 'evangelical_baptist', 'mainline_protestant', 'orthodox_catholic', 'adventist', 'non_denominational']),
   status: z.enum(['active', 'trial', 'suspended', 'deleted']),
   planId: z.enum(['free_trial', 'basic', 'pro', 'enterprise']),
   phone: z.string().optional(),
@@ -50,6 +52,7 @@ const EditChurchModal: React.FC<EditChurchModalProps> = ({ open, onClose, onSubm
     defaultValues: {
       name: '',
       contactEmail: '',
+      denomination: DEFAULT_DENOMINATION,
       status: 'active',
       planId: 'basic',
       timezone: 'UTC',
@@ -71,6 +74,9 @@ const EditChurchModal: React.FC<EditChurchModalProps> = ({ open, onClose, onSubm
       reset({
         name: church.name,
         contactEmail: church.contactEmail || church.adminEmail,
+        // Churches registered before denominations existed open on the default
+        // rather than an empty select.
+        denomination: normalizeDenomination(church.denomination),
         status: church.status,
         planId: church.planId,
         phone: church.phone || '',
@@ -173,6 +179,30 @@ const EditChurchModal: React.FC<EditChurchModalProps> = ({ open, onClose, onSubm
                     label="Phone Number"
                     fullWidth
                   />
+                )}
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12 }}>
+              <Controller
+                name="denomination"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    {...field}
+                    select
+                    label="Denomination"
+                    fullWidth
+                    error={!!errors.denomination}
+                    helperText={
+                      errors.denomination?.message ||
+                      'Changing this changes the portal the church admin sees.'
+                    }
+                  >
+                    {DENOMINATIONS.map(d => (
+                      <MenuItem key={d.id} value={d.id}>{d.label}</MenuItem>
+                    ))}
+                  </TextField>
                 )}
               />
             </Grid>

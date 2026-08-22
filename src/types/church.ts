@@ -1,3 +1,5 @@
+import type { DenominationId } from '../lib/denominations';
+
 export type PlanId = 'free_trial' | 'basic' | 'pro' | 'enterprise';
 export type ChurchStatus = 'active' | 'trial' | 'suspended' | 'deleted';
 
@@ -23,6 +25,10 @@ export interface Church {
   address?: string;
   logo?: string;
   websiteUrl?: string;
+  // Chosen by the superadmin at registration; decides the church admin portal.
+  // Optional because churches registered before this field existed have none,
+  // and those fall back to the default portal.
+  denomination?: DenominationId;
   featureFlags: FeatureFlags | string; // Can be object or stringified JSON
   trialEndDate?: string;
   subscriptionEndDate?: string;

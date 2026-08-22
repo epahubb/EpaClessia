@@ -11,11 +11,13 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Globe, Mail, Phone, MapPin, Shield, CheckCircle } from 'lucide-react';
 import { ChurchWithAdmin, FeatureFlags } from '../../types/church';
+import { DENOMINATIONS, DEFAULT_DENOMINATION } from '../../lib/denominations';
 
 const churchSchema = z.object({
   name: z.string().min(3, 'Church name must be at least 3 characters'),
   websiteUrl: z.string().url('Please enter a valid website URL').optional().or(z.literal('')),
   contactEmail: z.string().email('Invalid contact email'),
+  denomination: z.enum(['pentecostal_charismatic', 'evangelical_baptist', 'mainline_protestant', 'orthodox_catholic', 'adventist', 'non_denominational']),
   adminName: z.string().min(2, 'Admin name must be at least 2 characters'),
   adminEmail: z.string().email('Invalid admin email'),
   adminPassword: z.string().optional(),
@@ -52,6 +54,7 @@ const AddChurchModal: React.FC<AddChurchModalProps> = ({ open, onClose, onSubmit
       name: '',
       websiteUrl: '',
       contactEmail: '',
+      denomination: DEFAULT_DENOMINATION,
       adminName: '',
       adminEmail: '',
       autoGeneratePassword: true,
@@ -134,6 +137,30 @@ const AddChurchModal: React.FC<AddChurchModalProps> = ({ open, onClose, onSubmit
                     helperText={errors.websiteUrl?.message || 'Optional. The church\u2019s public website address.'}
                     placeholder="https://www.gracefellowship.org"
                   />
+                )}
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12 }}>
+              <Controller
+                name="denomination"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    {...field}
+                    select
+                    label="Denomination"
+                    fullWidth
+                    error={!!errors.denomination}
+                    helperText={
+                      errors.denomination?.message ||
+                      'Determines the portal the church admin will use.'
+                    }
+                  >
+                    {DENOMINATIONS.map(d => (
+                      <MenuItem key={d.id} value={d.id}>{d.label}</MenuItem>
+                    ))}
+                  </TextField>
                 )}
               />
             </Grid>

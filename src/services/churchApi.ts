@@ -305,6 +305,9 @@ export const churchApi = {
   sendAbsenceSurveys: async (body: { eventId?: string; memberIds?: string[] }) =>
     (await api.post('/church/absence/surveys/send', body)).data,
 
+  // ---- Portal shape for this church's denomination ----
+  getPortalProfile: async () => (await api.get('/church/portal-profile')).data,
+
   // Audit & security
   getActivityLog: async () => unwrap((await api.get('/church/activity-log')).data),
 };

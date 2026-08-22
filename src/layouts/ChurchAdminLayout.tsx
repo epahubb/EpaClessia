@@ -40,33 +40,40 @@ import {
   ChevronLeft as ChevronLeftIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import { usePortalProfile } from '../hooks/usePortalProfile';
+import type { PortalFeature } from '../lib/denominations';
 
 const drawerWidth = 240;
 
 const menuItems = [
-  { text: 'Dashboard', icon: <DashboardIcon />, path: '/church/dashboard' },
-  { text: 'Members', icon: <PeopleIcon />, path: '/church/members' },
-  { text: 'Visitors', icon: <VisitorIcon />, path: '/church/visitors' },
-  { text: 'Attendance', icon: <AttendanceIcon />, path: '/church/attendance' },
-  { text: 'Engagement & Follow-up', icon: <AttendanceIcon />, path: '/church/engagement' },
-  { text: 'Ministries & Groups', icon: <MinistryIcon />, path: '/church/ministries' },
-  { text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
-  { text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },
-  { text: 'Communication', icon: <CommunicationIcon />, path: '/church/communication' },
-  { text: 'SMS Bundles', icon: <SmsIcon />, path: '/church/sms-bundles' },
-  { text: 'Users & Permissions', icon: <UsersIcon />, path: '/church/users' },
+  { feature: 'dashboard' as PortalFeature, text: 'Dashboard', icon: <DashboardIcon />, path: '/church/dashboard' },
+  { feature: 'members' as PortalFeature, text: 'Members', icon: <PeopleIcon />, path: '/church/members' },
+  { feature: 'visitors' as PortalFeature, text: 'Visitors', icon: <VisitorIcon />, path: '/church/visitors' },
+  { feature: 'attendance' as PortalFeature, text: 'Attendance', icon: <AttendanceIcon />, path: '/church/attendance' },
+  { feature: 'engagement' as PortalFeature, text: 'Engagement & Follow-up', icon: <AttendanceIcon />, path: '/church/engagement' },
+  { feature: 'ministries' as PortalFeature, text: 'Ministries & Groups', icon: <MinistryIcon />, path: '/church/ministries' },
+  { feature: 'events' as PortalFeature, text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
+  { feature: 'finances' as PortalFeature, text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },
+  { feature: 'communication' as PortalFeature, text: 'Communication', icon: <CommunicationIcon />, path: '/church/communication' },
+  { feature: 'smsBundles' as PortalFeature, text: 'SMS Bundles', icon: <SmsIcon />, path: '/church/sms-bundles' },
+  { feature: 'users' as PortalFeature, text: 'Users & Permissions', icon: <UsersIcon />, path: '/church/users' },
   // Keep this list in step with the router in App.tsx. A nav entry whose path is
   // not a registered route falls through to the catch-all and lands on /login.
-  { text: 'Roles & Positions', icon: <PositionIcon />, path: '/church/positions' },
-  { text: 'Reports & Analytics', icon: <ReportsIcon />, path: '/church/reports' },
-  { text: 'Audit & Security', icon: <SecurityIcon />, path: '/church/audit' },
-  { text: 'Settings', icon: <SettingsIcon />, path: '/church/settings' },
+  { feature: 'positions' as PortalFeature, text: 'Roles & Positions', icon: <PositionIcon />, path: '/church/positions' },
+  { feature: 'reports' as PortalFeature, text: 'Reports & Analytics', icon: <ReportsIcon />, path: '/church/reports' },
+  { feature: 'audit' as PortalFeature, text: 'Audit & Security', icon: <SecurityIcon />, path: '/church/audit' },
+  { feature: 'settings' as PortalFeature, text: 'Settings', icon: <SettingsIcon />, path: '/church/settings' },
 ];
 
 export const ChurchAdminLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  // The denomination chosen when the church was registered decides which areas
+  // appear here and what they are called. Every denomination currently gets the
+  // whole portal, so this filters nothing out until a tradition is described.
+  const { profile, has, label } = usePortalProfile();
+  const visibleMenuItems = menuItems.filter((item) => has(item.feature));
   const [open, setOpen] = useState(true);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
@@ -232,7 +239,7 @@ export const ChurchAdminLayout: React.FC = () => {
         </Toolbar>
         <Divider />
         <List>
-          {menuItems.map((item) => (
+          {visibleMenuItems.map((item) => (
             <ListItem key={item.text} disablePadding sx={{ display: 'block' }}>
               <ListItemButton
                 onClick={() => navigate(item.path)}

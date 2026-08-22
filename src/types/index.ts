@@ -84,6 +84,8 @@ export interface Tenant {
   // Rendered by the super-admin churches table. Optional because older tenant
   // rows predate the column.
   websiteUrl?: string;
+  // Decides which portal the church admin gets. Optional for the same reason.
+  denomination?: string;
 }
 
 export interface SubscriptionPlan {

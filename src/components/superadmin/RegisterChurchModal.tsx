@@ -15,6 +15,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 // attached. Using the raw axios import previously caused 401 Unauthorized
 // errors on the protected /superadmin endpoints.
 import api from '../../services/api';
+import { DENOMINATIONS, DEFAULT_DENOMINATION } from '../../lib/denominations';
 
 const churchSchema = z.object({
   // Basic Info
@@ -23,6 +24,10 @@ const churchSchema = z.object({
   contactEmail: z.string().email('Invalid contact email'),
   phone: z.string().optional(),
   
+  // The denomination decides which portal the church admin will see, so it is
+  // required rather than optional.
+  denomination: z.enum(['pentecostal_charismatic', 'evangelical_baptist', 'mainline_protestant', 'orthodox_catholic', 'adventist', 'non_denominational']),
+
   // Address
   street: z.string().optional(),
   city: z.string().optional(),
@@ -81,6 +86,7 @@ export default function RegisterChurchModal({ open, onClose }: { open: boolean, 
       name: '',
       websiteUrl: '',
       contactEmail: '',
+      denomination: DEFAULT_DENOMINATION,
       phone: '',
       street: '',
       city: '',
@@ -119,7 +125,7 @@ export default function RegisterChurchModal({ open, onClose }: { open: boolean, 
 
   const handleNext = async () => {
     if (activeStep === 0) {
-      const isStep0Valid = await trigger(['name', 'contactEmail', 'country', 'timezone', 'phone', 'city', 'state', 'street', 'websiteUrl']);
+      const isStep0Valid = await trigger(['name', 'contactEmail', 'denomination', 'country', 'timezone', 'phone', 'city', 'state', 'street', 'websiteUrl']);
       if (isStep0Valid) {
         setActiveStep(1);
       }
@@ -250,6 +256,29 @@ export default function RegisterChurchModal({ open, onClose }: { open: boolean, 
                       InputLabelProps={{ sx: { color: '#94a3b8', '&.Mui-focused': { color: '#10b981' } } }}
                       sx={{ '& .MuiOutlinedInput-root': { color: '#f8fafc', bgcolor: '#1e293b', borderRadius: 2, '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' }, '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' }, '&.Mui-focused fieldset': { borderColor: '#10b981' } } }}
                     />
+                  )} />
+                </Box>
+                <Box sx={{ gridColumn: 'span 2' }}>
+                  <Controller name="denomination" control={control} render={({ field }) => (
+                    <TextField
+                      {...field}
+                      select
+                      label="Denomination"
+                      fullWidth
+                      required
+                      error={!!errors.denomination}
+                      helperText={
+                        errors.denomination?.message ||
+                        `Determines the portal the church admin will use \u2014 ${DENOMINATIONS.find(d => d.id === field.value)?.description || 'select a tradition'}`
+                      }
+                      InputLabelProps={{ sx: { color: '#94a3b8', '&.Mui-focused': { color: '#10b981' } } }}
+                      FormHelperTextProps={{ sx: { color: '#94a3b8' } }}
+                      sx={{ '& .MuiOutlinedInput-root': { color: '#f8fafc', bgcolor: '#1e293b', borderRadius: 2, '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' }, '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' }, '&.Mui-focused fieldset': { borderColor: '#10b981' } } }}
+                    >
+                      {DENOMINATIONS.map(d => (
+                        <MenuItem key={d.id} value={d.id}>{d.label}</MenuItem>
+                      ))}
+                    </TextField>
                   )} />
                 </Box>
                 <Box sx={{ gridColumn: 'span 2' }}><Divider sx={{ borderColor: 'rgba(255,255,255,0.1)', color: '#94a3b8' }}>Location Info</Divider></Box>

@@ -49,6 +49,7 @@ import {
   paymentDetailSchema,
   PAYMENT_DETAIL_FIELDS,
 } from '../lib/paymentDetails';
+import { getPortalProfile } from '../lib/denominations';
 import {
   classifyMember,
   resolveThresholds,
@@ -2962,5 +2963,41 @@ router.post('/absence/surveys/send', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECR
   }
 });
 
+
+/* ------------------------------------------------------------------ */
+/* Portal shape for this church's denomination                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Tells the church admin portal which areas to show and what to call them,
+ * based on the denomination the superadmin chose at registration.
+ *
+ * Every denomination currently returns the full portal. When a tradition's
+ * layout is described, only src/lib/denominations.ts changes and this endpoint
+ * starts reporting the narrower list automatically.
+ */
+router.get('/portal-profile', async (req: AuthRequest, res) => {
+  try {
+    const tenant = await db('tenants').where({ id: tid(req) }).first();
+    const profile = getPortalProfile(tenant?.denomination);
+    res.json({
+      denomination: profile.denomination,
+      denominationLabel: profile.label,
+      features: profile.features,
+      terminology: profile.terminology,
+    });
+  } catch (e) {
+    console.error('GET /portal-profile error:', e);
+    // A failure here must not blank the sidebar, so fall back to the full
+    // portal rather than returning an error the layout would have to handle.
+    const profile = getPortalProfile(undefined);
+    res.json({
+      denomination: profile.denomination,
+      denominationLabel: profile.label,
+      features: profile.features,
+      terminology: profile.terminology,
+    });
+  }
+});
 
 export default router;

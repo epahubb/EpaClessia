@@ -22,6 +22,7 @@ import RegisterChurchModal from '../components/superadmin/RegisterChurchModal';
 import EditChurchModal from '../components/superadmin/EditChurchModal';
 import DeleteConfirmModal from '../components/superadmin/DeleteConfirmModal';
 import ChurchDetailsDrawer from '../components/superadmin/ChurchDetailsDrawer';
+import { denominationLabel } from '../lib/denominations';
 
 const Churches: React.FC = () => {
   const theme = useTheme();
@@ -178,7 +179,7 @@ const Churches: React.FC = () => {
     if (churchesList.length === 0) return;
 
     if (type === 'csv' || type === 'excel') {
-      const headers = ['ID', 'Church Name', 'Website', 'Plan', 'Status', 'Members', 'Contact Email', 'Phone', 'City', 'Created At', 'Plan Expiry'];
+      const headers = ['ID', 'Church Name', 'Website', 'Denomination', 'Plan', 'Status', 'Members', 'Contact Email', 'Phone', 'City', 'Created At', 'Plan Expiry'];
       const rows = churchesList.map(c => {
         const expiry = c.subscriptionEndDate || c.trialEndDate;
         return [
@@ -439,6 +440,7 @@ const Churches: React.FC = () => {
                   </TableSortLabel>
                 </TableCell>
                 <TableCell sx={{ fontWeight: 800, textTransform: 'uppercase', fontSize: '0.75rem' }}>Website</TableCell>
+                <TableCell sx={{ fontWeight: 800, textTransform: 'uppercase', fontSize: '0.75rem' }}>Denomination</TableCell>
                 <TableCell sx={{ fontWeight: 800, textTransform: 'uppercase', fontSize: '0.75rem' }}>Plan</TableCell>
                 <TableCell sx={{ fontWeight: 800, textTransform: 'uppercase', fontSize: '0.75rem' }}>Status</TableCell>
                 <TableCell>
@@ -469,7 +471,7 @@ const Churches: React.FC = () => {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell colSpan={8}><Skeleton variant="text" height={40} /></TableCell>
+                    <TableCell colSpan={9}><Skeleton variant="text" height={40} /></TableCell>
                   </TableRow>
                 ))
               ) : data?.data?.map((church: Church) => (
@@ -509,6 +511,11 @@ const Churches: React.FC = () => {
                     ) : (
                       <Typography variant="body2" color="text.secondary" fontWeight={600}>{'—'}</Typography>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" fontWeight={600} color="text.secondary">
+                      {denominationLabel(church.denomination)}
+                    </Typography>
                   </TableCell>
                   <TableCell>
                     <Chip 

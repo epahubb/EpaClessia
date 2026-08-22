@@ -83,7 +83,7 @@ const MemberManagement: React.FC = () => {
                 <TableCell>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                     <Avatar src={member.photoUrl} sx={{ width: 32, height: 32, bgcolor: 'primary.main' }}>
-                      {member.firstName[0]}
+                      {(member.firstName || '?')[0]}
                     </Avatar>
                     <Typography variant="body2" fontWeight={700}>{member.firstName} {member.lastName}</Typography>
                   </Box>
@@ -102,13 +102,13 @@ const MemberManagement: React.FC = () => {
                 </TableCell>
                 <TableCell>
                   <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                    {member.ministries.map((m, i) => (
+                    {(member.ministries || []).map((m: string, i: number) => (
                       <Chip key={i} label={m} size="small" variant="outlined" sx={{ fontSize: '0.6rem' }} />
                     ))}
                   </Box>
                 </TableCell>
                 <TableCell>
-                  <Typography variant="body2">{new Date(member.createdAt).toLocaleDateString()}</Typography>
+                  <Typography variant="body2">{member.createdAt ? new Date(member.createdAt).toLocaleDateString() : '—'}</Typography>
                 </TableCell>
                 <TableCell align="right">
                   <Tooltip title="View Profile">
