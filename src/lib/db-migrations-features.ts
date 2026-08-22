@@ -51,7 +51,64 @@ async function addChargeColumns(db: Knex, table: string): Promise<void> {
   await addColumn(db, table, 'chargeBearer', (t) => t.string('chargeBearer'));
 }
 
+/**
+ * Columns for the extended member record used by traditions that ask for it
+ * (see denominations.ts). Added for every church rather than only the ones that
+ * currently show them: a superadmin can change a church's denomination at any
+ * time, and a column that appears only after a denomination switch would make
+ * that change fail at the worst moment.
+ */
+async function addExtendedMemberColumns(db: Knex): Promise<void> {
+  // Office held in the church, chosen from the offices set up in Settings.
+  await addColumn(db, 'members', 'office', (t) => t.string('office'));
+
+  // Education. Entries are JSON text because they are only ever read back with
+  // the member, never queried across members.
+  await addColumn(db, 'members', 'isEducated', (t) => t.boolean('isEducated'));
+  await addColumn(db, 'members', 'education', (t) => t.text('education'));
+
+  // Spouse. `spouseMemberId` is set when the spouse is also a member here,
+  // which is what links the two records together.
+  await addColumn(db, 'members', 'spouseName', (t) => t.string('spouseName'));
+  await addColumn(db, 'members', 'spouseMemberId', (t) => t.string('spouseMemberId'));
+  await addColumn(db, 'members', 'spousePhone', (t) => t.string('spousePhone'));
+  await addColumn(db, 'members', 'spouseEmail', (t) => t.string('spouseEmail'));
+  await addColumn(db, 'members', 'spouseAddress', (t) => t.text('spouseAddress'));
+  await addColumn(db, 'members', 'spouseOccupation', (t) => t.string('spouseOccupation'));
+  await addColumn(db, 'members', 'spouseDateOfBirth', (t) => t.timestamp('spouseDateOfBirth'));
+  await addColumn(db, 'members', 'spouseDetails', (t) => t.text('spouseDetails'));
+  await addColumn(db, 'members', 'weddingDate', (t) => t.timestamp('weddingDate'));
+
+  // A child who is also a member points back at their parent's record, so the
+  // link is visible from the child's profile too, not only the parent's.
+  await addColumn(db, 'members', 'parentMemberId', (t) => t.string('parentMemberId'));
+
+  // Children, including dedication.
+  await addColumn(db, 'members', 'hasChildren', (t) => t.boolean('hasChildren'));
+  await addColumn(db, 'members', 'children', (t) => t.text('children'));
+
+  // Medical details, kept in one JSON column so a church that never fills them
+  // in carries no extra empty columns on every member row.
+  await addColumn(db, 'members', 'medical', (t) => t.text('medical'));
+
+  // Offices a church can assign, spelt out by the church admin in Settings.
+  if (!(await db.schema.hasTable('church_offices'))) {
+    await db.schema.createTable('church_offices', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('name').notNullable();
+      t.text('description');
+      t.integer('sortOrder').defaultTo(0);
+      t.boolean('active').defaultTo(true);
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId']);
+    });
+    console.log('Table "church_offices" created.');
+  }
+}
+
 export async function applyFeatureMigrations(db: Knex): Promise<void> {
+  await addExtendedMemberColumns(db);
   /* ---------------------------------------------------------------- */
   /* Denomination: decides which portal the church admin gets         */
   /* ---------------------------------------------------------------- */

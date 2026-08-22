@@ -51,6 +51,16 @@ import {
 } from '../lib/paymentDetails';
 import { getPortalProfile } from '../lib/denominations';
 import {
+  isPartnered,
+  normalizeEducation,
+  normalizeChildren,
+  normalizeMedical,
+  normalizeMinistryIds,
+  parseJsonColumn,
+  toJsonColumn,
+  SPOUSE_COLUMNS,
+} from '../lib/memberProfile';
+import {
   classifyMember,
   resolveThresholds,
   shouldFollowUp,
@@ -158,6 +168,316 @@ router.use(resolveTenant);
 /* ------------------------------------------------------------------ */
 /* Members                                                            */
 /* ------------------------------------------------------------------ */
+/* --- Church offices ------------------------------------------------- */
+
+/**
+ * The offices a church recognises (Elder, Deacon, Usher, Choir Master...).
+ * Spelt out by the church admin in Settings and offered as a combobox when
+ * registering a member, so every church uses its own vocabulary rather than a
+ * list we guessed at.
+ */
+router.get('/offices', async (req: AuthRequest, res) => {
+  try {
+    const data = await db('church_offices')
+      .where({ tenantId: tid(req) })
+      .orderBy('sortOrder', 'asc')
+      .orderBy('name', 'asc');
+    res.json({ data });
+  } catch (error) {
+    console.error('List offices error:', error);
+    res.status(500).json({ error: 'Failed to fetch offices' });
+  }
+});
+
+/** Just the names, for the combobox on the member form. */
+router.get('/offices/options', async (req: AuthRequest, res) => {
+  try {
+    const rows = await db('church_offices')
+      .where({ tenantId: tid(req) })
+      .orderBy('sortOrder', 'asc')
+      .orderBy('name', 'asc')
+      .select('name', 'active');
+    // Retired offices stay on the members who already hold them, but are not
+    // offered for new members.
+    res.json({ data: (rows as any[]).filter((r) => r.active !== false).map((r) => r.name) });
+  } catch (error) {
+    console.error('Office options error:', error);
+    res.status(500).json({ error: 'Failed to fetch offices' });
+  }
+});
+
+router.post('/offices', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Please enter a name for the office.' });
+
+    const duplicate = await db('church_offices')
+      .where({ tenantId: tid(req) })
+      .whereRaw('LOWER(name) = ?', [name.toLowerCase()])
+      .first();
+    if (duplicate) {
+      return res.status(409).json({ error: `"${name}" is already one of your offices.` });
+    }
+
+    const office = {
+      id: genId('office'),
+      tenantId: tid(req),
+      name,
+      description: req.body?.description || null,
+      sortOrder: Number(req.body?.sortOrder) || 0,
+      active: req.body?.active === undefined ? true : Boolean(req.body.active),
+      createdAt: new Date(),
+    };
+    await db('church_offices').insert(office);
+    res.status(201).json(office);
+  } catch (error) {
+    console.error('Create office error:', error);
+    res.status(500).json({ error: 'Failed to create office' });
+  }
+});
+
+router.put('/offices/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const existing = await db('church_offices')
+      .where({ id: req.params.id, tenantId: tid(req) })
+      .first();
+    if (!existing) return res.status(404).json({ error: 'Office not found' });
+
+    const updates: any = {};
+    if ('name' in req.body) {
+      const name = String(req.body.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'Please enter a name for the office.' });
+      updates.name = name;
+    }
+    if ('description' in req.body) updates.description = req.body.description || null;
+    if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
+    if ('active' in req.body) updates.active = Boolean(req.body.active);
+
+    if (Object.keys(updates).length) {
+      await db('church_offices').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
+    }
+
+    // Members hold the office by name, so renaming an office keeps them in step
+    // instead of leaving them pointing at a name that no longer exists.
+    if (updates.name && updates.name !== existing.name) {
+      await db('members')
+        .where({ tenantId: tid(req), office: existing.name })
+        .update({ office: updates.name });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update office error:', error);
+    res.status(500).json({ error: 'Failed to update office' });
+  }
+});
+
+router.delete('/offices/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const office = await db('church_offices')
+      .where({ id: req.params.id, tenantId: tid(req) })
+      .first();
+    if (!office) return res.status(404).json({ error: 'Office not found' });
+
+    const holders = await db('members')
+      .where({ tenantId: tid(req), office: office.name })
+      .count('id as count')
+      .first();
+    const count = Number((holders as any)?.count || 0);
+    if (count > 0) {
+      // Deleting would quietly blank the office on real member records, so the
+      // admin is told to deactivate it instead.
+      return res.status(409).json({
+        error: `${count} member${count === 1 ? '' : 's'} still hold this office. Mark it inactive instead of deleting it.`,
+      });
+    }
+
+    await db('church_offices').where({ id: req.params.id, tenantId: tid(req) }).delete();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete office error:', error);
+    res.status(500).json({ error: 'Failed to delete office' });
+  }
+});
+
+/* --- Extended member record (ministries, education, family, medical) --- */
+
+/**
+ * Translates the extended sections of the member form into member columns.
+ *
+ * Only keys the request actually sent are touched, so this is safe for both
+ * creating a member and editing one field of an existing member.
+ *
+ * Two rules are enforced here rather than in the browser, because the browser
+ * is a convenience and not a trust boundary:
+ *  - Spouse details are cleared when the member is not married or engaged. A
+ *    widowed member's record should not silently retain a spouse's phone number.
+ *  - Children are cleared when "has children" is unticked, for the same reason.
+ */
+function applyExtendedMemberFields(body: any, target: any): void {
+  if ('office' in body) target.office = body.office || null;
+
+  // Education
+  if ('isEducated' in body) target.isEducated = Boolean(body.isEducated);
+  if ('education' in body || 'isEducated' in body) {
+    const educated = 'isEducated' in body ? Boolean(body.isEducated) : true;
+    target.education = educated ? toJsonColumn(normalizeEducation(body.education)) : null;
+  }
+
+  // Family - spouse
+  if ('maritalStatus' in body && !isPartnered(body.maritalStatus)) {
+    for (const column of SPOUSE_COLUMNS) target[column] = null;
+  } else {
+    if ('spouseName' in body) target.spouseName = body.spouseName || null;
+    if ('spouseMemberId' in body) target.spouseMemberId = body.spouseMemberId || null;
+    if ('spousePhone' in body) target.spousePhone = body.spousePhone || null;
+    if ('spouseEmail' in body) target.spouseEmail = body.spouseEmail || null;
+    if ('spouseAddress' in body) target.spouseAddress = body.spouseAddress || null;
+    if ('spouseOccupation' in body) target.spouseOccupation = body.spouseOccupation || null;
+    if ('spouseDetails' in body) target.spouseDetails = body.spouseDetails || null;
+    if ('spouseDateOfBirth' in body) {
+      target.spouseDateOfBirth = body.spouseDateOfBirth ? new Date(body.spouseDateOfBirth) : null;
+    }
+    if ('weddingDate' in body) {
+      target.weddingDate = body.weddingDate ? new Date(body.weddingDate) : null;
+    }
+  }
+
+  // Family - children
+  if ('hasChildren' in body) target.hasChildren = Boolean(body.hasChildren);
+  if ('children' in body || 'hasChildren' in body) {
+    const has = 'hasChildren' in body ? Boolean(body.hasChildren) : true;
+    target.children = has ? toJsonColumn(normalizeChildren(body.children)) : null;
+  }
+
+  // Medical
+  if ('medical' in body) target.medical = toJsonColumn(normalizeMedical(body.medical));
+}
+
+/**
+ * Records a member's ministry assignments in `ministry_members`, the table
+ * ministry leaders already read from - so a member assigned here immediately
+ * appears on their ministry's roster.
+ *
+ * A member can serve in several ministries, so this replaces the whole set:
+ * rows for ministries no longer selected are removed, and existing rows are
+ * kept (preserving their role and joined date) rather than deleted and
+ * recreated, which would reset a coordinator back to plain member.
+ */
+async function syncMemberMinistries(
+  tenantId: string,
+  member: { id: string; firstName?: string; lastName?: string; phone?: string | null; email?: string | null },
+  ministryIds: string[],
+  createdBy?: string,
+): Promise<void> {
+  // Only ministries belonging to this church, so a crafted request cannot
+  // attach a member to another church's ministry.
+  const valid = ministryIds.length
+    ? (await db('ministries').where({ tenantId }).whereIn('id', ministryIds).select('id')).map(
+        (m: any) => m.id,
+      )
+    : [];
+
+  const existing = await db('ministry_members')
+    .where({ tenantId, memberId: member.id })
+    .select('id', 'ministryId');
+  const existingIds = existing.map((r: any) => r.ministryId);
+
+  const toRemove = existing.filter((r: any) => !valid.includes(r.ministryId));
+  if (toRemove.length) {
+    await db('ministry_members')
+      .whereIn('id', toRemove.map((r: any) => r.id))
+      .delete();
+  }
+
+  const toAdd = valid.filter((id: string) => !existingIds.includes(id));
+  if (toAdd.length) {
+    const name = `${member.firstName || ''} ${member.lastName || ''}`.trim() || 'Member';
+    await db('ministry_members').insert(
+      toAdd.map((ministryId: string) => ({
+        id: genId('minmem'),
+        tenantId,
+        ministryId,
+        memberId: member.id,
+        name,
+        role: 'member',
+        status: 'active',
+        phone: member.phone || null,
+        email: member.email || null,
+        joinedAt: new Date(),
+        createdBy: createdBy || null,
+        createdAt: new Date(),
+      })),
+    );
+  }
+}
+
+/** The ministries a member is assigned to. */
+async function ministryIdsFor(tenantId: string, memberIds: string[]): Promise<Record<string, string[]>> {
+  if (!memberIds.length) return {};
+  const rows = await db('ministry_members')
+    .where({ tenantId })
+    .whereIn('memberId', memberIds)
+    .select('memberId', 'ministryId');
+  const map: Record<string, string[]> = {};
+  for (const row of rows as any[]) {
+    if (!row.memberId) continue;
+    (map[row.memberId] ||= []).push(row.ministryId);
+  }
+  return map;
+}
+
+/** Expands the JSON-stored sections so the browser gets real arrays/objects. */
+function expandMemberProfile(member: any, ministryIds: string[] = []): any {
+  if (!member) return member;
+  return {
+    ...member,
+    ministryIds,
+    education: parseJsonColumn(member.education, [] as any[]),
+    children: parseJsonColumn(member.children, [] as any[]),
+    medical: parseJsonColumn(member.medical, null as any),
+  };
+}
+
+/**
+ * Marriage is mutual, so linking a spouse writes both records. Without this the
+ * link would only exist on whichever profile happened to be edited, and the
+ * spouse's own page would show nothing.
+ */
+async function linkSpouse(tenantId: string, member: any): Promise<void> {
+  const spouseId = member.spouseMemberId;
+  if (!spouseId || spouseId === member.id) return;
+  const spouse = await db('members').where({ id: spouseId, tenantId }).first();
+  if (!spouse) return;
+  const memberName = `${member.firstName || ''} ${member.lastName || ''}`.trim();
+  await db('members').where({ id: spouseId, tenantId }).update({
+    spouseMemberId: member.id,
+    spouseName: spouse.spouseName || memberName || null,
+    maritalStatus: spouse.maritalStatus || member.maritalStatus || 'married',
+  });
+}
+
+/**
+ * Children who are members of the church are connected back to their parent,
+ * so the child's own record shows who they belong to.
+ */
+async function linkChildren(tenantId: string, parentId: string, children: any[]): Promise<void> {
+  const childIds = (children || []).map((c: any) => c?.memberId).filter(Boolean);
+
+  // Drop links to children removed from the list, so a correction does not
+  // leave a stale parent on someone else's record.
+  const stale = db('members').where({ tenantId, parentMemberId: parentId });
+  if (childIds.length) stale.whereNotIn('id', childIds);
+  await stale.update({ parentMemberId: null });
+
+  if (childIds.length) {
+    await db('members')
+      .where({ tenantId })
+      .whereIn('id', childIds)
+      .whereNot({ id: parentId })
+      .update({ parentMemberId: parentId });
+  }
+}
+
 router.get('/members', async (req: AuthRequest, res) => {
   try {
     const { search = '', status = 'all', familyId, page = 1, limit = 50 } = req.query;
@@ -183,8 +503,14 @@ router.get('/members', async (req: AuthRequest, res) => {
       .orderBy('lastName', 'asc')
       .limit(Number(limit))
       .offset(offset);
+    // Ministry assignments are fetched in one query for the whole page rather
+    // than per member, so a 50-member page stays a single extra round trip.
+    const ministries = await ministryIdsFor(
+      tid(req)!,
+      (data as any[]).map((m) => m.id),
+    );
     res.json({
-      data,
+      data: (data as any[]).map((m) => expandMemberProfile(m, ministries[m.id] || [])),
       pagination: { total: total?.count || 0, page: Number(page), limit: Number(limit) },
     });
   } catch (error) {
@@ -201,7 +527,8 @@ router.get('/members/:id', async (req: AuthRequest, res) => {
       .select(hasPhotoColumn())
       .first();
     if (!member) return res.status(404).json({ error: 'Member not found' });
-    res.json(member);
+    const ministries = await ministryIdsFor(tid(req)!, [member.id]);
+    res.json(expandMemberProfile(member, ministries[member.id] || []));
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch member' });
   }
@@ -318,6 +645,11 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       createdAt: new Date(),
     };
 
+    // Ministries, office, education, family and medical details - shown only
+    // for denominations whose portal asks for them, but accepted whenever they
+    // are sent so an import or API client is never blocked.
+    applyExtendedMemberFields(req.body, member);
+
     // Optional profile picture supplied at creation time, so an admin can add
     // a member and their photo in one step.
     if (photo) {
@@ -329,9 +661,17 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
 
     await db('members').insert(member);
 
+    const ministryIds = normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries);
+    await syncMemberMinistries(tid(req)!, member, ministryIds, req.user?.uid);
+    await linkSpouse(tid(req)!, member);
+    await linkChildren(tid(req)!, member.id, normalizeChildren(req.body.children));
+
     // Never echo the raw image bytes back in the JSON response.
     const { photo: _omitPhoto, ...safeMember } = member;
-    res.status(201).json({ ...safeMember, hasPhoto: Boolean(member.photo) });
+    res.status(201).json({
+      ...expandMemberProfile(safeMember, ministryIds),
+      hasPhoto: Boolean(member.photo),
+    });
   } catch (error) {
     handleImageError(error, res, 'Failed to create member');
   }
@@ -507,6 +847,8 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
     if (updates.dateOfBirth) updates.dateOfBirth = new Date(updates.dateOfBirth);
     if (updates.anniversaryDate) updates.anniversaryDate = new Date(updates.anniversaryDate);
 
+    applyExtendedMemberFields(req.body, updates);
+
     // `photo` is handled separately from the `allowed` list because it needs
     // validation and decoding. Passing photo: null clears the picture.
     if ('photo' in req.body) {
@@ -522,11 +864,32 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
       }
     }
 
-    if (Object.keys(updates).length === 0) {
+    // Ministry assignments live in their own table, so a request that changes
+    // only ministries has no member columns to update - and must not be
+    // rejected as an empty edit.
+    const ministriesSupplied = 'ministryIds' in req.body || 'ministries' in req.body;
+    if (Object.keys(updates).length === 0 && !ministriesSupplied) {
       return res.status(400).json({ error: 'No updatable fields were supplied' });
     }
 
-    await db('members').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
+    if (Object.keys(updates).length > 0) {
+      await db('members').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
+    }
+
+    if (ministriesSupplied) {
+      await syncMemberMinistries(
+        tid(req)!,
+        { ...existing, ...updates, id: req.params.id },
+        normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries),
+        req.user?.uid,
+      );
+    }
+    if ('spouseMemberId' in updates && updates.spouseMemberId) {
+      await linkSpouse(tid(req)!, { ...existing, ...updates, id: req.params.id });
+    }
+    if ('children' in req.body || 'hasChildren' in req.body) {
+      await linkChildren(tid(req)!, req.params.id, normalizeChildren(req.body.children));
+    }
     res.json({ success: true });
   } catch (error) {
     handleImageError(error, res, 'Failed to update member');
@@ -2972,7 +3335,11 @@ router.post('/absence/surveys/send', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECR
  * Tells the church admin portal which areas to show and what to call them,
  * based on the denomination the superadmin chose at registration.
  *
- * Every denomination currently returns the full portal. When a tradition's
+ * Also reports which optional sections the member registration form should
+ * include, which is how Pentecostal & Charismatic churches get ministries,
+ * education, family and medical details on their member form.
+ *
+ * Every denomination still reaches every area of the portal. When a tradition's
  * layout is described, only src/lib/denominations.ts changes and this endpoint
  * starts reporting the narrower list automatically.
  */
@@ -2985,6 +3352,9 @@ router.get('/portal-profile', async (req: AuthRequest, res) => {
       denominationLabel: profile.label,
       features: profile.features,
       terminology: profile.terminology,
+      // Extra sections the member registration form should include for this
+      // tradition, e.g. ministries, education, family and medical details.
+      memberSections: profile.memberSections,
     });
   } catch (e) {
     console.error('GET /portal-profile error:', e);
@@ -2996,6 +3366,9 @@ router.get('/portal-profile', async (req: AuthRequest, res) => {
       denominationLabel: profile.label,
       features: profile.features,
       terminology: profile.terminology,
+      // Extra sections the member registration form should include for this
+      // tradition, e.g. ministries, education, family and medical details.
+      memberSections: profile.memberSections,
     });
   }
 });

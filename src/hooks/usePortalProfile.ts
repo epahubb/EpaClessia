@@ -43,6 +43,7 @@ export function usePortalProfile(): {
             ? data.features
             : getPortalProfile(DEFAULT_DENOMINATION).features,
           terminology: data?.terminology || {},
+          memberSections: Array.isArray(data?.memberSections) ? data.memberSections : [],
         });
         setLoaded(true);
       } catch {

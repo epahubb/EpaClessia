@@ -305,6 +305,13 @@ export const churchApi = {
   sendAbsenceSurveys: async (body: { eventId?: string; memberIds?: string[] }) =>
     (await api.post('/church/absence/surveys/send', body)).data,
 
+  // ---- Offices the church recognises (Settings > Offices) ----
+  getOffices: async () => unwrap((await api.get('/church/offices')).data),
+  getOfficeOptions: async () => unwrap((await api.get('/church/offices/options')).data),
+  createOffice: async (data: any) => (await api.post('/church/offices', data)).data,
+  updateOffice: async (id: string, data: any) => (await api.put(`/church/offices/${id}`, data)).data,
+  deleteOffice: async (id: string) => (await api.delete(`/church/offices/${id}`)).data,
+
   // ---- Portal shape for this church's denomination ----
   getPortalProfile: async () => (await api.get('/church/portal-profile')).data,
 

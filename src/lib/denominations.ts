@@ -98,6 +98,29 @@ export const PORTAL_FEATURES: PortalFeature[] = [
   'reports', 'audit', 'settings',
 ];
 
+/**
+ * Optional sections of the member registration form.
+ *
+ * A tradition records different things about its people, so the member form is
+ * assembled from the sections its denomination asks for. The core fields (name,
+ * contact, membership status) are always present and are not listed here.
+ */
+export type MemberSection =
+  /** Assigned ministries, chosen from the ministries the church has created. */
+  | 'ministries'
+  /** Office held in the church, chosen from the offices set up in Settings. */
+  | 'office'
+  /** Schools attended and certificates earned. */
+  | 'education'
+  /** Marital status, spouse details and children. */
+  | 'family'
+  /** Blood group, conditions, medication and emergency contact. */
+  | 'medical';
+
+export const MEMBER_SECTIONS: MemberSection[] = [
+  'ministries', 'office', 'education', 'family', 'medical',
+];
+
 export type PortalProfile = {
   denomination: DenominationId;
   /** Denomination label, so the portal can name the tradition it is serving. */
@@ -112,6 +135,11 @@ export type PortalProfile = {
    * "Societies" or events "Mass Schedule". Empty until each portal is described.
    */
   terminology: Partial<Record<PortalFeature, string>>;
+  /**
+   * Extra sections shown when registering a member. Empty means the core member
+   * form, which is what every denomination gets until its portal is described.
+   */
+  memberSections: MemberSection[];
 };
 
 /** The complete portal - the starting point for every denomination. */
@@ -120,6 +148,7 @@ const fullPortal = (denomination: DenominationId): PortalProfile => ({
   label: DENOMINATIONS.find((d) => d.id === denomination)?.label || 'Church',
   features: [...PORTAL_FEATURES],
   terminology: {},
+  memberSections: [],
 });
 
 /**
@@ -135,7 +164,16 @@ const fullPortal = (denomination: DenominationId): PortalProfile => ({
  *   },
  */
 export const PORTAL_PROFILES: Record<DenominationId, PortalProfile> = {
-  pentecostal_charismatic: fullPortal('pentecostal_charismatic'),
+  /**
+   * Pentecostal & Charismatic churches keep a fuller record of each member:
+   * the ministries they serve in, the office they hold, their education, their
+   * household (spouse and children, including child dedication) and medical
+   * details for pastoral care and emergencies.
+   */
+  pentecostal_charismatic: {
+    ...fullPortal('pentecostal_charismatic'),
+    memberSections: [...MEMBER_SECTIONS],
+  },
   evangelical_baptist: fullPortal('evangelical_baptist'),
   mainline_protestant: fullPortal('mainline_protestant'),
   orthodox_catholic: fullPortal('orthodox_catholic'),
@@ -178,6 +216,11 @@ export function denominationLabel(value: unknown): string {
 /** The portal profile for a stored denomination value. */
 export function getPortalProfile(value: unknown): PortalProfile {
   return PORTAL_PROFILES[normalizeDenomination(value)];
+}
+
+/** Whether a denomination's member form includes a given optional section. */
+export function hasMemberSection(value: unknown, section: MemberSection): boolean {
+  return getPortalProfile(value).memberSections.includes(section);
 }
 
 /** Whether a denomination's portal includes a given area. */

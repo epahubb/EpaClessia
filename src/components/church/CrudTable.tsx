@@ -10,8 +10,17 @@ import AuthedImageField from '../common/AuthedImageField';
 
 export type CrudField = {
   name: string; label: string;
-  type?: 'text' | 'number' | 'select' | 'date' | 'datetime' | 'textarea' | 'checkbox' | 'image' | 'autocomplete' | 'section';
+  type?: 'text' | 'number' | 'select' | 'date' | 'datetime' | 'textarea' | 'checkbox' | 'image' | 'autocomplete' | 'section'
+    | 'multiselect' | 'list';
   options?: { value: string; label: string }[];
+  /**
+   * For `list` fields: the fields of a single entry. The value is an array of
+   * objects, used for repeating groups like a member's schools attended or the
+   * children in their household.
+   */
+  itemFields?: CrudField[];
+  /** For `list` fields: wording of the add button, e.g. "Add child". */
+  itemLabel?: string;
   required?: boolean; defaultValue?: any;
   /** For `image` fields: whether to preview as a round avatar or a wide logo. */
   imageVariant?: 'avatar' | 'logo';
@@ -55,6 +64,130 @@ type Props = {
   emptyText?: string;
 };
 
+/**
+ * Reads a field value, where a dotted name addresses a nested group.
+ *
+ * A member's medical details are one object on the record, so the form
+ * addresses them as `medical.bloodGroup` rather than flattening them into a
+ * dozen separate columns.
+ */
+const getField = (obj: any, name: string): any =>
+  name.includes('.')
+    ? name.split('.').reduce((acc: any, key) => (acc === null || acc === undefined ? acc : acc[key]), obj)
+    : obj?.[name];
+
+/** Returns a copy of `obj` with a (possibly nested) field set. */
+const setField = (obj: any, name: string, value: any): any => {
+  if (!name.includes('.')) return { ...obj, [name]: value };
+  const [head, ...rest] = name.split('.');
+  return { ...obj, [head]: setField(obj?.[head] ?? {}, rest.join('.'), value) };
+};
+
+/** Blank values for one entry of a `list` field. */
+const emptyItem = (fields: CrudField[]): any => {
+  const item: any = {};
+  fields.forEach((f) => { item[f.name] = f.defaultValue ?? (f.type === 'checkbox' ? false : ''); });
+  return item;
+};
+
+/**
+ * A repeating group of fields - a member's schools attended, the children in
+ * their household. Entries are added and removed one at a time, and each entry
+ * honours `showIf` against its OWN values, so a child's dedication date only
+ * appears once that child is marked as dedicated.
+ */
+const ListField: React.FC<{
+  field: CrudField;
+  value: any[];
+  onChange: (rows: any[]) => void;
+}> = ({ field, value, onChange }) => {
+  const itemFields = field.itemFields || [];
+  const rows = Array.isArray(value) ? value : [];
+
+  const setRow = (index: number, key: string, v: any) => {
+    onChange(rows.map((row, i) => (i === index ? { ...row, [key]: v } : row)));
+  };
+
+  return (
+    <Box>
+      <Divider sx={{ mb: 1.5 }} />
+      <Typography variant="subtitle2" fontWeight={700}>{field.label}</Typography>
+      {field.helperText && (
+        <Typography variant="caption" color="text.secondary">{field.helperText}</Typography>
+      )}
+      <Stack spacing={2} sx={{ mt: 1.5 }}>
+        {rows.length === 0 && (
+          <Typography variant="body2" color="text.secondary">
+            None added yet.
+          </Typography>
+        )}
+        {rows.map((row, index) => (
+          <Paper key={index} variant="outlined" sx={{ p: 2 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+              <Typography variant="caption" fontWeight={700} color="text.secondary">
+                {(field.itemLabel || 'Entry')} {index + 1}
+              </Typography>
+              <Tooltip title="Remove">
+                <IconButton
+                  size="small"
+                  color="error"
+                  onClick={() => onChange(rows.filter((_, i) => i !== index))}
+                >
+                  <Delete fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Stack>
+            <Stack spacing={1.5}>
+              {itemFields
+                .filter((f) => !f.showIf || f.showIf(row))
+                .map((f) => f.type === 'checkbox' ? (
+                  <FormControlLabel
+                    key={f.name}
+                    control={(
+                      <Checkbox
+                        checked={!!row[f.name]}
+                        onChange={(e) => setRow(index, f.name, e.target.checked)}
+                      />
+                    )}
+                    label={f.label}
+                  />
+                ) : f.type === 'select' ? (
+                  <TextField
+                    key={f.name} select size="small" fullWidth label={f.label}
+                    value={row[f.name] ?? ''} helperText={f.helperText}
+                    onChange={(e) => setRow(index, f.name, e.target.value)}
+                  >
+                    {(f.options || []).map((o) => (
+                      <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                    ))}
+                  </TextField>
+                ) : (
+                  <TextField
+                    key={f.name} size="small" fullWidth label={f.label}
+                    type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                    value={row[f.name] ?? ''} helperText={f.helperText}
+                    multiline={f.type === 'textarea'} minRows={f.type === 'textarea' ? 2 : undefined}
+                    onChange={(e) => setRow(index, f.name, e.target.value)}
+                    InputLabelProps={f.type === 'date' ? { shrink: true } : undefined}
+                  />
+                ))}
+            </Stack>
+          </Paper>
+        ))}
+        <Box>
+          <Button
+            size="small"
+            startIcon={<Add />}
+            onClick={() => onChange([...rows, emptyItem(itemFields)])}
+          >
+            {field.itemLabel ? `Add ${field.itemLabel.toLowerCase()}` : 'Add entry'}
+          </Button>
+        </Box>
+      </Stack>
+    </Box>
+  );
+};
+
 export const CrudTable: React.FC<Props> = ({
   columns, fields, fetchRows, createRow, updateRow, deleteRow,
   idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.'
@@ -74,14 +207,32 @@ export const CrudTable: React.FC<Props> = ({
   };
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
+  /** The blank value a field starts from, which differs by field type. */
+  const blankFor = (f: CrudField) =>
+    f.defaultValue ?? (f.type === 'checkbox' ? false : f.type === 'multiselect' || f.type === 'list' ? [] : '');
+
   const openCreate = () => {
-    const init: any = {};
-    fields.forEach(f => { init[f.name] = f.defaultValue ?? (f.type === 'checkbox' ? false : ''); });
+    let init: any = {};
+    fields.forEach(f => { init = setField(init, f.name, blankFor(f)); });
     setForm(init); setEditing(null); setError(null); setOpen(true);
   };
   const openEdit = (row: any) => {
-    const init: any = {};
-    fields.forEach(f => { init[f.name] = row[f.name] ?? (f.type === 'checkbox' ? false : ''); });
+    let init: any = {};
+    fields.forEach(f => {
+      const stored = getField(row, f.name);
+      // A list or multi-select must always be an array to edit. Stored values
+      // can arrive as JSON text from older records, so those are parsed rather
+      // than silently discarded.
+      if (f.type === 'multiselect' || f.type === 'list') {
+        init = setField(init, f.name, Array.isArray(stored)
+          ? stored
+          : typeof stored === 'string' && stored.trim().startsWith('[')
+            ? (() => { try { return JSON.parse(stored); } catch { return []; } })()
+            : []);
+        return;
+      }
+      init = setField(init, f.name, stored ?? blankFor(f));
+    });
     setForm(init); setEditing(row); setError(null); setOpen(true);
   };
   /** Fields currently applicable, given what the user has chosen so far. */
@@ -94,10 +245,10 @@ export const CrudTable: React.FC<Props> = ({
       // Only submit fields that are actually shown. Switching the payment
       // method from bank transfer to cash must not silently keep the bank
       // details the user had already typed.
-      const payload: any = {};
+      let payload: any = {};
       visibleFields.forEach(f => {
         if (f.type === 'section') return;
-        payload[f.name] = form[f.name];
+        payload = setField(payload, f.name, getField(form, f.name));
       });
       if (editing && updateRow) await updateRow(editing[idKey], payload);
       else if (createRow) await createRow(payload);
@@ -169,16 +320,42 @@ export const CrudTable: React.FC<Props> = ({
                 <Typography variant="subtitle2" fontWeight={700}>{f.label}</Typography>
                 {f.helperText && <Typography variant="caption" color="text.secondary">{f.helperText}</Typography>}
               </Box>
+            ) : f.type === 'list' ? (
+              <ListField
+                key={f.name}
+                field={f}
+                value={getField(form, f.name)}
+                onChange={rows => setForm(setField(form, f.name, rows))}
+              />
+            ) : f.type === 'multiselect' ? (
+              <Autocomplete
+                key={f.name}
+                multiple
+                disableCloseOnSelect
+                options={(f.options || []).map(o => o.value)}
+                getOptionLabel={v => (f.options || []).find(o => o.value === v)?.label || String(v)}
+                value={Array.isArray(getField(form, f.name)) ? getField(form, f.name) : []}
+                onChange={(_, v) => setForm(setField(form, f.name, v))}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label={f.label}
+                    required={f.required}
+                    helperText={f.helperText}
+                    fullWidth
+                  />
+                )}
+              />
             ) : f.type === 'autocomplete' ? (
               <Autocomplete
                 key={f.name}
                 freeSolo={f.freeSolo !== false}
                 options={(f.options || []).map(o => o.value)}
-                value={form[f.name] ?? ''}
+                value={getField(form, f.name) ?? ''}
                 // `onInputChange` (not just onChange) is what captures a value
                 // the user types but never picks from the dropdown.
-                onInputChange={(_, v) => setForm({ ...form, [f.name]: v })}
-                onChange={(_, v) => setForm({ ...form, [f.name]: v ?? '' })}
+                onInputChange={(_, v) => setForm(setField(form, f.name, v))}
+                onChange={(_, v) => setForm(setField(form, f.name, v ?? ''))}
                 renderInput={(params) => (
                   <TextField {...params} label={f.label} required={f.required} helperText={f.helperText} fullWidth />
                 )}
@@ -189,23 +366,23 @@ export const CrudTable: React.FC<Props> = ({
                 label={f.label}
                 variant={f.imageVariant || 'avatar'}
                 existingPath={editing && f.imagePath ? f.imagePath(editing) : null}
-                value={form[f.name]}
-                onChange={dataUrl => setForm({ ...form, [f.name]: dataUrl })}
+                value={getField(form, f.name)}
+                onChange={dataUrl => setForm(setField(form, f.name, dataUrl))}
               />
             ) : f.type === 'checkbox' ? (
-              <FormControlLabel key={f.name} control={<Checkbox checked={!!form[f.name]} onChange={e => setForm({ ...form, [f.name]: e.target.checked })} />} label={f.label} />
+              <FormControlLabel key={f.name} control={<Checkbox checked={!!getField(form, f.name)} onChange={e => setForm(setField(form, f.name, e.target.checked))} />} label={f.label} />
             ) : f.type === 'select' ? (
-              <TextField key={f.name} select label={f.label} value={form[f.name] ?? ''} required={f.required}
+              <TextField key={f.name} select label={f.label} value={getField(form, f.name) ?? ''} required={f.required}
                 helperText={f.helperText}
-                onChange={e => setForm({ ...form, [f.name]: e.target.value })} fullWidth>
+                onChange={e => setForm(setField(form, f.name, e.target.value))} fullWidth>
                 {(f.options || []).map(o => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
               </TextField>
             ) : (
               <TextField key={f.name} label={f.label}
                 type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'datetime' ? 'datetime-local' : 'text'}
-                value={form[f.name] ?? ''} required={f.required} helperText={f.helperText}
+                value={getField(form, f.name) ?? ''} required={f.required} helperText={f.helperText}
                 multiline={f.type === 'textarea'} minRows={f.type === 'textarea' ? 3 : undefined}
-                onChange={e => setForm({ ...form, [f.name]: e.target.value })} fullWidth
+                onChange={e => setForm(setField(form, f.name, e.target.value))} fullWidth
                 InputLabelProps={f.type === 'date' || f.type === 'datetime' ? { shrink: true } : undefined} />
             ))}
           </Stack>
