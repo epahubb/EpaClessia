@@ -52,6 +52,25 @@ async function addChargeColumns(db: Knex, table: string): Promise<void> {
 }
 
 /**
+ * Columns tying a member to their portal login.
+ *
+ * The member portal previously matched the signed-in user to a member row by
+ * email alone. That silently broke for anyone whose portal email differed from
+ * the address on their member record, and for two members sharing a family
+ * address. An explicit link is stored in both directions instead, and the email
+ * match is kept only as a fallback for accounts created before this existed.
+ */
+async function addMemberPortalColumns(db: Knex): Promise<void> {
+  await addColumn(db, 'users', 'memberId', (t) => t.string('memberId'));
+  await addColumn(db, 'members', 'portalUserUid', (t) => t.string('portalUserUid'));
+  await addColumn(db, 'members', 'portalInvitedAt', (t) => t.timestamp('portalInvitedAt'));
+  // Set when the member has signed in and chosen their own password, so the
+  // admin can see who is still on a temporary one.
+  await addColumn(db, 'members', 'portalPasswordSetAt', (t) => t.timestamp('portalPasswordSetAt'));
+  await addColumn(db, 'users', 'mustChangePassword', (t) => t.boolean('mustChangePassword'));
+}
+
+/**
  * Columns for the extended member record used by traditions that ask for it
  * (see denominations.ts). Added for every church rather than only the ones that
  * currently show them: a superadmin can change a church's denomination at any
@@ -109,6 +128,7 @@ async function addExtendedMemberColumns(db: Knex): Promise<void> {
 
 export async function applyFeatureMigrations(db: Knex): Promise<void> {
   await addExtendedMemberColumns(db);
+  await addMemberPortalColumns(db);
   /* ---------------------------------------------------------------- */
   /* Denomination: decides which portal the church admin gets         */
   /* ---------------------------------------------------------------- */

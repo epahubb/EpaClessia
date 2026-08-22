@@ -21,6 +21,8 @@ import {
   generateQrToken,
   buildQrPayload,
   checkQrToken,
+  checkEventQrWindow,
+  eventAttendanceWindow,
   buildRollCall,
   summarizeRollCall,
   normalizePresent,
@@ -66,6 +68,18 @@ import {
   shouldFollowUp,
 } from '../lib/engagement';
 import { sendEmail, emailTemplate, getEmailConfig } from '../services/email';
+import {
+  MEMBER_PORTAL_ROLE,
+  generateTempPassword,
+  generatePortalUid,
+  isUsableLoginEmail,
+  normalizeLoginEmail,
+  portalInviteSubject,
+  portalInviteBody,
+  portalInviteSms,
+  portalSkipMessage,
+  type PortalSkipReason,
+} from '../lib/memberPortal';
 
 /**
  * Tenant-scoped church application API.
@@ -298,6 +312,148 @@ router.delete('/offices/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req:
     res.status(500).json({ error: 'Failed to delete office' });
   }
 });
+
+/* --- Member portal access ----------------------------------------------- */
+
+export type PortalAccessResult =
+  | { created: true; email: string; emailSent: boolean; smsSent: boolean; reset: boolean }
+  | { created: false; reason: PortalSkipReason; message: string };
+
+/**
+ * Give a member a way into the member portal.
+ *
+ * Called when a member is registered, and again if the admin re-sends the
+ * invitation. The temporary password is generated here, hashed before it is
+ * stored, and sent to the member by email (and by SMS when we have a number).
+ * It is never stored in plain text and never returned in the API response:
+ * an admin who wants to help a member in gets them a fresh invite rather than
+ * reading the old password back out.
+ *
+ * Delivery failure does not fail provisioning. The account still exists and the
+ * admin is told the message did not go out, which is more useful than rolling
+ * back an account the member could otherwise have used.
+ */
+async function provisionPortalAccess(
+  tenantId: string,
+  member: any,
+  opts: { baseUrl: string; reset?: boolean } = { baseUrl: '' },
+): Promise<PortalAccessResult> {
+  const email = normalizeLoginEmail(member?.email);
+  if (!isUsableLoginEmail(email)) {
+    return { created: false, reason: 'no_email', message: portalSkipMessage('no_email') };
+  }
+
+  const existing = await db('users').whereRaw('lower(email) = ?', [email]).first();
+
+  // An address already used by a different person's account must not be taken
+  // over: that would hand this member someone else's sign-in.
+  if (existing && existing.memberId && existing.memberId !== member.id) {
+    return { created: false, reason: 'email_taken', message: portalSkipMessage('email_taken') };
+  }
+  if (existing && !existing.memberId && existing.role && existing.role !== MEMBER_PORTAL_ROLE) {
+    // A staff account (pastor, secretary) already owns this address. Link the
+    // member record to it rather than creating a second login for one person,
+    // and leave their existing password alone.
+    await db('users').where({ uid: existing.uid }).update({ memberId: member.id });
+    await db('members')
+      .where({ id: member.id, tenantId })
+      .update({ portalUserUid: existing.uid, portalInvitedAt: new Date() });
+    return { created: true, email, emailSent: false, smsSent: false, reset: false };
+  }
+
+  const password = generateTempPassword();
+  const bcrypt = (await import('bcryptjs')).default;
+  const hash = await bcrypt.hash(password, 12);
+  const name = [member.firstName, member.lastName].filter(Boolean).join(' ') || 'Member';
+  const now = new Date();
+
+  let uid: string;
+  if (existing) {
+    uid = existing.uid;
+    await db('users').where({ uid }).update({
+      password: hash,
+      mustChangePassword: true,
+      memberId: member.id,
+      tenantId,
+      status: 'active',
+      name: existing.name || name,
+      phone: existing.phone || member.phone || null,
+    });
+  } else {
+    uid = generatePortalUid();
+    await db('users').insert({
+      uid,
+      email,
+      name,
+      phone: member.phone || null,
+      role: MEMBER_PORTAL_ROLE,
+      status: 'active',
+      tenantId,
+      password: hash,
+      mustChangePassword: true,
+      memberId: member.id,
+      createdAt: now,
+    });
+  }
+
+  await db('members')
+    .where({ id: member.id, tenantId })
+    .update({ portalUserUid: uid, portalInvitedAt: now, portalPasswordSetAt: null });
+
+  const tenant = await db('tenants').where({ id: tenantId }).first();
+  const churchName = tenant?.name || 'Your church';
+  const loginUrl = `${opts.baseUrl || ''}/login`;
+  const invite = { memberName: name, churchName, email, password, loginUrl };
+
+  // Email first: it carries the full explanation.
+  let emailSent = false;
+  try {
+    const result = await sendEmail({
+      to: email,
+      subject: portalInviteSubject(churchName),
+      html: emailTemplate({
+        title: 'Your member portal is ready',
+        body: portalInviteBody(invite),
+        ctaLabel: 'Sign in',
+        ctaUrl: loginUrl,
+        footer: `Sent by ${churchName} via Ecclesia.`,
+      }),
+    });
+    emailSent = Boolean(result?.success);
+  } catch (error) {
+    console.error('Portal invite email failed:', error);
+  }
+
+  // SMS as well when we have a number: many members read a text sooner than an
+  // email, and it is the same credentials either way.
+  let smsSent = false;
+  if (member.phone) {
+    try {
+      const settings = await getTenantSettings(tenantId, 'sms');
+      const result: any = await sendSMS(String(member.phone), portalInviteSms(invite), {
+        apiKey: settings?.apiKey,
+        senderId: settings?.senderId,
+      });
+      smsSent = Boolean(result?.success);
+    } catch (error) {
+      console.error('Portal invite SMS failed:', error);
+    }
+  }
+
+  await db('communications_log')
+    .insert({
+      tenantId,
+      type: emailSent ? 'email' : 'sms',
+      recipient: email,
+      subject: portalInviteSubject(churchName),
+      message: 'Member portal invitation',
+      status: emailSent || smsSent ? 'sent' : 'failed',
+      createdAt: now,
+    })
+    .catch(() => {});
+
+  return { created: true, email, emailSent, smsSent, reset: Boolean(opts.reset) };
+}
 
 /* --- Extended member record (ministries, education, family, medical) --- */
 
@@ -666,14 +822,82 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
     await linkSpouse(tid(req)!, member);
     await linkChildren(tid(req)!, member.id, normalizeChildren(req.body.children));
 
+    // The moment a member is registered they get portal access. This runs
+    // after the member row exists so the two records can point at each other.
+    // A failure here must not fail the registration: the member is saved, and
+    // the admin can re-send the invite from the member list.
+    let portalAccess: PortalAccessResult;
+    try {
+      portalAccess = await provisionPortalAccess(tid(req)!, member, {
+        baseUrl: publicBaseUrl(req),
+      });
+    } catch (error) {
+      console.error('Portal provisioning failed:', error);
+      portalAccess = {
+        created: false,
+        reason: 'no_email',
+        message: 'The member was saved, but their portal login could not be created. Use “Send portal invite” to try again.',
+      };
+    }
+
     // Never echo the raw image bytes back in the JSON response.
     const { photo: _omitPhoto, ...safeMember } = member;
     res.status(201).json({
       ...expandMemberProfile(safeMember, ministryIds),
       hasPhoto: Boolean(member.photo),
+      portalAccess,
     });
   } catch (error) {
     handleImageError(error, res, 'Failed to create member');
+  }
+});
+
+/**
+ * Send (or re-send) a member's portal invitation.
+ *
+ * Used when a member was registered without an email address, never received
+ * the first invitation, or has forgotten the temporary password. Each call
+ * issues a NEW password: the old one is a hash we cannot read back, and a fresh
+ * credential is safer than any mechanism for recovering the previous one.
+ */
+router.post('/members/:id/portal-access', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const member = await db('members').where({ id: req.params.id, tenantId }).first();
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+
+    // An address can be supplied here, which is how an admin gives portal
+    // access to a member registered without one.
+    const email = req.body?.email ? String(req.body.email).trim() : '';
+    if (email && email.toLowerCase() !== String(member.email || '').toLowerCase()) {
+      await db('members').where({ id: member.id, tenantId }).update({ email });
+      member.email = email;
+    }
+
+    const result = await provisionPortalAccess(tenantId!, member, {
+      baseUrl: publicBaseUrl(req),
+      reset: true,
+    });
+
+    if (!result.created) {
+      return res.status(400).json({ error: result.message, reason: result.reason });
+    }
+
+    await logActivity(req, 'MEMBER_PORTAL_INVITE', 'members', member.id);
+
+    res.json({
+      success: true,
+      email: result.email,
+      emailSent: result.emailSent,
+      smsSent: result.smsSent,
+      message:
+        result.emailSent || result.smsSent
+          ? `A new portal login was sent to ${result.email}.`
+          : `The portal login was created for ${result.email}, but the invitation could not be delivered. Check the email and SMS settings.`,
+    });
+  } catch (error) {
+    console.error('POST /members/:id/portal-access error:', error);
+    res.status(500).json({ error: 'Failed to send the portal invitation' });
   }
 });
 
@@ -2485,16 +2709,56 @@ function rollCallMembersQuery(tenantId: string) {
 }
 
 /**
+ * Why a code cannot be shown yet, in words a steward can act on.
+ */
+function qrWindowMessage(
+  reason: 'not_started' | 'ended' | 'no_schedule',
+  startsAt?: Date,
+  endsAt?: Date,
+): string {
+  if (reason === 'no_schedule') {
+    return 'This event has no start time, so attendance cannot be opened. Set its date and time first.';
+  }
+  if (reason === 'not_started') {
+    return `This event has not started yet. The code becomes active at ${startsAt ? startsAt.toLocaleString() : 'the start time'}.`;
+  }
+  return `This event ended at ${endsAt ? endsAt.toLocaleString() : 'its end time'}, so its code no longer works.`;
+}
+
+/** The window, shaped for the display screen. */
+function qrWindowPayload(event: any) {
+  const window = eventAttendanceWindow(event);
+  return {
+    startsAt: window ? window.startsAt.toISOString() : null,
+    endsAt: window ? window.endsAt.toISOString() : null,
+  };
+}
+
+/**
  * Issue or rotate an event's QR token.
  *
  * Rotation is the point: the displayed code changes every few minutes so a
- * screenshot forwarded to someone sitting at home stops working.
+ * screenshot forwarded to someone sitting at home stops working. On top of
+ * that, a code only exists while the event is actually running.
  */
 router.post('/events/:id/qr', requireRole(...ATTENDANCE_ROLES), async (req: AuthRequest, res) => {
   try {
     const tenantId = tid(req);
     const event = await db('events').where({ id: req.params.id, tenantId }).first();
     if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    // Outside the service window there is nothing to issue. Refusing here,
+    // rather than only at scan time, keeps a code that cannot work from being
+    // printed and handed to a steward.
+    const window = checkEventQrWindow(event);
+    if (!window.ok) {
+      return res.status(409).json({
+        error: qrWindowMessage(window.reason, window.startsAt, window.endsAt),
+        reason: window.reason,
+        active: false,
+        ...qrWindowPayload(event),
+      });
+    }
 
     const { token, expiresAt } = generateQrToken();
     await db('events')
@@ -2507,6 +2771,8 @@ router.post('/events/:id/qr', requireRole(...ATTENDANCE_ROLES), async (req: Auth
       payload: buildQrPayload(event.id, token),
       expiresAt,
       ttlMinutes: QR_TOKEN_TTL_MINUTES,
+      active: true,
+      ...qrWindowPayload(event),
     });
   } catch (error) {
     console.error('POST /events/:id/qr error:', error);
@@ -2523,6 +2789,21 @@ router.get('/events/:id/qr', requireRole(...ATTENDANCE_ROLES), async (req: AuthR
     const tenantId = tid(req);
     const event = await db('events').where({ id: req.params.id, tenantId }).first();
     if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    // The display screen polls this endpoint, so it is told plainly whether
+    // the window is open instead of being handed a code that cannot be used.
+    const window = checkEventQrWindow(event);
+    if (!window.ok) {
+      return res.json({
+        eventId: event.id,
+        eventTitle: event.title,
+        active: false,
+        reason: window.reason,
+        message: qrWindowMessage(window.reason, window.startsAt, window.endsAt),
+        ttlMinutes: QR_TOKEN_TTL_MINUTES,
+        ...qrWindowPayload(event),
+      });
+    }
 
     let token = event.qrToken;
     let expiresAt = event.qrTokenExpiresAt;
@@ -2542,6 +2823,8 @@ router.get('/events/:id/qr', requireRole(...ATTENDANCE_ROLES), async (req: AuthR
       payload: buildQrPayload(event.id, token),
       expiresAt,
       ttlMinutes: QR_TOKEN_TTL_MINUTES,
+      active: true,
+      ...qrWindowPayload(event),
     });
   } catch (error) {
     console.error('GET /events/:id/qr error:', error);
@@ -2566,6 +2849,9 @@ router.get('/events/:id/rollcall', requireRole(...ATTENDANCE_ROLES), async (req:
     const entries = buildRollCall(members as any[], rows as any[]);
     res.json({
       event: { id: event.id, title: event.title, startTime: event.startTime },
+      // `entries` is what the roll call panel reads. `data` is kept for the
+      // generic unwrap helper used elsewhere in the client.
+      entries,
       data: entries,
       summary: summarizeRollCall(entries),
     });

@@ -36,7 +36,10 @@ export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
     setError(null);
     try {
       const res = await churchApi.getRollCall(eventId);
-      setEntries((res?.entries || []) as Entry[]);
+      // The endpoint returns the sheet under `entries`; `data` is the generic
+      // key used elsewhere. Reading only one of them is what made a register
+      // full of members show up as empty.
+      setEntries((res?.entries || res?.data || []) as Entry[]);
       setChanges({});
     } catch (e: any) {
       setError(e?.friendlyMessage || 'Could not load the roll call for this event.');
@@ -144,7 +147,9 @@ export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
           <Box sx={{ textAlign: 'center', p: 6, color: 'text.secondary' }}>
             <Users size={40} />
             <Typography sx={{ mt: 1 }}>
-              {entries.length === 0 ? 'No members in the register yet.' : 'No members match that search.'}
+              {entries.length === 0
+                ? 'No members in the register yet. Register members under Members, and they will appear here.'
+                : 'No members match that search.'}
             </Typography>
           </Box>
         ) : (

@@ -96,6 +96,68 @@ export function safeEquals(a: string, b: string): boolean {
 // compiles with strictNullChecks off, which stops TypeScript from narrowing a
 // union on a boolean discriminant, so callers inside `if (!check.ok)` could not
 // otherwise read `check.reason` without a cast.
+/**
+ * Whether an event's QR code should be accepted right now.
+ *
+ * A rotating token answers "is this code current"; this answers the separate
+ * question "is this event happening". Both must hold: a valid token scanned
+ * three days early is still not attendance at that service.
+ *
+ * `reason` distinguishes too-early from too-late so the caller can say which,
+ * rather than a flat "invalid" that leaves a member guessing.
+ */
+export type QrWindowResult =
+  | { ok: true; reason?: undefined; startsAt: Date; endsAt: Date }
+  | {
+      ok: false;
+      reason: 'not_started' | 'ended' | 'no_schedule';
+      startsAt?: Date;
+      endsAt?: Date;
+    };
+
+/**
+ * Resolve an event's attendance window.
+ *
+ * An event with no end time is treated as lasting DEFAULT_EVENT_DURATION_MINUTES
+ * rather than for ever: a code that never stops working is the problem being
+ * fixed here, and the same fallback already governs biometric punch matching.
+ */
+export function eventAttendanceWindow(
+  event: { startTime?: string | Date | null; endTime?: string | Date | null },
+): { startsAt: Date; endsAt: Date } | null {
+  const start = event?.startTime ? new Date(event.startTime) : null;
+  if (!start || Number.isNaN(start.getTime())) return null;
+
+  const rawEnd = event?.endTime ? new Date(event.endTime) : null;
+  const endsAt =
+    rawEnd && !Number.isNaN(rawEnd.getTime()) && rawEnd.getTime() > start.getTime()
+      ? rawEnd
+      : new Date(start.getTime() + DEFAULT_EVENT_DURATION_MINUTES * MS_PER_MINUTE);
+
+  return { startsAt: start, endsAt };
+}
+
+/**
+ * Check the scanning window for an event.
+ *
+ * @param event Row holding `startTime` and (optionally) `endTime`.
+ */
+export function checkEventQrWindow(
+  event: { startTime?: string | Date | null; endTime?: string | Date | null },
+  now: Date = new Date(),
+): QrWindowResult {
+  const window = eventAttendanceWindow(event);
+  // An event with no usable start time has no window to be inside of. Failing
+  // closed keeps an unscheduled draft from quietly accepting attendance.
+  if (!window) return { ok: false, reason: 'no_schedule' };
+
+  const { startsAt, endsAt } = window;
+  const at = now.getTime();
+  if (at < startsAt.getTime()) return { ok: false, reason: 'not_started', startsAt, endsAt };
+  if (at > endsAt.getTime()) return { ok: false, reason: 'ended', startsAt, endsAt };
+  return { ok: true, startsAt, endsAt };
+}
+
 export type QrCheckResult =
   | { ok: true; reason?: undefined }
   | { ok: false; reason: 'no_token' | 'expired' | 'mismatch' };

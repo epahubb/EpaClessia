@@ -6,7 +6,7 @@ import {
   verifyTransaction,
   isPaystackConfigured,
 } from '../services/paystack';
-import { parseQrPayload, checkQrToken } from '../lib/attendance';
+import { parseQrPayload, checkQrToken, checkEventQrWindow } from '../lib/attendance';
 
 /**
  * Member self-service API.
@@ -46,12 +46,31 @@ async function resolveMember(req: AuthRequest, res: Response, next: NextFunction
     (req as any).dbUser = dbUser;
     (req as any).tenantId = dbUser.tenantId;
 
+    // Accounts created when a member is registered carry an explicit link, so
+    // that is trusted first. Matching on email is kept only for accounts that
+    // predate the link, and would otherwise pick the wrong person whenever two
+    // members share a household address.
     let memberRecord: any = null;
-    if (dbUser.email) {
+    if (dbUser.memberId) {
+      memberRecord = await db('members')
+        .where({ id: dbUser.memberId, tenantId: dbUser.tenantId })
+        .first();
+    }
+    if (!memberRecord) {
+      memberRecord = await db('members')
+        .where({ tenantId: dbUser.tenantId, portalUserUid: dbUser.uid })
+        .first();
+    }
+    if (!memberRecord && dbUser.email) {
       memberRecord = await db('members')
         .where({ tenantId: dbUser.tenantId })
         .whereRaw('lower(email) = ?', [String(dbUser.email).toLowerCase()])
         .first();
+
+      // Repair the missing link so later requests take the direct path above.
+      if (memberRecord) {
+        await db('users').where({ uid: dbUser.uid }).update({ memberId: memberRecord.id }).catch(() => {});
+      }
     }
     (req as any).memberRecord = memberRecord;
     next();
@@ -599,6 +618,20 @@ router.post('/attendance/scan', async (req: AuthRequest, res) => {
 
     const event = await db('events').where({ id: parsed.eventId, tenantId }).first();
     if (!event) return res.status(404).json({ error: 'That attendance code is not for one of your church events.' });
+
+    // A code is only good while the service is running. This is checked before
+    // the token so an early arrival is told "not started yet" rather than the
+    // misleading "that code is not valid".
+    const window = checkEventQrWindow(event);
+    if (!window.ok) {
+      const message =
+        window.reason === 'not_started'
+          ? `${event.title} has not started yet. Attendance opens at ${window.startsAt ? new Date(window.startsAt).toLocaleString() : 'the start time'}.`
+          : window.reason === 'ended'
+            ? `${event.title} has already ended, so attendance is closed.`
+            : 'Attendance is not open for this event.';
+      return res.status(409).json({ error: message, reason: window.reason });
+    }
 
     const check = checkQrToken(event, parsed.token);
     if (!check.ok) {

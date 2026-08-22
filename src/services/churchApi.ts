@@ -25,6 +25,15 @@ export interface ChurchSettings {
   financial?: { fiscalYearStart?: string; fiscalYearEnd?: string; currency?: string };
 }
 
+/** One line of a roll call sheet. */
+export type RollCallRow = {
+  memberId: string;
+  name: string;
+  present: boolean | null;
+  method?: string | null;
+  recordedAt?: string | null;
+};
+
 const unwrap = (r: any) =>
   Array.isArray(r) ? r : r?.data ?? r?.items ?? r?.members ?? r?.events ?? [];
 
@@ -223,23 +232,32 @@ export const churchApi = {
     eventId: string,
   ): Promise<{ payload: string; token: string; expiresAt: string; ttlMinutes: number }> =>
     (await api.post(`/church/events/${eventId}/qr`, {})).data,
-  /** Read the current token, if one is still valid. */
+  /**
+   * Read the current token, if one is still valid.
+   *
+   * `active` is false outside the event's own start/end window, with `reason`
+   * saying whether the service has not started yet or has already ended.
+   */
   getEventQr: async (
     eventId: string,
-  ): Promise<{ payload?: string; expiresAt?: string; active?: boolean; ttlMinutes?: number }> =>
-    (await api.get(`/church/events/${eventId}/qr`)).data,
+  ): Promise<{
+    payload?: string;
+    expiresAt?: string;
+    active?: boolean;
+    reason?: 'not_started' | 'ended' | 'no_schedule';
+    message?: string;
+    startsAt?: string | null;
+    endsAt?: string | null;
+    ttlMinutes?: number;
+  }> => (await api.get(`/church/events/${eventId}/qr`)).data,
 
   /** Roll call sheet. `present` is true, false, or null when unmarked. */
   getRollCall: async (
     eventId: string,
   ): Promise<{
-    entries: Array<{
-      memberId: string;
-      name: string;
-      present: boolean | null;
-      method?: string | null;
-      recordedAt?: string | null;
-    }>;
+    entries?: RollCallRow[];
+    /** The same list under the generic key used by other endpoints. */
+    data?: RollCallRow[];
     summary?: { present: number; absent: number; unmarked: number; total: number };
   }> => (await api.get(`/church/events/${eventId}/rollcall`)).data,
   /** Save changed marks only. Unmarked members are left untouched. */
@@ -304,6 +322,13 @@ export const churchApi = {
     (await api.get('/church/absence/surveys', { params: status && status !== 'all' ? { status } : undefined })).data,
   sendAbsenceSurveys: async (body: { eventId?: string; memberIds?: string[] }) =>
     (await api.post('/church/absence/surveys/send', body)).data,
+
+  /**
+   * Send or re-send a member's portal invitation. Each call issues a new
+   * temporary password, so this doubles as "reset their portal password".
+   */
+  sendPortalInvite: async (memberId: string, email?: string) =>
+    (await api.post(`/church/members/${memberId}/portal-access`, email ? { email } : {})).data,
 
   // ---- Offices the church recognises (Settings > Offices) ----
   getOffices: async () => unwrap((await api.get('/church/offices')).data),

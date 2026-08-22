@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Chip, Button, Avatar, Alert, Stack } from '@mui/material';
+import { Box, Typography, Chip, Button, Avatar, Alert, Stack, Tooltip, IconButton, Snackbar } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
+import KeyIcon from '@mui/icons-material/VpnKey';
 import CrudTable, { CrudField } from '../../components/church/CrudTable';
 import MemberImportModal from '../../components/church/MemberImportModal';
 import useAuthedImage from '../../hooks/useAuthedImage';
@@ -52,8 +53,51 @@ const engagementColor = (status: string): any => ({
   new: 'info',
 }[String(status).toLowerCase()] || 'default');
 
+/**
+ * Sends a member their portal login.
+ *
+ * Every member gets an account the moment they are registered, so this is for
+ * the exceptions: a member registered without an email address, an invitation
+ * that never arrived, or a forgotten password. Each click issues a NEW
+ * temporary password, because the stored one is a hash that cannot be read
+ * back — there is nothing to re-send, only something to replace.
+ */
+const PortalInviteButton: React.FC<{ row: any; onDone: (message: string) => void }> = ({ row, onDone }) => {
+  const [busy, setBusy] = useState(false);
+
+  const send = async () => {
+    setBusy(true);
+    try {
+      const res = await churchApi.sendPortalInvite(row.id);
+      onDone(res?.message || 'Portal login sent.');
+    } catch (e: any) {
+      onDone(e?.friendlyMessage || 'Could not send the portal login.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasEmail = Boolean(row?.email);
+  const label = !hasEmail
+    ? 'Add an email address to this member first'
+    : row?.portalUserUid
+      ? 'Send a new portal password'
+      : 'Create a portal login and send it';
+
+  return (
+    <Tooltip title={label}>
+      <span>
+        <IconButton size="small" onClick={send} disabled={busy || !hasEmail}>
+          <KeyIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
+  );
+};
+
 export const MemberList: React.FC = () => {
   const [importOpen, setImportOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Which extra sections this church's members are registered with is decided
   // by its denomination, chosen by the superadmin at registration.
@@ -299,6 +343,17 @@ export const MemberList: React.FC = () => {
         }]
       : []),
     {
+      // Whether this member can actually sign in. An admin needs to see at a
+      // glance who was registered without an email and so has no login.
+      key: 'portalUserUid',
+      label: 'Portal',
+      render: (r: any) => r.portalUserUid
+        ? <Chip size="small" color="success" variant="outlined" label="Has access" />
+        : r.email
+          ? <Chip size="small" variant="outlined" label="Not sent" />
+          : <Chip size="small" variant="outlined" color="warning" label="No email" />,
+    },
+    {
       key: 'membershipStatus',
       label: 'Status',
       render: (r: any) => <Chip size="small" label={r.membershipStatus || 'active'} color={statusColor(r.membershipStatus || 'active')} sx={{ textTransform: 'capitalize' }} />,
@@ -319,6 +374,7 @@ export const MemberList: React.FC = () => {
       <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>Member Management</Typography>
       <Typography color="text.secondary" sx={{ mb: 2 }}>
         Register members, manage profiles, family grouping and membership IDs — all stored in your church database.
+        Each member with an email address is given a member portal login as soon as they are registered.
       </Typography>
 
       {wants('ministries') && ministries.length === 0 && (
@@ -340,6 +396,7 @@ export const MemberList: React.FC = () => {
         deleteRow={churchApi.deleteMember}
         addLabel="Add Member"
         emptyText="No members yet. Click Add Member to register your first member."
+        rowActions={(row) => <PortalInviteButton row={row} onDone={setNotice} />}
         toolbarActions={(reload) => (
           <>
             <Button variant="outlined" startIcon={<UploadFileIcon />} onClick={() => setImportOpen(true)}>
@@ -352,6 +409,13 @@ export const MemberList: React.FC = () => {
             />
           </>
         )}
+      />
+
+      <Snackbar
+        open={Boolean(notice)}
+        autoHideDuration={6000}
+        onClose={() => setNotice(null)}
+        message={notice || ''}
       />
     </Box>
   );
