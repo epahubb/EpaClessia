@@ -69,6 +69,22 @@ import {
 } from '../lib/engagement';
 import { sendEmail, emailTemplate, getEmailConfig } from '../services/email';
 import {
+  STAT_METRICS,
+  UNIT_TYPES,
+  buildStatisticsTable,
+  filterStatisticRows,
+  summarizeStatistics,
+  coverage,
+  resolvePeriod,
+  previousPeriod,
+  periodDays,
+  metricDefinition,
+  isPeriodMetric,
+  totalRecords,
+  type StatisticRecord,
+  type UnitType,
+} from '../lib/unitStatistics';
+import {
   MEMBER_PORTAL_ROLE,
   generateTempPassword,
   generatePortalUid,
@@ -342,6 +358,831 @@ router.delete('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
   } catch (error) {
     console.error('Delete group error:', error);
     res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
+/* --- Statistical returns for ministries, groups and departments ----- */
+
+/**
+ * Every figure on a return is counted from records the church already keeps.
+ * Nothing here reads a number that somebody typed onto a statistics sheet.
+ *
+ * The queries below are the other half of `lib/unitStatistics.ts`: that module
+ * says what each figure means and where its underlying fact is recorded, and
+ * this one does the counting. Each figure also has a matching drill-down that
+ * returns the very rows it counted, so a leader who doubts a number can see the
+ * names behind it and go and correct the record itself.
+ */
+
+/**
+ * Resolve a unit and confirm it belongs to this church.
+ *
+ * Ministries and departments share the `ministries` table, separated by its
+ * `type` column; groups are their own table. Everything below goes through here
+ * so no endpoint can be talked into reading another church's figures by passing
+ * an id from elsewhere.
+ */
+async function loadUnit(tenantId: string, unitType: string, unitId: string): Promise<any | null> {
+  if (!UNIT_TYPES.includes(unitType as UnitType)) return null;
+
+  if (unitType === 'group') {
+    const row = await db('church_groups').where({ id: unitId, tenantId }).first();
+    return row ? { ...row, unitType: 'group' } : null;
+  }
+
+  const row = await db('ministries').where({ id: unitId, tenantId }).first();
+  if (!row) return null;
+  // A ministry row's own `type` decides which of the two it is, so a department
+  // cannot be addressed as a ministry or the other way round.
+  const actual = (row.type || 'ministry') === 'department' ? 'department' : 'ministry';
+  if (actual !== unitType) return null;
+  return { ...row, unitType: actual };
+}
+
+/**
+ * The members whose records feed this unit's return.
+ *
+ * For a group that is everyone whose member record names it; for a ministry or
+ * department it is the roster. Members whose standing has ended are kept in the
+ * list deliberately: a member who died or transferred out during the period
+ * must still be counted in that period's figures.
+ */
+async function unitMemberIds(tenantId: string, unit: any): Promise<string[]> {
+  if (unit.unitType === 'group') {
+    const rows = await db('members').where({ tenantId, groupId: unit.id }).select('id');
+    return rows.map((r: any) => r.id);
+  }
+  const rows = await db('ministry_members')
+    .where({ tenantId, ministryId: unit.id })
+    .select('memberId');
+  return rows.map((r: any) => r.memberId).filter(Boolean);
+}
+
+/** Display name for a member row. */
+const memberLabel = (m: any): string =>
+  `${m?.firstName || ''} ${m?.lastName || ''}`.trim() || m?.membershipId || 'Unnamed member';
+
+/**
+ * Members of this unit carrying a dated milestone inside the period.
+ *
+ * One query shape serves conversion, both baptisms and transfers in, since each
+ * is simply a date on the member record.
+ */
+async function membersWithMilestone(
+  tenantId: string,
+  memberIds: string[],
+  column: string,
+  from: Date,
+  to: Date,
+  extraColumns: string[] = [],
+): Promise<any[]> {
+  if (!memberIds.length) return [];
+  return db('members')
+    .where({ tenantId })
+    .whereIn('id', memberIds)
+    .whereNotNull(column)
+    .whereBetween(column, [from, to])
+    .select('id', 'firstName', 'lastName', 'membershipId', column, ...extraColumns)
+    .orderBy(column, 'desc');
+}
+
+/**
+ * Changes of standing recorded inside the period.
+ *
+ * Read from the history rather than from the member record, because the record
+ * only holds how things stand now. Without the history, a member who died in
+ * March would go on being counted as a death in every later period.
+ */
+async function statusChanges(
+  tenantId: string,
+  memberIds: string[],
+  kind: string,
+  toStatus: string,
+  from: Date,
+  to: Date,
+  fromStatus?: string,
+): Promise<any[]> {
+  if (!memberIds.length) return [];
+  let q = db('member_status_history')
+    .where({ tenantId, kind, toStatus })
+    .whereIn('memberId', memberIds)
+    .whereBetween('changedAt', [from, to]);
+  if (fromStatus) q = q.where({ fromStatus });
+  return q.orderBy('changedAt', 'desc');
+}
+
+/**
+ * Communion attendance by members of this unit.
+ *
+ * Counted from attendance at services marked as communion, which is the only
+ * honest way to get this figure: the church already takes attendance at those
+ * services, and asking anyone to also type a total would invite the two to
+ * disagree.
+ */
+async function communionAttendance(
+  tenantId: string,
+  memberIds: string[],
+  from: Date,
+  to: Date,
+): Promise<any[]> {
+  if (!memberIds.length) return [];
+  return db('event_attendance as a')
+    .join('events as e', 'e.id', 'a.eventId')
+    .where('a.tenantId', tenantId)
+    .whereIn('a.memberId', memberIds)
+    .whereBetween('e.startTime', [from, to])
+    // Either flag identifies a communion service: the explicit checkbox on the
+    // event, or the category, so churches that already categorise their
+    // services get the figure without re-tagging anything.
+    .where((b: any) => b.where('e.isCommunion', true).orWhere('e.category', 'communion'))
+    .select(
+      'a.id as attendanceId',
+      'a.memberId',
+      'a.checkInAt',
+      'e.id as eventId',
+      'e.title as eventTitle',
+      'e.startTime',
+    )
+    .orderBy('e.startTime', 'desc');
+}
+
+/** Visits logged against this unit or its members. */
+async function unitVisits(
+  tenantId: string,
+  unit: any,
+  memberIds: string[],
+  role: string,
+  from: Date,
+  to: Date,
+): Promise<any[]> {
+  return db('pastoral_visits')
+    .where({ tenantId, visitorRole: role })
+    .whereBetween('visitDate', [from, to])
+    // A visit counts for the unit if it was logged against the unit itself, or
+    // against one of its members.
+    .where((b: any) => {
+      b.where((inner: any) => inner.where({ unitType: unit.unitType, unitId: unit.id }));
+      if (memberIds.length) b.orWhereIn('memberId', memberIds);
+    })
+    .orderBy('visitDate', 'desc');
+}
+
+/** Interventional support paid to members of this unit. */
+async function supportPayments(
+  tenantId: string,
+  memberIds: string[],
+  from: Date,
+  to: Date,
+): Promise<any[]> {
+  if (!memberIds.length) return [];
+  return db('expenses')
+    .where({ tenantId, supportType: 'interventional' })
+    .whereIn('beneficiaryMemberId', memberIds)
+    .whereBetween('date', [from, to])
+    .orderBy('date', 'desc');
+}
+
+/** Meetings of this unit with attendance logged in the period. */
+async function unitMeetings(tenantId: string, unit: any, from: Date, to: Date): Promise<any[]> {
+  return db('ministry_attendance')
+    .where({ tenantId, ministryId: unit.id })
+    .whereBetween('sessionDate', [from, to])
+    .orderBy('sessionDate', 'desc');
+}
+
+/** Converts credited to members of this unit. */
+async function soulsWonBy(
+  tenantId: string,
+  memberIds: string[],
+  from: Date,
+  to: Date,
+): Promise<any[]> {
+  if (!memberIds.length) return [];
+  return db('members')
+    .where({ tenantId })
+    // The figure follows the member who did the winning, not the unit the
+    // convert happened to join -- which is what makes it different from "new
+    // converts" and worth reporting separately.
+    .whereIn('wonByMemberId', memberIds)
+    .whereNotNull('convertDate')
+    .whereBetween('convertDate', [from, to])
+    .select('id', 'firstName', 'lastName', 'membershipId', 'convertDate', 'wonByName')
+    .orderBy('convertDate', 'desc');
+}
+
+/**
+ * The standing figures: how the unit is, as at the end of the period.
+ */
+async function standingFigures(tenantId: string, unit: any): Promise<Record<string, number>> {
+  const figures: Record<string, number> = {};
+
+  if (unit.unitType === 'group') {
+    const [{ count: total } = { count: 0 }] = await db('members')
+      .where({ tenantId, groupId: unit.id })
+      .whereNotIn('membershipStatus', ['deceased', 'transferred'])
+      .count({ count: '*' });
+    figures.totalMembership = Number(total) || 0;
+
+    // A group's officer is its leader, where one is named.
+    figures.officers = unit.leaderId || unit.leaderName ? 1 : 0;
+
+    const [{ count: holders } = { count: 0 }] = await db('members')
+      .where({ tenantId, groupId: unit.id })
+      .whereNotIn('membershipStatus', ['deceased', 'transferred'])
+      .whereNotNull('office')
+      .whereNot({ office: '' })
+      .count({ count: '*' });
+    figures.otherOfficeHolders = Math.max(0, (Number(holders) || 0) - figures.officers);
+    return figures;
+  }
+
+  const roster = await db('ministry_members')
+    .where({ tenantId, ministryId: unit.id })
+    .whereNot({ status: 'inactive' })
+    .select('memberId', 'role');
+
+  figures.totalMembership = roster.length;
+  // Anyone on the roster whose role is something other than plain member is an
+  // officer of the unit.
+  figures.officers = roster.filter(
+    (r: any) => r.role && String(r.role).toLowerCase() !== 'member',
+  ).length;
+
+  const ids = roster.map((r: any) => r.memberId).filter(Boolean);
+  if (ids.length) {
+    const [{ count: holders } = { count: 0 }] = await db('members')
+      .where({ tenantId })
+      .whereIn('id', ids)
+      .whereNotNull('office')
+      .whereNot({ office: '' })
+      .count({ count: '*' });
+    // Church offices held by members of the unit, over and above the unit's own
+    // officers.
+    figures.otherOfficeHolders = Math.max(0, (Number(holders) || 0) - figures.officers);
+  } else {
+    figures.otherOfficeHolders = 0;
+  }
+  return figures;
+}
+
+/**
+ * All seventeen figures for one unit over one period, counted from the records.
+ */
+async function unitFigures(
+  tenantId: string,
+  unit: any,
+  memberIds: string[],
+  from: Date,
+  to: Date,
+): Promise<Record<string, number>> {
+  const [
+    standing,
+    converts,
+    water,
+    spirit,
+    transfersIn,
+    transfersOut,
+    backsliders,
+    deaths,
+    rehabilitated,
+    meetings,
+    souls,
+    communion,
+    elderVisits,
+    ministerVisits,
+    support,
+  ] = await Promise.all([
+    standingFigures(tenantId, unit),
+    membersWithMilestone(tenantId, memberIds, 'convertDate', from, to),
+    membersWithMilestone(tenantId, memberIds, 'waterBaptismDate', from, to),
+    membersWithMilestone(tenantId, memberIds, 'holySpiritBaptismDate', from, to),
+    membersWithMilestone(tenantId, memberIds, 'transferInDate', from, to),
+    statusChanges(tenantId, memberIds, 'membership', 'transferred', from, to),
+    statusChanges(tenantId, memberIds, 'engagement', 'backslider', from, to),
+    statusChanges(tenantId, memberIds, 'membership', 'deceased', from, to),
+    // Restoration is a specific transition, not a state: from backslider back
+    // to active. Counting members who are merely active now would count most of
+    // the church every period.
+    statusChanges(tenantId, memberIds, 'engagement', 'active', from, to, 'backslider'),
+    unitMeetings(tenantId, unit, from, to),
+    soulsWonBy(tenantId, memberIds, from, to),
+    communionAttendance(tenantId, memberIds, from, to),
+    unitVisits(tenantId, unit, memberIds, 'presiding_elder', from, to),
+    unitVisits(tenantId, unit, memberIds, 'minister', from, to),
+    supportPayments(tenantId, memberIds, from, to),
+  ]);
+
+  return {
+    ...standing,
+    newConverts: converts.length,
+    waterBaptism: water.length,
+    holySpiritBaptism: spirit.length,
+    transfersIn: transfersIn.length,
+    transfersOut: transfersOut.length,
+    backsliders: backsliders.length,
+    deaths: deaths.length,
+    convertsRehabilitated: rehabilitated.length,
+    meetingsHeld: meetings.length,
+    soulsWon: souls.length,
+    lordsSupperAttendance: communion.length,
+    presidingElderVisits: elderVisits.length,
+    ministerVisitations: ministerVisits.length,
+    interventionalSupport:
+      Math.round(support.reduce((sum: number, e: any) => sum + (Number(e.amount) || 0), 0) * 100) / 100,
+  };
+}
+
+/**
+ * The individual records behind one figure.
+ *
+ * This is what makes a counted return trustworthy: every number can be opened,
+ * and what comes back is the actual people, services, visits or payments that
+ * produced it -- each with a link back to the record itself.
+ */
+async function unitRecords(
+  tenantId: string,
+  unit: any,
+  memberIds: string[],
+  metric: string,
+  from: Date,
+  to: Date,
+): Promise<StatisticRecord[]> {
+  const people = (rows: any[], column: string, origin: string, detail?: (r: any) => string | null) =>
+    rows.map((r) => ({
+      title: memberLabel(r),
+      date: r[column] ? new Date(r[column]).toISOString() : null,
+      value: 1,
+      origin,
+      detail: detail ? detail(r) : null,
+      memberId: r.id,
+      sourceId: r.id,
+    }));
+
+  const fromHistory = (rows: any[], origin: string) =>
+    rows.map((r) => ({
+      title: r.memberName || 'Member',
+      date: r.changedAt ? new Date(r.changedAt).toISOString() : null,
+      value: 1,
+      origin,
+      detail: r.fromStatus ? `Changed from ${r.fromStatus}` : r.notes || null,
+      memberId: r.memberId,
+      sourceId: r.id,
+    }));
+
+  switch (metric) {
+    case 'newConverts':
+      return people(
+        await membersWithMilestone(tenantId, memberIds, 'convertDate', from, to, ['wonByName']),
+        'convertDate',
+        'Member record',
+        (r) => (r.wonByName ? `Won by ${r.wonByName}` : null),
+      );
+
+    case 'waterBaptism':
+      return people(
+        await membersWithMilestone(tenantId, memberIds, 'waterBaptismDate', from, to),
+        'waterBaptismDate',
+        'Member record',
+      );
+
+    case 'holySpiritBaptism':
+      return people(
+        await membersWithMilestone(tenantId, memberIds, 'holySpiritBaptismDate', from, to),
+        'holySpiritBaptismDate',
+        'Member record',
+      );
+
+    case 'transfersIn':
+      return people(
+        await membersWithMilestone(tenantId, memberIds, 'transferInDate', from, to, ['transferredFrom']),
+        'transferInDate',
+        'Member record',
+        (r) => (r.transferredFrom ? `From ${r.transferredFrom}` : null),
+      );
+
+    case 'transfersOut':
+      return fromHistory(
+        await statusChanges(tenantId, memberIds, 'membership', 'transferred', from, to),
+        'Status history',
+      );
+
+    case 'backsliders':
+      return fromHistory(
+        await statusChanges(tenantId, memberIds, 'engagement', 'backslider', from, to),
+        'Engagement tracking',
+      );
+
+    case 'deaths':
+      return fromHistory(
+        await statusChanges(tenantId, memberIds, 'membership', 'deceased', from, to),
+        'Status history',
+      );
+
+    case 'convertsRehabilitated':
+      return fromHistory(
+        await statusChanges(tenantId, memberIds, 'engagement', 'active', from, to, 'backslider'),
+        'Engagement tracking',
+      );
+
+    case 'soulsWon':
+      return (await soulsWonBy(tenantId, memberIds, from, to)).map((r: any) => ({
+        title: memberLabel(r),
+        date: r.convertDate ? new Date(r.convertDate).toISOString() : null,
+        value: 1,
+        origin: 'Member record',
+        detail: r.wonByName ? `Won by ${r.wonByName}` : null,
+        memberId: r.id,
+        sourceId: r.id,
+      }));
+
+    case 'meetingsHeld':
+      return (await unitMeetings(tenantId, unit, from, to)).map((r: any) => ({
+        title: r.title || 'Meeting',
+        date: r.sessionDate ? new Date(r.sessionDate).toISOString() : null,
+        value: 1,
+        origin: 'Attendance session',
+        detail: `${r.presentCount ?? 0} present of ${r.totalCount ?? 0}`,
+        memberId: null,
+        sourceId: r.id,
+      }));
+
+    case 'lordsSupperAttendance':
+      return (await communionAttendance(tenantId, memberIds, from, to)).map((r: any) => ({
+        title: r.eventTitle || 'Communion service',
+        date: r.startTime ? new Date(r.startTime).toISOString() : null,
+        value: 1,
+        origin: 'Communion attendance',
+        detail: 'One member partook',
+        memberId: r.memberId,
+        sourceId: r.eventId,
+      }));
+
+    case 'presidingElderVisits':
+    case 'ministerVisitations': {
+      const role = metric === 'presidingElderVisits' ? 'presiding_elder' : 'minister';
+      return (await unitVisits(tenantId, unit, memberIds, role, from, to)).map((r: any) => ({
+        title: r.visitorName || (role === 'minister' ? 'Minister' : 'Presiding elder'),
+        date: r.visitDate ? new Date(r.visitDate).toISOString() : null,
+        value: 1,
+        origin: 'Visitation log',
+        detail: [r.purpose, r.memberName ? `Visited ${r.memberName}` : null]
+          .filter(Boolean)
+          .join(' \u2014 ') || null,
+        memberId: r.memberId || null,
+        sourceId: r.id,
+      }));
+    }
+
+    case 'interventionalSupport':
+      return (await supportPayments(tenantId, memberIds, from, to)).map((r: any) => ({
+        title: r.beneficiaryName || 'Member',
+        date: r.date ? new Date(r.date).toISOString() : null,
+        value: Number(r.amount) || 0,
+        origin: 'Expense record',
+        detail: r.description || r.category || null,
+        memberId: r.beneficiaryMemberId || null,
+        sourceId: r.id,
+      }));
+
+    default:
+      // Standing figures have no list behind them: "which total membership?" has
+      // no answer in the way "which baptisms?" does.
+      return [];
+  }
+}
+
+/**
+ * Record a change in a member's standing.
+ *
+ * Called wherever a status actually changes, so the return is complete without
+ * anyone filing the same fact twice. Never throws: failing to write a history
+ * row must not fail the member edit that caused it.
+ */
+async function recordStatusChange(
+  tenantId: string,
+  member: any,
+  kind: 'membership' | 'engagement',
+  fromStatus: string | null,
+  toStatus: string,
+  changedBy?: string | null,
+  when: Date = new Date(),
+): Promise<void> {
+  try {
+    if (!member?.id || !toStatus || fromStatus === toStatus) return;
+
+    const ministries = await db('ministry_members')
+      .where({ tenantId, memberId: member.id })
+      .select('ministryId');
+
+    await db('member_status_history').insert({
+      id: genId('hist'),
+      tenantId,
+      memberId: member.id,
+      memberName: memberLabel(member),
+      kind,
+      fromStatus: fromStatus || null,
+      toStatus,
+      changedAt: when,
+      changedBy: changedBy || null,
+      notes: null,
+      // The unit membership as it was at the time, so a past return is not
+      // rewritten by a later change of group.
+      groupId: member.groupId || null,
+      ministryIds: JSON.stringify(ministries.map((m: any) => m.ministryId)),
+      createdAt: new Date(),
+    });
+  } catch (error) {
+    console.error('recordStatusChange error:', error);
+  }
+}
+
+/**
+ * GET /units  -- every ministry, department and group, for the unit picker.
+ */
+router.get('/units', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const [ministries, groups] = await Promise.all([
+      db('ministries').where({ tenantId }).select('id', 'name', 'type', 'leaderName', 'status'),
+      db('church_groups').where({ tenantId }).select('id', 'name', 'leaderName', 'active'),
+    ]);
+
+    const units = [
+      ...(ministries as any[]).map((m) => ({
+        id: m.id,
+        name: m.name,
+        unitType: (m.type || 'ministry') === 'department' ? 'department' : 'ministry',
+        leaderName: m.leaderName || null,
+        active: m.status !== 'inactive',
+      })),
+      ...(groups as any[]).map((g) => ({
+        id: g.id,
+        name: g.name,
+        unitType: 'group',
+        leaderName: g.leaderName || null,
+        active: g.active !== false,
+      })),
+    ].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    res.json({ data: units });
+  } catch (error) {
+    console.error('GET /units error:', error);
+    res.status(500).json({ error: 'Failed to load ministries, departments and groups' });
+  }
+});
+
+/**
+ * GET /units/:unitType/:unitId/statistics  -- the statistical return.
+ *
+ * Accepts `from`, `to` and `q`. The comparison period is always the span of
+ * equal length immediately preceding the one asked for, so a custom range is
+ * compared against something meaningful rather than a calendar month.
+ */
+router.get('/units/:unitType/:unitId/statistics', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const unit = await loadUnit(tenantId!, req.params.unitType, req.params.unitId);
+    if (!unit) {
+      return res.status(404).json({ error: 'That ministry, department or group could not be found.' });
+    }
+
+    const period = resolvePeriod(req.query.from as string, req.query.to as string);
+    const prior = previousPeriod(period);
+    const memberIds = await unitMemberIds(tenantId!, unit);
+
+    const [current, previous] = await Promise.all([
+      unitFigures(tenantId!, unit, memberIds, period.from, period.to),
+      unitFigures(tenantId!, unit, memberIds, prior.from, prior.to),
+    ]);
+
+    const full = buildStatisticsTable(current, previous);
+
+    res.json({
+      unit: {
+        id: unit.id,
+        name: unit.name,
+        unitType: unit.unitType,
+        leaderName: unit.leaderName || null,
+        memberCount: memberIds.length,
+      },
+      period: { from: period.from, to: period.to, days: periodDays(period) },
+      previousPeriod: { from: prior.from, to: prior.to },
+      // The summary and the coverage note are built from the unfiltered table:
+      // narrowing the rows with the search box must not change the headline.
+      summary: summarizeStatistics(full),
+      coverage: coverage(full),
+      data: filterStatisticRows(full, req.query.q as string),
+    });
+  } catch (error) {
+    console.error('GET unit statistics error:', error);
+    res.status(500).json({ error: 'Failed to build the statistics for this unit' });
+  }
+});
+
+/**
+ * GET /units/:unitType/:unitId/statistics/records/:metric
+ *
+ * The records behind one figure, so any number on the sheet can be traced to
+ * the people and documents that produced it.
+ */
+router.get('/units/:unitType/:unitId/statistics/records/:metric', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const unit = await loadUnit(tenantId!, req.params.unitType, req.params.unitId);
+    if (!unit) {
+      return res.status(404).json({ error: 'That ministry, department or group could not be found.' });
+    }
+
+    const metric = req.params.metric;
+    const def = metricDefinition(metric);
+    if (!def) return res.status(404).json({ error: 'Unknown figure.' });
+    if (!isPeriodMetric(metric)) {
+      return res.status(400).json({
+        error: `\u201c${def.label}\u201d is a standing figure counted from the roster, so it has no list of events behind it.`,
+      });
+    }
+
+    const period = resolvePeriod(req.query.from as string, req.query.to as string);
+    const memberIds = await unitMemberIds(tenantId!, unit);
+    let records = await unitRecords(tenantId!, unit, memberIds, metric, period.from, period.to);
+
+    const search = String(req.query.q || '').trim().toLowerCase();
+    if (search) {
+      records = records.filter((r) =>
+        `${r.title} ${r.detail || ''} ${r.origin}`.toLowerCase().includes(search));
+    }
+
+    res.json({
+      metric: def,
+      period: { from: period.from, to: period.to },
+      total: totalRecords(records),
+      data: records,
+    });
+  } catch (error) {
+    console.error('GET statistics records error:', error);
+    res.status(500).json({ error: 'Failed to load the records behind this figure' });
+  }
+});
+
+/**
+ * GET /statistics/metrics  -- the catalogue, so the page describes each figure
+ * exactly as the server counts it.
+ */
+router.get('/statistics/metrics', async (_req: AuthRequest, res) => {
+  res.json({ data: STAT_METRICS });
+});
+
+/* --- Visitation log ------------------------------------------------- */
+
+/**
+ * Visits by the presiding elder and by ministers.
+ *
+ * A pastoral record in its own right, which the return then counts. Recorded
+ * here rather than as a statistic so that the church keeps the useful part --
+ * who was visited, when, and why -- instead of only a tally.
+ */
+router.get('/visits', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const period = resolvePeriod(req.query.from as string, req.query.to as string);
+
+    let q = db('pastoral_visits')
+      .where({ tenantId })
+      .whereBetween('visitDate', [period.from, period.to]);
+
+    if (req.query.visitorRole) q = q.where({ visitorRole: String(req.query.visitorRole) });
+    if (req.query.unitId) q = q.where({ unitId: String(req.query.unitId) });
+
+    const search = String(req.query.q || '').trim();
+    if (search) {
+      q = q.where((b: any) =>
+        b.whereILike('visitorName', `%${search}%`)
+          .orWhereILike('memberName', `%${search}%`)
+          .orWhereILike('unitName', `%${search}%`)
+          .orWhereILike('purpose', `%${search}%`));
+    }
+
+    const rows = await q.orderBy('visitDate', 'desc').limit(500);
+    res.json({ data: rows });
+  } catch (error) {
+    console.error('GET /visits error:', error);
+    res.status(500).json({ error: 'Failed to load the visitation log' });
+  }
+});
+
+const VISITOR_ROLES = ['presiding_elder', 'minister', 'pastor', 'elder', 'other'];
+
+router.post('/visits', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const role = String(req.body?.visitorRole || '');
+    if (!VISITOR_ROLES.includes(role)) {
+      return res.status(400).json({ error: 'Choose who paid the visit.' });
+    }
+
+    const visitDate = req.body?.visitDate ? new Date(req.body.visitDate) : new Date();
+    if (Number.isNaN(visitDate.getTime())) {
+      return res.status(400).json({ error: 'Enter a valid date for the visit.' });
+    }
+    // A visit is a record of something that happened; dating one ahead would put
+    // it into a return before it took place.
+    if (visitDate.getTime() > Date.now() + 60 * 1000) {
+      return res.status(400).json({ error: 'That date is in the future. Log the visit once it has happened.' });
+    }
+
+    // A visit has to be attached to something, or it can never appear on a
+    // return.
+    let unit: any = null;
+    if (req.body?.unitType && req.body?.unitId) {
+      unit = await loadUnit(tenantId!, String(req.body.unitType), String(req.body.unitId));
+      if (!unit) return res.status(400).json({ error: 'That ministry, department or group could not be found.' });
+    }
+
+    let member: any = null;
+    if (req.body?.memberId) {
+      member = await db('members').where({ id: req.body.memberId, tenantId }).first();
+      if (!member) return res.status(400).json({ error: 'That member is not in this church.' });
+    }
+
+    if (!unit && !member) {
+      return res.status(400).json({
+        error: 'Say who or what was visited \u2014 a ministry, department or group, or a member.',
+      });
+    }
+
+    const row = {
+      id: genId('visit'),
+      tenantId,
+      visitDate,
+      visitorRole: role,
+      visitorName: req.body?.visitorName || null,
+      purpose: req.body?.purpose || null,
+      notes: req.body?.notes || null,
+      unitType: unit?.unitType || null,
+      unitId: unit?.id || null,
+      unitName: unit?.name || null,
+      memberId: member?.id || null,
+      memberName: member ? memberLabel(member) : null,
+      recordedBy: req.user?.uid || null,
+      createdAt: new Date(),
+    };
+
+    await db('pastoral_visits').insert(row);
+    await logActivity(req, 'VISIT_LOGGED', 'pastoral_visits', row.id);
+    res.status(201).json({ ...row, success: true });
+  } catch (error) {
+    console.error('POST /visits error:', error);
+    res.status(500).json({ error: 'Failed to log this visit' });
+  }
+});
+
+router.put('/visits/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const existing = await db('pastoral_visits').where({ id: req.params.id, tenantId }).first();
+    if (!existing) return res.status(404).json({ error: 'That visit could not be found.' });
+
+    const updates: any = {};
+    if ('visitorName' in req.body) updates.visitorName = req.body.visitorName || null;
+    if ('purpose' in req.body) updates.purpose = req.body.purpose || null;
+    if ('notes' in req.body) updates.notes = req.body.notes || null;
+    if ('visitorRole' in req.body) {
+      if (!VISITOR_ROLES.includes(String(req.body.visitorRole))) {
+        return res.status(400).json({ error: 'Choose who paid the visit.' });
+      }
+      updates.visitorRole = req.body.visitorRole;
+    }
+    if ('visitDate' in req.body) {
+      const when = new Date(req.body.visitDate);
+      if (Number.isNaN(when.getTime())) return res.status(400).json({ error: 'Enter a valid date for the visit.' });
+      updates.visitDate = when;
+    }
+
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: 'Nothing was supplied to change.' });
+    }
+
+    await db('pastoral_visits').where({ id: req.params.id, tenantId }).update(updates);
+    await logActivity(req, 'VISIT_UPDATED', 'pastoral_visits', req.params.id);
+    res.json({ ...existing, ...updates, success: true });
+  } catch (error) {
+    console.error('PUT /visits/:id error:', error);
+    res.status(500).json({ error: 'Failed to update this visit' });
+  }
+});
+
+router.delete('/visits/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const existing = await db('pastoral_visits').where({ id: req.params.id, tenantId }).first();
+    if (!existing) return res.status(404).json({ error: 'That visit could not be found.' });
+
+    await db('pastoral_visits').where({ id: req.params.id, tenantId }).del();
+    await logActivity(req, 'VISIT_DELETED', 'pastoral_visits', req.params.id);
+    res.json({ success: true, message: 'The visit was removed from the log.' });
+  } catch (error) {
+    console.error('DELETE /visits/:id error:', error);
+    res.status(500).json({ error: 'Failed to remove this visit' });
   }
 });
 
@@ -792,8 +1633,47 @@ async function provisionPortalAccess(
  *    widowed member's record should not silently retain a spouse's phone number.
  *  - Children are cleared when "has children" is unticked, for the same reason.
  */
+/**
+ * The spiritual milestones the statistical return counts.
+ *
+ * Dates rather than checkboxes, because a return has to know which period each
+ * milestone fell into. This is the only place these facts are entered: the
+ * return counts them, so nobody types a baptism total anywhere.
+ */
+const MILESTONE_DATE_FIELDS = [
+  'convertDate',
+  'waterBaptismDate',
+  'holySpiritBaptismDate',
+  'transferInDate',
+  'transferOutDate',
+  'dateOfDeath',
+];
+
+function applyMilestoneFields(body: any, target: any): void {
+  for (const field of MILESTONE_DATE_FIELDS) {
+    if (field in body) {
+      const raw = body[field];
+      if (!raw) {
+        target[field] = null;
+        continue;
+      }
+      const when = new Date(raw);
+      // An unparseable date is left alone rather than written as null: silently
+      // erasing a recorded baptism would quietly change a past return.
+      if (!Number.isNaN(when.getTime())) target[field] = when;
+    }
+  }
+  if ('transferredFrom' in body) target.transferredFrom = body.transferredFrom || null;
+  if ('transferredTo' in body) target.transferredTo = body.transferredTo || null;
+  // Who is credited with winning this convert -- the fact that makes "souls won"
+  // countable for the unit the winner belongs to.
+  if ('wonByMemberId' in body) target.wonByMemberId = body.wonByMemberId || null;
+  if ('wonByName' in body) target.wonByName = body.wonByName || null;
+}
+
 function applyExtendedMemberFields(body: any, target: any): void {
   if ('office' in body) target.office = body.office || null;
+  applyMilestoneFields(body, target);
 
   // Education
   if ('isEducated' in body) target.isEducated = Boolean(body.isEducated);
@@ -1523,6 +2403,41 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
 
     if (Object.keys(updates).length > 0) {
       await db('members').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
+    }
+
+    const changedAt = new Date();
+
+    // A change of standing is recorded as it happens. Deaths and transfers out
+    // are counted from this history rather than from the member record, because
+    // the record only says how things stand now: without the moment of change,
+    // a member who died in March would go on being counted as a death in every
+    // later period.
+    if (updates.membershipStatus && updates.membershipStatus !== existing.membershipStatus) {
+      const member = { ...existing, ...updates, id: existing.id };
+      await recordStatusChange(
+        tid(req)!,
+        member,
+        'membership',
+        existing.membershipStatus || null,
+        updates.membershipStatus,
+        req.user?.uid,
+        changedAt,
+      );
+
+      // The matching date is stamped on the member record too, so the register
+      // itself reads correctly -- but only when the church has not supplied a
+      // more accurate date, which it often will: a death is usually entered days
+      // after it happened.
+      const stamp: any = {};
+      if (updates.membershipStatus === 'deceased' && !existing.dateOfDeath && !('dateOfDeath' in updates)) {
+        stamp.dateOfDeath = changedAt;
+      }
+      if (updates.membershipStatus === 'transferred' && !existing.transferOutDate && !('transferOutDate' in updates)) {
+        stamp.transferOutDate = changedAt;
+      }
+      if (Object.keys(stamp).length) {
+        await db('members').where({ id: req.params.id, tenantId: tid(req) }).update(stamp);
+      }
     }
 
     if (ministriesSupplied) {
@@ -3826,6 +4741,29 @@ router.post('/members/engagement/recalculate', requireRole('CHURCH_ADMIN', 'PAST
         attendanceCount: r.totalAttendances,
       });
       updated += 1;
+
+      // Backsliding and restoration are both changes of standing, and both are
+      // recorded here as they are noticed. Only the crossing is recorded, never
+      // the fact of still being in a state, so running the recalculation twice
+      // cannot count anyone twice.
+      //
+      // Restoration is deliberately the transition backslider -> active, not the
+      // state of being active: counting everyone who is active now would report
+      // most of the church as rehabilitated every period.
+      if (r.computedStatus !== r.engagementStatus
+        && (r.computedStatus === 'backslider'
+          || (r.computedStatus === 'active' && r.engagementStatus === 'backslider'))) {
+        const member = await db('members').where({ id: r.id, tenantId }).first();
+        await recordStatusChange(
+          tenantId!,
+          member,
+          'engagement',
+          r.engagementStatus || null,
+          r.computedStatus,
+          req.user?.uid,
+          now,
+        );
+      }
     }
     await logActivity(req, 'recalculate', 'member_engagement', undefined, `${updated} member(s)`);
     res.json({ success: true, updated });

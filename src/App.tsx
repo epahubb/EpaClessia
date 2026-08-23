@@ -55,6 +55,7 @@ import { Dashboard as ChurchDashboard } from './pages/church/Dashboard';
 import { MemberList } from './pages/church/MemberList';
 import ChurchSettingsPage from './pages/church/Settings';
 import MemberEngagementPage from './pages/church/MemberEngagement';
+import UnitStatisticsPage from './pages/church/UnitStatistics';
 import ChurchConfigurationPage from './pages/ChurchConfiguration';
 import AbsenceSurveyPage from './pages/AbsenceSurvey';
 import ActivateAccountPage from './pages/ActivateAccount';
@@ -132,6 +133,7 @@ const App: React.FC = () => {
             <Route path="/church/positions" element={<ChurchPositionsPage />} />
             <Route path="/church/reports" element={<ChurchReportsPage />} />
             <Route path="/church/audit" element={<ChurchAuditPage />} />
+            <Route path="/church/statistics" element={<UnitStatisticsPage />} />
             <Route path="/church/engagement" element={<MemberEngagementPage />} />
             <Route path="/church/settings" element={<ChurchSettingsPage />} />
             <Route path="/church" element={<Navigate to="/church/dashboard" replace />} />

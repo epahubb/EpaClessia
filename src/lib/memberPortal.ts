@@ -279,8 +279,8 @@ export type ActivationCheck =
  * the meantime, has done nothing wrong and should not be shown a failure.
  */
 export function checkActivationToken(
-  // The account row as loaded from the database. Only the three fields this
-  // decision rests on are required; callers pass the whole row.
+  // The account row as loaded from the database. Only the fields this decision
+  // rests on are required; callers pass the whole row.
   account:
     | {
         status?: string | null;

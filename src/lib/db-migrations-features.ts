@@ -121,6 +121,119 @@ async function addGroupTables(db: Knex): Promise<void> {
 }
 
 /**
+ * The recording points behind the statistical returns.
+ *
+ * Every figure on a return is counted from records kept as part of doing the
+ * work -- a member's baptism date, a logged visit, a payment -- rather than from
+ * a number typed onto the sheet. This migration creates the places those facts
+ * live.
+ *
+ * The alternative, storing period totals, is less work and much worse: a typed
+ * total cannot be audited, cannot be partly corrected, and cannot answer “which
+ * baptisms were those?”. Counting from the records means the sheet and the
+ * register can never disagree.
+ */
+async function addStatisticsTables(db: Knex): Promise<void> {
+  /* ---- Spiritual milestones on the member record ------------------ */
+  // Dates rather than flags, because the return needs to know which period each
+  // milestone fell into. A boolean “baptised” could never be counted for a
+  // period at all.
+  await addColumn(db, 'members', 'convertDate', (t) => t.timestamp('convertDate'));
+  await addColumn(db, 'members', 'waterBaptismDate', (t) => t.timestamp('waterBaptismDate'));
+  await addColumn(db, 'members', 'holySpiritBaptismDate', (t) => t.timestamp('holySpiritBaptismDate'));
+  await addColumn(db, 'members', 'transferInDate', (t) => t.timestamp('transferInDate'));
+  await addColumn(db, 'members', 'transferredFrom', (t) => t.string('transferredFrom'));
+  await addColumn(db, 'members', 'transferOutDate', (t) => t.timestamp('transferOutDate'));
+  await addColumn(db, 'members', 'transferredTo', (t) => t.string('transferredTo'));
+  await addColumn(db, 'members', 'dateOfDeath', (t) => t.timestamp('dateOfDeath'));
+  // Who is credited with winning this convert. This is what makes “souls won”
+  // countable per unit: the figure follows the member who did the winning, not
+  // the unit the convert happened to join.
+  await addColumn(db, 'members', 'wonByMemberId', (t) => t.string('wonByMemberId'));
+  await addColumn(db, 'members', 'wonByName', (t) => t.string('wonByName'));
+
+  /* ---- Status history --------------------------------------------- */
+  // Transfers out, deaths, backsliding and restoration are all changes of
+  // standing. A member record only holds their standing now, so the return
+  // needs the moment it changed -- otherwise a member who died in March would
+  // still be counted as a death in every later period.
+  if (!(await db.schema.hasTable('member_status_history'))) {
+    await db.schema.createTable('member_status_history', (t) => {
+      t.string('id').primary();
+      t.string('tenantId');
+      t.string('memberId').notNullable();
+      t.string('memberName');
+      // 'membership' for the register status, 'engagement' for attendance-based
+      // classification. Kept apart so a backslider is not confused with a
+      // transfer.
+      t.string('kind').notNullable();
+      t.string('fromStatus');
+      t.string('toStatus').notNullable();
+      t.timestamp('changedAt').notNullable();
+      t.string('changedBy');
+      t.text('notes');
+      // The unit the member belonged to at the time. Copied in so a return for
+      // last year still reflects who was in the unit then, rather than being
+      // rewritten by a later change of group.
+      t.string('groupId');
+      t.text('ministryIds');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'memberId']);
+      t.index(['tenantId', 'kind', 'toStatus']);
+      t.index(['tenantId', 'changedAt']);
+    });
+    console.log('Table "member_status_history" created.');
+  }
+
+  /* ---- Visitation log --------------------------------------------- */
+  // Visits by the presiding elder and by ministers. Logged as the pastoral
+  // record it already is, and counted from there.
+  if (!(await db.schema.hasTable('pastoral_visits'))) {
+    await db.schema.createTable('pastoral_visits', (t) => {
+      t.string('id').primary();
+      t.string('tenantId');
+      t.timestamp('visitDate').notNullable();
+      // Who paid the visit: presiding_elder | minister | pastor | elder | other.
+      // The first two are what the return counts; the rest are recorded because
+      // the church wants the pastoral record regardless.
+      t.string('visitorRole').notNullable();
+      t.string('visitorName');
+      t.string('purpose');
+      t.text('notes');
+      // A visit may be to a unit, to a member, or to both.
+      t.string('unitType');
+      t.string('unitId');
+      t.string('unitName');
+      t.string('memberId');
+      t.string('memberName');
+      t.string('recordedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'visitDate']);
+      t.index(['tenantId', 'unitType', 'unitId']);
+      t.index(['tenantId', 'visitorRole']);
+    });
+    console.log('Table "pastoral_visits" created.');
+  }
+
+  /* ---- Interventional support on the expense record --------------- */
+  // Support given to a member is money leaving the church, so it belongs in
+  // finance and is counted from there. Marking the expense and naming the
+  // beneficiary is what lets the figure be attributed to a unit.
+  await addColumn(db, 'expenses', 'supportType', (t) => t.string('supportType'));
+  await addColumn(db, 'expenses', 'beneficiaryMemberId', (t) => t.string('beneficiaryMemberId'));
+  await addColumn(db, 'expenses', 'beneficiaryName', (t) => t.string('beneficiaryName'));
+
+  /* ---- Communion services ----------------------------------------- */
+  // The Lord's Supper figure is attendance at communion services, so a service
+  // needs to be identifiable as one.
+  await addColumn(db, 'events', 'isCommunion', (t) => t.boolean('isCommunion').defaultTo(false));
+
+  // Meetings held is counted from logged attendance sessions, which need to be
+  // attributable to a group as well as to a ministry.
+  await addColumn(db, 'ministry_attendance', 'unitType', (t) => t.string('unitType'));
+}
+
+/**
  * Columns for the extended member record used by traditions that ask for it
  * (see denominations.ts). Added for every church rather than only the ones that
  * currently show them: a superadmin can change a church's denomination at any
@@ -180,6 +293,7 @@ export async function applyFeatureMigrations(db: Knex): Promise<void> {
   await addExtendedMemberColumns(db);
   await addMemberPortalColumns(db);
   await addGroupTables(db);
+  await addStatisticsTables(db);
   /* ---------------------------------------------------------------- */
   /* Denomination: decides which portal the church admin gets         */
   /* ---------------------------------------------------------------- */

@@ -358,6 +358,58 @@ export const churchApi = {
   updateOffice: async (id: string, data: any) => (await api.put(`/church/offices/${id}`, data)).data,
   deleteOffice: async (id: string) => (await api.delete(`/church/offices/${id}`)).data,
 
+  /* ---- Statistical returns for ministries, departments and groups ----
+   *
+   * A "unit" is any of the three. They are addressed by type and id together,
+   * because ministries and departments share a table and an id alone would be
+   * ambiguous.
+   */
+  getUnits: async () => unwrap((await api.get('/church/units')).data),
+
+  getStatMetrics: async () => unwrap((await api.get('/church/statistics/metrics')).data),
+
+  /** The return itself: current period, previous period and the variance. */
+  getUnitStatistics: async (
+    unitType: string,
+    unitId: string,
+    params?: { from?: string; to?: string; q?: string },
+  ) =>
+    (await api.get(`/church/units/${unitType}/${unitId}/statistics`, { params })).data,
+
+  /**
+   * The records behind one figure -- the actual people, services, visits or
+   * payments that were counted.
+   *
+   * There is no method here for entering a figure, and that is deliberate: every
+   * number on the return is counted from records kept elsewhere in the system,
+   * so the only way to change one is to correct the record it came from.
+   */
+  getUnitStatRecords: async (
+    unitType: string,
+    unitId: string,
+    metric: string,
+    params?: { from?: string; to?: string; q?: string },
+  ) =>
+    (await api.get(`/church/units/${unitType}/${unitId}/statistics/records/${metric}`, { params }))
+      .data,
+
+  // ---- Visitation log ----
+  // Visits by the presiding elder and by ministers, kept as a pastoral record
+  // and counted onto the returns from there.
+  getVisits: async (params?: {
+    from?: string;
+    to?: string;
+    visitorRole?: string;
+    unitId?: string;
+    q?: string;
+  }) => unwrap((await api.get('/church/visits', { params })).data),
+
+  logVisit: async (data: any) => (await api.post('/church/visits', data)).data,
+
+  updateVisit: async (id: string, data: any) => (await api.put(`/church/visits/${id}`, data)).data,
+
+  deleteVisit: async (id: string) => (await api.delete(`/church/visits/${id}`)).data,
+
   // ---- Portal shape for this church's denomination ----
   getPortalProfile: async () => (await api.get('/church/portal-profile')).data,
 

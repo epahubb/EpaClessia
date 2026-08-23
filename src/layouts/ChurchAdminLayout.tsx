@@ -31,6 +31,7 @@ import {
   Sms as SmsIcon,
   CheckCircle as AttendanceIcon,
   Assessment as ReportsIcon,
+  Insights as StatisticsIcon,
   Settings as SettingsIcon,
   PersonAddAlt1 as VisitorIcon,
   ManageAccounts as UsersIcon,
@@ -52,6 +53,9 @@ const menuItems = [
   { feature: 'attendance' as PortalFeature, text: 'Attendance', icon: <AttendanceIcon />, path: '/church/attendance' },
   { feature: 'engagement' as PortalFeature, text: 'Engagement & Follow-up', icon: <AttendanceIcon />, path: '/church/engagement' },
   { feature: 'ministries' as PortalFeature, text: 'Ministries & Groups', icon: <MinistryIcon />, path: '/church/ministries' },
+  // Statistical returns sit beside the units they describe, since a leader
+  // arriving to file one is thinking about their ministry, not about reports.
+  { feature: 'ministries' as PortalFeature, text: 'Statistics', icon: <StatisticsIcon />, path: '/church/statistics' },
   { feature: 'events' as PortalFeature, text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
   { feature: 'finances' as PortalFeature, text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },
   { feature: 'communication' as PortalFeature, text: 'Communication', icon: <CommunicationIcon />, path: '/church/communication' },
