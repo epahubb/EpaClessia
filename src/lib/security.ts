@@ -196,12 +196,28 @@ export const checkOwnership = (
 };
 
 // Input Validation Schemas
-export const loginSchema = z.object({
-  email: z.string().email().toLowerCase().trim(),
-  password: z.string().min(1).max(200),
-  twoFactorCode: z.string().trim().optional(),
-  totp: z.string().trim().optional(),
-});
+/**
+ * Sign-in payload.
+ *
+ * Members are given a username by their church, so the identifier is no longer
+ * required to be an email address. It is accepted under `email` (what every
+ * existing client sends), `username`, or `identifier`, and the handler decides
+ * which column to match on. Requiring a valid email here would have locked out
+ * every member whose church gave them a username.
+ */
+export const loginSchema = z
+  .object({
+    email: z.string().max(200).trim().optional(),
+    username: z.string().max(200).trim().optional(),
+    identifier: z.string().max(200).trim().optional(),
+    password: z.string().min(1).max(200),
+    twoFactorCode: z.string().trim().optional(),
+    totp: z.string().trim().optional(),
+  })
+  .refine(
+    (v) => Boolean((v.email || v.username || v.identifier || '').trim()),
+    'An email address or username is required.',
+  );
 
 /**
  * Strong-password policy used when creating or resetting credentials:

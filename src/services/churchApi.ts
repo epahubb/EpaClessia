@@ -327,8 +327,29 @@ export const churchApi = {
    * Send or re-send a member's portal invitation. Each call issues a new
    * temporary password, so this doubles as "reset their portal password".
    */
-  sendPortalInvite: async (memberId: string, email?: string) =>
-    (await api.post(`/church/members/${memberId}/portal-access`, email ? { email } : {})).data,
+  sendPortalInvite: async (
+    memberId: string,
+    opts?: string | { email?: string; username?: string; password?: string; activateNow?: boolean },
+  ) =>
+    (await api.post(
+      `/church/members/${memberId}/portal-access`,
+      // Kept backwards compatible with the callers that pass just an email.
+      typeof opts === 'string' ? { email: opts } : (opts || {}),
+    )).data,
+
+  /**
+   * Activate (or suspend) a member's portal login on the church's behalf, for
+   * a member who cannot use the emailed activation link.
+   */
+  setMemberPortalActive: async (memberId: string, active = true) =>
+    (await api.post(`/church/members/${memberId}/portal-activate`, { active })).data,
+
+  // ---- Groups (one per member: a cell, zone or house fellowship) ----
+  getGroups: async () => unwrap((await api.get('/church/groups')).data),
+  getGroupOptions: async () => unwrap((await api.get('/church/groups/options')).data),
+  createGroup: async (data: any) => (await api.post('/church/groups', data)).data,
+  updateGroup: async (id: string, data: any) => (await api.put(`/church/groups/${id}`, data)).data,
+  deleteGroup: async (id: string) => (await api.delete(`/church/groups/${id}`)).data,
 
   // ---- Offices the church recognises (Settings > Offices) ----
   getOffices: async () => unwrap((await api.get('/church/offices')).data),

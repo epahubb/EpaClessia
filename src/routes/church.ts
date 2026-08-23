@@ -78,6 +78,15 @@ import {
   portalInviteBody,
   portalInviteSms,
   portalSkipMessage,
+  normalizeUsername,
+  isUsableUsername,
+  suggestUsername,
+  validatePortalPassword,
+  generateVerificationToken,
+  activationUrl,
+  activationExpiry,
+  checkActivationToken,
+  USERNAME_RULES,
   type PortalSkipReason,
 } from '../lib/memberPortal';
 
@@ -182,6 +191,160 @@ router.use(resolveTenant);
 /* ------------------------------------------------------------------ */
 /* Members                                                            */
 /* ------------------------------------------------------------------ */
+/* --- Groups (cells, zones, house fellowships) ------------------------ */
+
+/**
+ * The groups a church divides its congregation into.
+ *
+ * A member belongs to exactly ONE group, which is what separates this from
+ * ministries: a member may serve in the choir and the ushers, but lives in one
+ * cell. That rule is enforced by storing the group on the member record rather
+ * than in a join table, so the database cannot hold a state the church says is
+ * impossible.
+ */
+router.get('/groups', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const data = await db('church_groups')
+      .where({ tenantId })
+      .orderBy('sortOrder', 'asc')
+      .orderBy('name', 'asc');
+
+    // Membership counts, so an admin can see an empty group or an overloaded
+    // one without opening each in turn.
+    const counts = await db('members')
+      .where({ tenantId })
+      .whereNotNull('groupId')
+      .groupBy('groupId')
+      .select('groupId')
+      .count({ total: '*' });
+    const byGroup = new Map<string, number>(
+      (counts as any[]).map((r) => [String(r.groupId), Number(r.total) || 0]),
+    );
+
+    res.json({ data: (data as any[]).map((g) => ({ ...g, memberCount: byGroup.get(g.id) || 0 })) });
+  } catch (error) {
+    console.error('List groups error:', error);
+    res.status(500).json({ error: 'Failed to fetch groups' });
+  }
+});
+
+/** Just id and name, for the single-select on the member form. */
+router.get('/groups/options', async (req: AuthRequest, res) => {
+  try {
+    const rows = await db('church_groups')
+      .where({ tenantId: tid(req) })
+      .orderBy('sortOrder', 'asc')
+      .orderBy('name', 'asc')
+      .select('id', 'name', 'active');
+    // Retired groups stay on the members already in them, but are not offered
+    // for new members.
+    res.json({
+      data: (rows as any[])
+        .filter((r) => r.active !== false)
+        .map((r) => ({ value: r.id, label: r.name })),
+    });
+  } catch (error) {
+    console.error('Group options error:', error);
+    res.status(500).json({ error: 'Failed to fetch groups' });
+  }
+});
+
+router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Please enter a name for the group.' });
+
+    const duplicate = await db('church_groups')
+      .where({ tenantId: tid(req) })
+      .whereRaw('LOWER(name) = ?', [name.toLowerCase()])
+      .first();
+    if (duplicate) {
+      return res.status(409).json({ error: `"${name}" is already one of your groups.` });
+    }
+
+    const group = {
+      id: genId('group'),
+      tenantId: tid(req),
+      name,
+      description: req.body?.description || null,
+      leaderId: req.body?.leaderId || null,
+      leaderName: req.body?.leaderName || null,
+      meetingDay: req.body?.meetingDay || null,
+      meetingTime: req.body?.meetingTime || null,
+      location: req.body?.location || null,
+      sortOrder: Number(req.body?.sortOrder) || 0,
+      active: req.body?.active === undefined ? true : Boolean(req.body.active),
+      createdAt: new Date(),
+    };
+    await db('church_groups').insert(group);
+    res.status(201).json(group);
+  } catch (error) {
+    console.error('Create group error:', error);
+    res.status(500).json({ error: 'Failed to create group' });
+  }
+});
+
+router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const existing = await db('church_groups').where({ id: req.params.id, tenantId }).first();
+    if (!existing) return res.status(404).json({ error: 'Group not found' });
+
+    const updates: any = {};
+    if ('name' in req.body) {
+      const name = String(req.body.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'Please enter a name for the group.' });
+      updates.name = name;
+    }
+    for (const key of ['description', 'leaderId', 'leaderName', 'meetingDay', 'meetingTime', 'location']) {
+      if (key in req.body) updates[key] = req.body[key] || null;
+    }
+    if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
+    if ('active' in req.body) updates.active = Boolean(req.body.active);
+
+    if (Object.keys(updates).length) {
+      await db('church_groups').where({ id: req.params.id, tenantId }).update(updates);
+    }
+
+    // Members carry the group name for display, so a rename has to reach them
+    // or the register will keep showing a name that no longer exists.
+    if (updates.name && updates.name !== existing.name) {
+      await db('members').where({ tenantId, groupId: existing.id }).update({ groupName: updates.name });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update group error:', error);
+    res.status(500).json({ error: 'Failed to update group' });
+  }
+});
+
+router.delete('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const group = await db('church_groups').where({ id: req.params.id, tenantId }).first();
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+
+    const [{ total } = { total: 0 }] = (await db('members')
+      .where({ tenantId, groupId: group.id })
+      .count({ total: '*' })) as any[];
+    const held = Number(total) || 0;
+    if (held > 0) {
+      // Deleting would quietly empty the group column for real people. Say so
+      // instead, and offer the reversible alternative.
+      return res.status(409).json({
+        error: `${held} member${held === 1 ? '' : 's'} still belong to this group. Move them first, or mark the group inactive instead of deleting it.`,
+      });
+    }
+
+    await db('church_groups').where({ id: group.id, tenantId }).del();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete group error:', error);
+    res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
 /* --- Church offices ------------------------------------------------- */
 
 /**
@@ -313,11 +476,49 @@ router.delete('/offices/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req:
   }
 });
 
+/**
+ * Resolve the one group a member belongs to.
+ *
+ * The name is stored alongside the id so lists and exports read correctly
+ * without a join. Only groups belonging to this church are accepted, so a
+ * crafted request cannot attach a member to another tenant's group.
+ */
+async function applyMemberGroup(tenantId: string, body: any, target: any): Promise<string | null> {
+  if (!('groupId' in (body || {}))) return null;
+
+  const groupId = body.groupId ? String(body.groupId) : '';
+  if (!groupId) {
+    // Explicitly clearing the group is allowed: a member can be between cells.
+    target.groupId = null;
+    target.groupName = null;
+    return null;
+  }
+
+  const group = await db('church_groups').where({ id: groupId, tenantId }).first();
+  if (!group) return 'That group does not exist in this church.';
+
+  target.groupId = group.id;
+  target.groupName = group.name;
+  return null;
+}
+
 /* --- Member portal access ----------------------------------------------- */
 
+/** Why a portal login could not be created, beyond the two generic cases. */
+export type PortalFailureReason = PortalSkipReason | 'username_taken' | 'invalid_username' | 'weak_password';
+
 export type PortalAccessResult =
-  | { created: true; email: string; emailSent: boolean; smsSent: boolean; reset: boolean }
-  | { created: false; reason: PortalSkipReason; message: string };
+  | {
+      created: true;
+      email: string;
+      username: string | null;
+      /** 'pending' until the member (or the church) activates the account. */
+      status: 'pending' | 'active';
+      emailSent: boolean;
+      smsSent: boolean;
+      reset: boolean;
+    }
+  | { created: false; reason: PortalFailureReason; message: string };
 
 /**
  * Give a member a way into the member portal.
@@ -336,11 +537,72 @@ export type PortalAccessResult =
 async function provisionPortalAccess(
   tenantId: string,
   member: any,
-  opts: { baseUrl: string; reset?: boolean } = { baseUrl: '' },
+  opts: {
+    baseUrl: string;
+    reset?: boolean;
+    /** Username the church admin typed. Falls back to one derived from the name. */
+    username?: string;
+    /** Password the church admin typed. Falls back to a generated one. */
+    password?: string;
+    /**
+     * Skip email verification and open the account immediately. Used when the
+     * church activates a member itself, e.g. for someone standing at the desk
+     * without access to their inbox.
+     */
+    activate?: boolean;
+  } = { baseUrl: '' },
 ): Promise<PortalAccessResult> {
   const email = normalizeLoginEmail(member?.email);
   if (!isUsableLoginEmail(email)) {
     return { created: false, reason: 'no_email', message: portalSkipMessage('no_email') };
+  }
+
+  // A username chosen by the admin is validated and checked for collisions
+  // before anything is written, so a clash is reported rather than half-applied.
+  let username: string | null = null;
+  if (opts.username !== undefined && String(opts.username).trim() !== '') {
+    if (!isUsableUsername(opts.username)) {
+      return { created: false, reason: 'invalid_username', message: USERNAME_RULES };
+    }
+    username = normalizeUsername(opts.username);
+  } else if (!opts.reset) {
+    // Give every new account a username so members have a short thing to type,
+    // and make it unique by suffixing rather than failing the registration.
+    const base = suggestUsername(member?.firstName, member?.lastName);
+    let candidate = base;
+    for (let attempt = 1; attempt <= 50; attempt += 1) {
+      const clash = await db('users')
+        .whereRaw('lower(username) = ?', [candidate])
+        .whereNot({ memberId: member.id })
+        .first();
+      if (!clash) break;
+      candidate = `${base}${attempt}`.slice(0, 32);
+    }
+    username = candidate;
+  }
+
+  if (username) {
+    const taken = await db('users')
+      .whereRaw('lower(username) = ?', [username])
+      .whereNot({ memberId: member.id })
+      .first();
+    if (taken) {
+      return {
+        created: false,
+        reason: 'username_taken',
+        message: `The username "${username}" is already in use. Please choose another.`,
+      };
+    }
+  }
+
+  // A password typed by the admin is checked against a floor that a member can
+  // actually be told over the phone; see validatePortalPassword for why the
+  // stricter staff policy is not applied to a first-time member credential.
+  if (opts.password !== undefined && String(opts.password) !== '') {
+    const verdict = validatePortalPassword(opts.password);
+    if (!verdict.ok) {
+      return { created: false, reason: 'weak_password', message: verdict.error };
+    }
   }
 
   const existing = await db('users').whereRaw('lower(email) = ?', [email]).first();
@@ -357,25 +619,57 @@ async function provisionPortalAccess(
     await db('users').where({ uid: existing.uid }).update({ memberId: member.id });
     await db('members')
       .where({ id: member.id, tenantId })
-      .update({ portalUserUid: existing.uid, portalInvitedAt: new Date() });
-    return { created: true, email, emailSent: false, smsSent: false, reset: false };
+      .update({
+        portalUserUid: existing.uid,
+        portalInvitedAt: new Date(),
+        portalUsername: existing.username || null,
+        portalStatus: existing.status || 'active',
+      });
+    return {
+      created: true,
+      email,
+      username: existing.username || null,
+      status: 'active',
+      emailSent: false,
+      smsSent: false,
+      reset: false,
+    };
   }
 
-  const password = generateTempPassword();
+  // The admin's password is used as typed; otherwise one is generated. Either
+  // way only the hash is stored, so nobody -- including the church -- can read
+  // it back afterwards.
+  const password =
+    opts.password !== undefined && String(opts.password) !== ''
+      ? String(opts.password)
+      : generateTempPassword();
   const bcrypt = (await import('bcryptjs')).default;
   const hash = await bcrypt.hash(password, 12);
   const name = [member.firstName, member.lastName].filter(Boolean).join(' ') || 'Member';
   const now = new Date();
+
+  // A new account starts pending: it exists, but cannot sign in until the email
+  // address is confirmed, or until the church vouches for the member directly.
+  const activateNow = Boolean(opts.activate);
+  const status = activateNow ? 'active' : 'pending';
+  const token = activateNow ? null : generateVerificationToken();
 
   let uid: string;
   if (existing) {
     uid = existing.uid;
     await db('users').where({ uid }).update({
       password: hash,
-      mustChangePassword: true,
+      // An admin-chosen password is the credential the member was given, so we
+      // do not nag them to change it. A generated one is a stopgap.
+      mustChangePassword: !opts.password,
       memberId: member.id,
       tenantId,
-      status: 'active',
+      status,
+      username: username || existing.username || null,
+      verificationToken: token,
+      verificationExpiresAt: token ? activationExpiry(now) : null,
+      verifiedAt: activateNow ? now : null,
+      verifiedBy: activateNow ? 'church' : null,
       name: existing.name || name,
       phone: existing.phone || member.phone || null,
     });
@@ -384,26 +678,45 @@ async function provisionPortalAccess(
     await db('users').insert({
       uid,
       email,
+      username,
       name,
       phone: member.phone || null,
       role: MEMBER_PORTAL_ROLE,
-      status: 'active',
+      status,
       tenantId,
       password: hash,
-      mustChangePassword: true,
+      mustChangePassword: !opts.password,
       memberId: member.id,
+      verificationToken: token,
+      verificationExpiresAt: token ? activationExpiry(now) : null,
+      verifiedAt: activateNow ? now : null,
+      verifiedBy: activateNow ? 'church' : null,
       createdAt: now,
     });
   }
 
   await db('members')
     .where({ id: member.id, tenantId })
-    .update({ portalUserUid: uid, portalInvitedAt: now, portalPasswordSetAt: null });
+    .update({
+      portalUserUid: uid,
+      portalInvitedAt: now,
+      portalPasswordSetAt: null,
+      portalUsername: username,
+      portalStatus: status,
+    });
 
   const tenant = await db('tenants').where({ id: tenantId }).first();
   const churchName = tenant?.name || 'Your church';
   const loginUrl = `${opts.baseUrl || ''}/login`;
-  const invite = { memberName: name, churchName, email, password, loginUrl };
+  const invite = {
+    memberName: name,
+    churchName,
+    email,
+    password,
+    loginUrl,
+    username: username || undefined,
+    activationUrl: token ? activationUrl(opts.baseUrl || '', token) : undefined,
+  };
 
   // Email first: it carries the full explanation.
   let emailSent = false;
@@ -412,10 +725,12 @@ async function provisionPortalAccess(
       to: email,
       subject: portalInviteSubject(churchName),
       html: emailTemplate({
-        title: 'Your member portal is ready',
+        title: token ? 'Activate your member portal' : 'Your member portal is ready',
         body: portalInviteBody(invite),
-        ctaLabel: 'Sign in',
-        ctaUrl: loginUrl,
+        // The button is the action that is actually needed next: activating,
+        // while that is outstanding, and signing in once it is not.
+        ctaLabel: token ? 'Activate my account' : 'Sign in',
+        ctaUrl: invite.activationUrl || loginUrl,
         footer: `Sent by ${churchName} via Ecclesia.`,
       }),
     });
@@ -452,7 +767,15 @@ async function provisionPortalAccess(
     })
     .catch(() => {});
 
-  return { created: true, email, emailSent, smsSent, reset: Boolean(opts.reset) };
+  return {
+    created: true,
+    email,
+    username,
+    status,
+    emailSent,
+    smsSent,
+    reset: Boolean(opts.reset),
+  };
 }
 
 /* --- Extended member record (ministries, education, family, medical) --- */
@@ -806,6 +1129,10 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
     // are sent so an import or API client is never blocked.
     applyExtendedMemberFields(req.body, member);
 
+    // The one group this member belongs to (a cell, zone or house fellowship).
+    const groupError = await applyMemberGroup(tid(req)!, req.body, member);
+    if (groupError) return res.status(400).json({ error: groupError });
+
     // Optional profile picture supplied at creation time, so an admin can add
     // a member and their photo in one step.
     if (photo) {
@@ -830,6 +1157,13 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
     try {
       portalAccess = await provisionPortalAccess(tid(req)!, member, {
         baseUrl: publicBaseUrl(req),
+        // Credentials the church admin typed on the registration form. Left
+        // blank, a username is derived from the name and a password generated.
+        username: req.body?.username,
+        password: req.body?.password,
+        // An admin registering someone in person can vouch for them straight
+        // away instead of waiting on an email round-trip.
+        activate: req.body?.activateNow === true || req.body?.activateNow === 'true',
       });
     } catch (error) {
       console.error('Portal provisioning failed:', error);
@@ -838,6 +1172,23 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
         reason: 'no_email',
         message: 'The member was saved, but their portal login could not be created. Use “Send portal invite” to try again.',
       };
+    }
+
+    // A credential the admin typed but which could not be used is an error
+    // worth surfacing: silently substituting a generated password would leave
+    // them handing out one that does not work.
+    if (
+      !portalAccess.created &&
+      (req.body?.username || req.body?.password) &&
+      portalAccess.reason !== 'no_email'
+    ) {
+      const { photo: _p, ...saved } = member;
+      return res.status(201).json({
+        ...expandMemberProfile(saved, ministryIds),
+        hasPhoto: Boolean(member.photo),
+        portalAccess,
+        warning: `${portalAccess.message} The member was still registered — use “Send portal invite” to set up their login.`,
+      });
     }
 
     // Never echo the raw image bytes back in the JSON response.
@@ -877,6 +1228,9 @@ router.post('/members/:id/portal-access', requireRole('CHURCH_ADMIN', 'PASTOR', 
     const result = await provisionPortalAccess(tenantId!, member, {
       baseUrl: publicBaseUrl(req),
       reset: true,
+      username: req.body?.username,
+      password: req.body?.password,
+      activate: req.body?.activateNow === true,
     });
 
     if (!result.created) {
@@ -885,19 +1239,87 @@ router.post('/members/:id/portal-access', requireRole('CHURCH_ADMIN', 'PASTOR', 
 
     await logActivity(req, 'MEMBER_PORTAL_INVITE', 'members', member.id);
 
+    const pending = result.status === 'pending';
     res.json({
       success: true,
       email: result.email,
+      username: result.username,
+      status: result.status,
       emailSent: result.emailSent,
       smsSent: result.smsSent,
       message:
         result.emailSent || result.smsSent
-          ? `A new portal login was sent to ${result.email}.`
+          ? pending
+            ? `Sent to ${result.email}. The member must click the activation link before signing in — or you can activate the account here.`
+            : `A new portal login was sent to ${result.email}.`
           : `The portal login was created for ${result.email}, but the invitation could not be delivered. Check the email and SMS settings.`,
     });
   } catch (error) {
     console.error('POST /members/:id/portal-access error:', error);
     res.status(500).json({ error: 'Failed to send the portal invitation' });
+  }
+});
+
+/**
+ * Activate a member's portal account on the church's behalf.
+ *
+ * The member normally activates themselves from the link in their invitation.
+ * This is the other half of that: a member with no working email address, or
+ * one standing at the church office, can be vouched for by an admin. The
+ * account is marked as activated BY the church rather than by the member, so
+ * the distinction survives in the record.
+ */
+router.post('/members/:id/portal-activate', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const member = await db('members').where({ id: req.params.id, tenantId }).first();
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+
+    const account = member.portalUserUid
+      ? await db('users').where({ uid: member.portalUserUid }).first()
+      : await db('users').where({ memberId: member.id, tenantId }).first();
+
+    if (!account) {
+      return res.status(400).json({
+        error: 'This member has no portal login yet. Use “Send portal invite” first.',
+      });
+    }
+
+    // Deactivating is the same switch in reverse, so both live here rather than
+    // in two endpoints that could drift apart.
+    const activate = req.body?.active !== false;
+    const now = new Date();
+
+    if (activate) {
+      await db('users').where({ uid: account.uid }).update({
+        status: 'active',
+        // The token is spent: leaving it live would keep a second way in that
+        // nobody is tracking.
+        verificationToken: null,
+        verificationExpiresAt: null,
+        verifiedAt: account.verifiedAt || now,
+        verifiedBy: account.verifiedBy || 'church',
+      });
+    } else {
+      await db('users').where({ uid: account.uid }).update({ status: 'suspended' });
+    }
+
+    await db('members')
+      .where({ id: member.id, tenantId })
+      .update({ portalStatus: activate ? 'active' : 'suspended' });
+
+    await logActivity(req, activate ? 'MEMBER_PORTAL_ACTIVATED' : 'MEMBER_PORTAL_SUSPENDED', 'members', member.id);
+
+    res.json({
+      success: true,
+      status: activate ? 'active' : 'suspended',
+      message: activate
+        ? `${member.firstName || 'This member'} can now sign in to the member portal.`
+        : `${member.firstName || 'This member'} can no longer sign in to the member portal.`,
+    });
+  } catch (error) {
+    console.error('POST /members/:id/portal-activate error:', error);
+    res.status(500).json({ error: 'Failed to change the portal account' });
   }
 });
 
@@ -1091,6 +1513,9 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
     // Ministry assignments live in their own table, so a request that changes
     // only ministries has no member columns to update - and must not be
     // rejected as an empty edit.
+    const groupError = await applyMemberGroup(tid(req)!, req.body, updates);
+    if (groupError) return res.status(400).json({ error: groupError });
+
     const ministriesSupplied = 'ministryIds' in req.body || 'ministries' in req.body;
     if (Object.keys(updates).length === 0 && !ministriesSupplied) {
       return res.status(400).json({ error: 'No updatable fields were supplied' });
@@ -2704,7 +3129,7 @@ function rollCallMembersQuery(tenantId: string) {
     .where((qb: any) =>
       qb.whereNull('membershipStatus').orWhereNotIn('membershipStatus', ['deceased', 'transferred']),
     )
-    .select('id', 'firstName', 'lastName', 'membershipId')
+    .select('id', 'firstName', 'lastName', 'membershipId', 'groupName')
     .orderBy(['firstName', 'lastName']);
 }
 
@@ -2846,7 +3271,21 @@ router.get('/events/:id/rollcall', requireRole(...ATTENDANCE_ROLES), async (req:
       db('event_attendance').where({ tenantId, eventId: event.id }),
     ]);
 
-    const entries = buildRollCall(members as any[], rows as any[]);
+    const membersById = new Map<string, any>((members as any[]).map((m) => [m.id, m]));
+
+    // The panel shows one name per row, so the register is joined up here
+    // rather than leaving the client to guess at first/last name ordering.
+    // Without this the sheet rendered a column of blank names.
+    const entries = buildRollCall(members as any[], rows as any[]).map((e) => ({
+      ...e,
+      name:
+        [e.firstName, e.lastName].filter(Boolean).join(' ').trim()
+        || e.membershipId
+        || 'Unnamed member',
+      // Roll call is usually taken group by group, so the group travels with
+      // the row and can be used to filter the sheet.
+      groupName: (membersById.get(e.memberId) || {}).groupName || null,
+    }));
     res.json({
       event: { id: event.id, title: event.title, startTime: event.startTime },
       // `entries` is what the roll call panel reads. `data` is kept for the

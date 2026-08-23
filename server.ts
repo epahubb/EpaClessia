@@ -13,6 +13,9 @@ import { initializeDatabase } from "./src/lib/db-init";
 import { authenticate, authorizeSuperAdmin } from './src/middleware/auth';
 import { auditLog } from './src/middleware/audit';
 import { JWT_SECRET } from './src/lib/config';
+// Member portal activation: the pending-account message and the token check are
+// pure logic, kept in one place so the route and the tests agree.
+import { PORTAL_PENDING_MESSAGE, checkActivationToken } from './src/lib/memberPortal';
 import {
   loginSchema,
   signAccessToken,
@@ -116,9 +119,17 @@ async function startServer() {
     // Validate + normalise input (rejects malformed emails, oversized payloads).
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'A valid email and password are required.' });
+      return res.status(400).json({ error: 'An email address or username, and a password, are required.' });
     }
-    const { email, password } = parsed.data;
+    const { password } = parsed.data;
+    // One identifier, whichever field the client used. Folded to lower case
+    // because both emails and usernames are matched case-insensitively.
+    const identifier = String(
+      parsed.data.email || parsed.data.username || parsed.data.identifier || '',
+    ).trim().toLowerCase();
+    // Lockout and audit records are keyed on the identifier as typed, so a
+    // username is throttled exactly like an email address.
+    const email = identifier;
     try {
       // Brute-force / account-lockout guard (per account, backed by login_logs).
       const lockout = await getLockoutState(email);
@@ -132,7 +143,12 @@ async function startServer() {
         });
       }
 
-      const user = await db('users').where({ email }).first();
+      // Match on email first (every staff account), then on username (members
+      // whose church gave them one).
+      let user = await db('users').whereRaw('lower(email) = ?', [identifier]).first();
+      if (!user) {
+        user = await db('users').whereRaw('lower(username) = ?', [identifier]).first();
+      }
       if (!user) {
         // Record the failed attempt against the email even if unknown, so
         // credential-stuffing against one address is still throttled.
@@ -154,6 +170,19 @@ async function startServer() {
           .catch(() => {});
         await securityEvent('LOGIN_FAILED_BAD_PASSWORD', req, { email, userId: user.uid });
         return res.status(401).json({ error: 'Invalid credentials' });
+      }
+
+      // An account awaiting email verification is a different situation from a
+      // suspended one, and telling a member "contact your administrator" when
+      // the activation link is sitting in their inbox would send them down the
+      // wrong path. This check comes AFTER the password check so it cannot be
+      // used to probe which addresses are registered.
+      if (user.status === 'pending') {
+        return res.status(403).json({
+          error: PORTAL_PENDING_MESSAGE,
+          reason: 'pending_activation',
+          canResend: true,
+        });
       }
 
       // Block sign-in for non-active accounts (suspended / disabled).
@@ -368,6 +397,100 @@ async function startServer() {
     'I felt hurt or unwelcome',
     'Other',
   ];
+
+  /**
+   * Activate a member portal account from the link in the invitation email.
+   *
+   * Public by necessity: the member is not signed in yet, and the token IS the
+   * credential. It is single-use -- cleared on success -- so a link forwarded
+   * or left in an old mailbox cannot be replayed.
+   *
+   * GET reports what the link will do (so the page can explain itself before
+   * acting); POST performs the activation.
+   */
+  app.get("/api/v1/public/activate/:token", async (req, res) => {
+    try {
+      const token = String(req.params.token || '');
+      const user = await db('users').where({ verificationToken: token }).first();
+      const check = checkActivationToken(user, new Date());
+
+      if (!check.ok) {
+        // 'already_active' is not a failure the member caused, so it is
+        // reported with a 200 and success-shaped wording.
+        const status = check.reason === 'already_active' ? 200 : 400;
+        return res.status(status).json({
+          valid: false,
+          alreadyActive: check.reason === 'already_active',
+          reason: check.reason,
+          message: check.message,
+        });
+      }
+
+      const tenant = user.tenantId
+        ? await db('tenants').where({ id: user.tenantId }).first()
+        : null;
+
+      res.json({
+        valid: true,
+        name: user.name || null,
+        // The address is echoed so the member can see WHICH account they are
+        // activating, but never the username or anything else usable by a
+        // stranger who happens to hold the link.
+        email: user.email || null,
+        churchName: tenant?.name || null,
+      });
+    } catch (error) {
+      console.error('GET /public/activate error:', error);
+      res.status(500).json({ valid: false, message: 'Could not check this activation link.' });
+    }
+  });
+
+  app.post("/api/v1/public/activate/:token", async (req, res) => {
+    try {
+      const token = String(req.params.token || '');
+      const user = await db('users').where({ verificationToken: token }).first();
+      const check = checkActivationToken(user, new Date());
+
+      if (!check.ok) {
+        const status = check.reason === 'already_active' ? 200 : 400;
+        return res.status(status).json({
+          success: check.reason === 'already_active',
+          alreadyActive: check.reason === 'already_active',
+          reason: check.reason,
+          message: check.message,
+        });
+      }
+
+      const now = new Date();
+      await db('users').where({ uid: user.uid }).update({
+        status: 'active',
+        // Single use: the token is spent whether or not the member ever signs in.
+        verificationToken: null,
+        verificationExpiresAt: null,
+        verifiedAt: now,
+        verifiedBy: 'member',
+      });
+
+      if (user.memberId) {
+        await db('members')
+          .where({ id: user.memberId })
+          .update({ portalStatus: 'active' })
+          .catch(() => {});
+      }
+
+      await securityEvent('MEMBER_PORTAL_ACTIVATED', req, { userId: user.uid });
+
+      res.json({
+        success: true,
+        message: 'Your account is active. You can now sign in to the member portal.',
+        email: user.email || null,
+        username: user.username || null,
+      });
+    } catch (error) {
+      console.error('POST /public/activate error:', error);
+      res.status(500).json({ success: false, message: 'Could not activate this account.' });
+    }
+  });
 
   app.get("/api/v1/public/absence-survey/:token", async (req, res) => {
     try {

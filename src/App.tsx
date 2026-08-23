@@ -57,6 +57,7 @@ import ChurchSettingsPage from './pages/church/Settings';
 import MemberEngagementPage from './pages/church/MemberEngagement';
 import ChurchConfigurationPage from './pages/ChurchConfiguration';
 import AbsenceSurveyPage from './pages/AbsenceSurvey';
+import ActivateAccountPage from './pages/ActivateAccount';
 import ChurchEventsPage from './pages/church/Events';
 import ChurchCommunicationPage from './pages/church/Communication';
 import ChurchAttendancePage from './pages/church/Attendance';
@@ -83,6 +84,13 @@ const App: React.FC = () => {
             unguessable token in the URL is what authorises the page.
           */}
           <Route path="/absence-survey/:token" element={<AbsenceSurveyPage />} />
+
+          {/*
+            Member account activation, from the link in the welcome email.
+            Outside ProtectedRoute for the same reason: the member cannot sign
+            in until this page has done its job.
+          */}
+          <Route path="/activate/:token" element={<ActivateAccountPage />} />
 
           {/* Super Admin Routes */}
           <Route path="/super-admin" element={<ProtectedRoute allowedRoles={['SUPER_ADMIN']}><SuperAdminLayout /></ProtectedRoute>}>

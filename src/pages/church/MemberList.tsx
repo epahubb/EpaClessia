@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Typography, Chip, Button, Avatar, Alert, Stack, Tooltip, IconButton, Snackbar } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import KeyIcon from '@mui/icons-material/VpnKey';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CrudTable, { CrudField } from '../../components/church/CrudTable';
 import MemberImportModal from '../../components/church/MemberImportModal';
 import useAuthedImage from '../../hooks/useAuthedImage';
@@ -95,6 +96,49 @@ const PortalInviteButton: React.FC<{ row: any; onDone: (message: string) => void
   );
 };
 
+/**
+ * Activates a member's portal account without waiting for them to click the
+ * link in their email.
+ *
+ * Members are often registered at the church office by someone else, from an
+ * address the member cannot check on the spot -- or one that was mistyped. The
+ * church vouching for them directly is the fallback, and the record keeps track
+ * of which of the two ways was used.
+ */
+const PortalActivateButton: React.FC<{ row: any; onDone: (message: string) => void; reload: () => void }> = ({ row, onDone, reload }) => {
+  const [busy, setBusy] = useState(false);
+
+  // Nothing to activate until a login exists.
+  if (!row?.portalUserUid) return null;
+
+  const active = (row.portalStatus || 'active') === 'active';
+
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      const res = await churchApi.setMemberPortalActive(row.id, !active);
+      onDone(res?.message || (active ? 'Portal access withdrawn.' : 'Portal account activated.'));
+      reload();
+    } catch (e: any) {
+      onDone(e?.friendlyMessage || 'Could not change the portal account.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Tooltip title={active
+      ? 'Withdraw this member\u2019s portal access'
+      : 'Activate this account now, without waiting for the email link'}>
+      <span>
+        <IconButton size="small" onClick={toggle} disabled={busy} color={active ? 'default' : 'success'}>
+          <CheckCircleIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
+  );
+};
+
 export const MemberList: React.FC = () => {
   const [importOpen, setImportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -110,6 +154,19 @@ export const MemberList: React.FC = () => {
   const [ministries, setMinistries] = useState<{ value: string; label: string }[]>([]);
   const [offices, setOffices] = useState<{ value: string; label: string }[]>([]);
   const [people, setPeople] = useState<{ value: string; label: string }[]>([]);
+  // Groups are not tied to a denomination: every church divides its members up
+  // somehow, so this list is loaded regardless of the sections in play.
+  const [groups, setGroups] = useState<{ value: string; label: string }[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    churchApi.getGroupOptions()
+      .then((rows) => { if (!cancelled) setGroups(rows || []); })
+      // A church with no groups yet still has to be able to register members;
+      // the helper text below explains the empty list.
+      .catch(() => { /* leave empty */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!sections.length) return;
@@ -174,6 +231,19 @@ export const MemberList: React.FC = () => {
     { name: 'occupation', label: 'Occupation' },
     { name: 'membershipStatus', label: 'Status', type: 'select', options: statusOpts, defaultValue: 'active' },
     { name: 'address', label: 'Address', type: 'textarea' },
+
+    // The member's group. A single select, not a multi-select: a member belongs
+    // to exactly one group, unlike ministries, which they may join several of.
+    { name: 'sec_group', label: 'Group', type: 'section' },
+    {
+      name: 'groupId',
+      label: 'Group',
+      type: 'select',
+      options: groups,
+      helperText: groups.length
+        ? 'A member belongs to one group only. Manage the list under Settings \u203a Groups.'
+        : 'No groups yet \u2014 add them under Settings \u203a Groups and they will appear here.',
+    },
   ];
 
   const extendedFields: CrudField[] = [];
@@ -321,6 +391,27 @@ export const MemberList: React.FC = () => {
     { name: 'anniversaryDate', label: 'Membership anniversary', type: 'date' },
     ...(wants('family') ? [] : [{ name: 'maritalStatus', label: 'Marital status', type: 'select' as const, options: MARITAL_STATUSES }]),
     { name: 'notes', label: 'Notes', type: 'textarea' },
+
+    // Portal sign-in details. Optional: left blank, the member still gets an
+    // account -- a username is derived from their name and a password is
+    // generated -- so nobody has to invent credentials for every registration.
+    { name: 'sec_portal', label: 'Portal access', type: 'section' },
+    {
+      name: 'username',
+      label: 'Username',
+      helperText: 'Letters, numbers, dots, dashes and underscores; 3\u201332 characters. Leave blank to have one created from the member\u2019s name.',
+    },
+    {
+      name: 'password',
+      label: 'Password',
+      helperText: 'At least 8 characters. Leave blank to have one generated and emailed to the member.',
+    },
+    {
+      name: 'activateNow',
+      label: 'Activate immediately (skip email verification)',
+      type: 'checkbox',
+      helperText: 'Tick this only when you have confirmed the member\u2019s identity yourself. Otherwise they activate by clicking the link in their welcome email.',
+    },
   ];
 
   const columns = [
@@ -330,6 +421,13 @@ export const MemberList: React.FC = () => {
     { key: 'email', label: 'Email' },
     { key: 'phone', label: 'Phone' },
     ...(wants('office') ? [{ key: 'office', label: 'Office' }] : []),
+    {
+      key: 'groupName',
+      label: 'Group',
+      render: (r: any) => r.groupName
+        ? <Chip size="small" variant="outlined" label={r.groupName} />
+        : '\u2014',
+    },
     ...(wants('ministries')
       ? [{
           key: 'ministryIds',
@@ -347,11 +445,33 @@ export const MemberList: React.FC = () => {
       // glance who was registered without an email and so has no login.
       key: 'portalUserUid',
       label: 'Portal',
-      render: (r: any) => r.portalUserUid
-        ? <Chip size="small" color="success" variant="outlined" label="Has access" />
-        : r.email
-          ? <Chip size="small" variant="outlined" label="Not sent" />
-          : <Chip size="small" variant="outlined" color="warning" label="No email" />,
+      render: (r: any) => {
+        if (!r.portalUserUid) {
+          return r.email
+            ? <Chip size="small" variant="outlined" label="Not sent" />
+            : <Chip size="small" variant="outlined" color="warning" label="No email" />;
+        }
+        // An account exists but is unusable until it is activated, which is a
+        // different situation from having no account at all.
+        const status = r.portalStatus || 'active';
+        if (status === 'pending') {
+          return (
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Chip size="small" color="warning" variant="outlined" label="Awaiting activation" />
+              {r.portalUsername && <Chip size="small" variant="outlined" label={r.portalUsername} />}
+            </Stack>
+          );
+        }
+        if (status === 'suspended') {
+          return <Chip size="small" color="error" variant="outlined" label="Suspended" />;
+        }
+        return (
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <Chip size="small" color="success" variant="outlined" label="Active" />
+            {r.portalUsername && <Chip size="small" variant="outlined" label={r.portalUsername} />}
+          </Stack>
+        );
+      },
     },
     {
       key: 'membershipStatus',
@@ -375,6 +495,9 @@ export const MemberList: React.FC = () => {
       <Typography color="text.secondary" sx={{ mb: 2 }}>
         Register members, manage profiles, family grouping and membership IDs — all stored in your church database.
         Each member with an email address is given a member portal login as soon as they are registered.
+        You can set their username and password yourself, or leave those blank to have them created
+        automatically. New accounts stay pending until the member clicks the link in their welcome
+        email \u2014 or until you activate them here.
       </Typography>
 
       {wants('ministries') && ministries.length === 0 && (
@@ -396,7 +519,12 @@ export const MemberList: React.FC = () => {
         deleteRow={churchApi.deleteMember}
         addLabel="Add Member"
         emptyText="No members yet. Click Add Member to register your first member."
-        rowActions={(row) => <PortalInviteButton row={row} onDone={setNotice} />}
+        rowActions={(row, reload) => (
+          <>
+            <PortalInviteButton row={row} onDone={setNotice} />
+            <PortalActivateButton row={row} onDone={setNotice} reload={reload} />
+          </>
+        )}
         toolbarActions={(reload) => (
           <>
             <Button variant="outlined" startIcon={<UploadFileIcon />} onClick={() => setImportOpen(true)}>

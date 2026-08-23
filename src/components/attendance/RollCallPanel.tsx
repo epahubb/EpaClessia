@@ -15,11 +15,28 @@ type Mark = boolean | null;
 
 interface Entry {
   memberId: string;
-  name: string;
+  name?: string | null;
+  // The register is also sent as separate parts, so the panel can build a name
+  // itself rather than showing a blank row if `name` is ever missing.
+  firstName?: string | null;
+  lastName?: string | null;
+  membershipId?: string | null;
+  groupName?: string | null;
   present: Mark;
   method?: string | null;
   recordedAt?: string | null;
 }
+
+/**
+ * The one place a member's display name is decided. The sheet used to render
+ * `entry.name` alone, which was blank for every row -- the server sends first
+ * and last names -- so the register looked empty even with members registered.
+ */
+const displayName = (e: Entry): string =>
+  (e.name && e.name.trim())
+  || [e.firstName, e.lastName].filter(Boolean).join(' ').trim()
+  || e.membershipId
+  || 'Unnamed member';
 
 export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -39,7 +56,11 @@ export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
       // The endpoint returns the sheet under `entries`; `data` is the generic
       // key used elsewhere. Reading only one of them is what made a register
       // full of members show up as empty.
-      setEntries((res?.entries || res?.data || []) as Entry[]);
+      // The endpoint may answer with the sheet under `entries`, under the
+      // generic `data` key, or as a bare array. All three are accepted so the
+      // register cannot appear empty merely because of the envelope used.
+      const sheet = Array.isArray(res) ? res : (res?.entries || res?.data || []);
+      setEntries(sheet as Entry[]);
       setChanges({});
     } catch (e: any) {
       setError(e?.friendlyMessage || 'Could not load the roll call for this event.');
@@ -61,7 +82,10 @@ export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return entries;
-    return entries.filter((e) => (e.name || '').toLowerCase().includes(q));
+    // Searchable by name, membership ID and group, since roll call is often
+    // taken one group at a time.
+    return entries.filter((e) =>
+      `${displayName(e)} ${e.membershipId || ''} ${e.groupName || ''}`.toLowerCase().includes(q));
   }, [entries, query]);
 
   const summary = useMemo(() => {
@@ -158,6 +182,7 @@ export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
               <TableHead>
                 <TableRow>
                   <TableCell sx={{ fontWeight: 700 }}>Member</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Group</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Recorded</TableCell>
                   <TableCell sx={{ fontWeight: 700 }} align="right">Attendance</TableCell>
                 </TableRow>
@@ -167,7 +192,12 @@ export const RollCallPanel: React.FC<RollCallPanelProps> = ({ eventId }) => {
                   const mark = markOf(e);
                   return (
                     <TableRow key={e.memberId} hover>
-                      <TableCell>{e.name}</TableCell>
+                      <TableCell>{displayName(e)}</TableCell>
+                      <TableCell>
+                        {e.groupName
+                          ? <Chip size="small" variant="outlined" label={e.groupName} />
+                          : <Typography variant="body2" color="text.secondary">—</Typography>}
+                      </TableCell>
                       <TableCell>
                         {e.recordedAt ? (
                           <Typography variant="caption" color="text.secondary">

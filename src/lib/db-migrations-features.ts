@@ -68,6 +68,56 @@ async function addMemberPortalColumns(db: Knex): Promise<void> {
   // admin can see who is still on a temporary one.
   await addColumn(db, 'members', 'portalPasswordSetAt', (t) => t.timestamp('portalPasswordSetAt'));
   await addColumn(db, 'users', 'mustChangePassword', (t) => t.boolean('mustChangePassword'));
+
+  // A member may sign in with a username the church chose for them, or with
+  // their email address. Stored folded to lower case: usernames are matched
+  // case-insensitively, so "Ama" and "ama" must not become two accounts.
+  await addColumn(db, 'users', 'username', (t) => t.string('username'));
+
+  // Email verification. The account exists but cannot sign in until either the
+  // member clicks the link or the church activates it by hand.
+  await addColumn(db, 'users', 'verificationToken', (t) => t.string('verificationToken'));
+  await addColumn(db, 'users', 'verificationExpiresAt', (t) => t.timestamp('verificationExpiresAt'));
+  await addColumn(db, 'users', 'verifiedAt', (t) => t.timestamp('verifiedAt'));
+  /** 'member' when the member used the link, 'church' when an admin activated it. */
+  await addColumn(db, 'users', 'verifiedBy', (t) => t.string('verifiedBy'));
+
+  await addColumn(db, 'members', 'portalUsername', (t) => t.string('portalUsername'));
+  await addColumn(db, 'members', 'portalStatus', (t) => t.string('portalStatus'));
+}
+
+/**
+ * The one group a member belongs to.
+ *
+ * Distinct from ministries on purpose. A member may serve in several ministries
+ * (choir and ushers), but belongs to exactly one group -- a cell, zone or house
+ * fellowship -- which is why this is a single column on the member rather than
+ * a join table. Modelling it as a join table would allow a state the church
+ * says cannot exist, and every report would then have to pick a winner.
+ */
+async function addGroupTables(db: Knex): Promise<void> {
+  if (!(await db.schema.hasTable('church_groups'))) {
+    await db.schema.createTable('church_groups', (t) => {
+      t.string('id').primary();
+      t.string('tenantId');
+      t.string('name').notNullable();
+      t.text('description');
+      t.string('leaderId');
+      t.string('leaderName');
+      t.string('meetingDay');
+      t.string('meetingTime');
+      t.string('location');
+      t.integer('sortOrder').defaultTo(0);
+      t.boolean('active').defaultTo(true);
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId']);
+    });
+  }
+
+  // The id is authoritative; the name is denormalised so a member list or an
+  // exported register still reads correctly without a join.
+  await addColumn(db, 'members', 'groupId', (t) => t.string('groupId'));
+  await addColumn(db, 'members', 'groupName', (t) => t.string('groupName'));
 }
 
 /**
@@ -129,6 +179,7 @@ async function addExtendedMemberColumns(db: Knex): Promise<void> {
 export async function applyFeatureMigrations(db: Knex): Promise<void> {
   await addExtendedMemberColumns(db);
   await addMemberPortalColumns(db);
+  await addGroupTables(db);
   /* ---------------------------------------------------------------- */
   /* Denomination: decides which portal the church admin gets         */
   /* ---------------------------------------------------------------- */
