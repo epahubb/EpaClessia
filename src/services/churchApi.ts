@@ -410,6 +410,25 @@ export const churchApi = {
 
   deleteVisit: async (id: string) => (await api.delete(`/church/visits/${id}`)).data,
 
+  // ---- Registers ----
+  // The registers write to the member records the returns already count from,
+  // so there is no separate figure to keep in step.
+  getRegisters: async () => unwrap((await api.get('/church/registers')).data),
+
+  getRegisterSummary: async (params?: { from?: string; to?: string }) =>
+    (await api.get('/church/registers/summary', { params })).data?.data ?? {},
+
+  getRegisterEntries: async (
+    key: string,
+    params?: { from?: string; to?: string; q?: string },
+  ) => (await api.get(`/church/registers/${key}/entries`, { params })).data,
+
+  fileRegisterEntry: async (key: string, data: any) =>
+    (await api.post(`/church/registers/${key}/entries`, data)).data,
+
+  withdrawRegisterEntry: async (key: string, id: string) =>
+    (await api.delete(`/church/registers/${key}/entries/${id}`)).data,
+
   // ---- Portal shape for this church's denomination ----
   getPortalProfile: async () => (await api.get('/church/portal-profile')).data,
 

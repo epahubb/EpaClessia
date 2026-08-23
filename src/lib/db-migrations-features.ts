@@ -289,11 +289,82 @@ async function addExtendedMemberColumns(db: Knex): Promise<void> {
   }
 }
 
+/**
+ * Church registers: the new converts class and the marriage register.
+ *
+ * Only these two need tables of their own. Baptisms, transfers and deaths are
+ * already facts on the member's record and in the status history, so the
+ * registers for those write there rather than keeping a second copy that could
+ * disagree with the statistical return.
+ */
+async function addRegisterTables(db: Knex): Promise<void> {
+  // Marital standing, so the marriage register can set it on both parties.
+  await addColumn(db, 'members', 'maritalStatus', (t) => t.string('maritalStatus'));
+
+  // Particulars of a death that belong to the member, not to a return.
+  await addColumn(db, 'members', 'causeOfDeath', (t) => t.string('causeOfDeath'));
+  await addColumn(db, 'members', 'funeralDate', (t) => t.timestamp('funeralDate'));
+
+  // Who officiated, and where. Written by whichever register applies.
+  await addColumn(db, 'members', 'baptismOfficiant', (t) => t.string('baptismOfficiant'));
+  await addColumn(db, 'members', 'baptismVenue', (t) => t.string('baptismVenue'));
+  await addColumn(db, 'members', 'holySpiritOccasion', (t) => t.string('holySpiritOccasion'));
+
+  // The new converts class. The date of conversion itself stays on the member
+  // record, where the return counts it; this table is the class around it.
+  if (!(await db.schema.hasTable('convert_classes'))) {
+    await db.schema.createTable('convert_classes', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('memberId').notNullable();
+      t.string('memberName');
+      t.string('className');
+      t.timestamp('startDate');
+      t.timestamp('completedDate');
+      // 'enrolled' until a completion date is entered, then 'completed'.
+      t.string('status').defaultTo('enrolled');
+      t.string('counsellorName');
+      t.text('notes');
+      t.string('recordedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'memberId']);
+      t.index(['tenantId', 'status']);
+    });
+    console.log('Table "convert_classes" created.');
+  }
+
+  // The marriage register. A marriage is not a fact about one member, so unlike
+  // the baptisms it needs a row of its own that names both parties.
+  if (!(await db.schema.hasTable('marriages'))) {
+    await db.schema.createTable('marriages', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.timestamp('weddingDate');
+      t.string('memberId');
+      t.string('memberName');
+      // Set only when the spouse is also a member here, which is what links
+      // the two records to each other.
+      t.string('spouseMemberId');
+      t.string('spouseName');
+      t.string('marriageType');
+      t.string('officiantName');
+      t.string('venue');
+      t.text('notes');
+      t.string('recordedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'weddingDate']);
+      t.index(['tenantId', 'memberId']);
+    });
+    console.log('Table "marriages" created.');
+  }
+}
+
 export async function applyFeatureMigrations(db: Knex): Promise<void> {
   await addExtendedMemberColumns(db);
   await addMemberPortalColumns(db);
   await addGroupTables(db);
   await addStatisticsTables(db);
+  await addRegisterTables(db);
   /* ---------------------------------------------------------------- */
   /* Denomination: decides which portal the church admin gets         */
   /* ---------------------------------------------------------------- */

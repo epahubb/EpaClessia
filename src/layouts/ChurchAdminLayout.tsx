@@ -37,6 +37,7 @@ import {
   ManageAccounts as UsersIcon,
   Badge as PositionIcon,
   Security as SecurityIcon,
+  MenuBook as RegistersIcon,
   Logout as LogoutIcon,
   ChevronLeft as ChevronLeftIcon
 } from '@mui/icons-material';
@@ -55,6 +56,7 @@ const menuItems = [
   { feature: 'ministries' as PortalFeature, text: 'Ministries & Groups', icon: <MinistryIcon />, path: '/church/ministries' },
   // Statistical returns sit beside the units they describe, since a leader
   // arriving to file one is thinking about their ministry, not about reports.
+  { feature: 'members' as PortalFeature, text: 'Registers', icon: <RegistersIcon />, path: '/church/registers' },
   { feature: 'ministries' as PortalFeature, text: 'Statistics', icon: <StatisticsIcon />, path: '/church/statistics' },
   { feature: 'events' as PortalFeature, text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
   { feature: 'finances' as PortalFeature, text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },

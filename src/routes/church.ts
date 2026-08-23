@@ -30,6 +30,15 @@ import {
   QR_TOKEN_TTL_MINUTES,
 } from '../lib/attendance';
 import {
+  REGISTER_DEFINITIONS,
+  isRegisterKey,
+  registerDefinition,
+  validateRegisterEntry,
+  filterRegisterEntries,
+  type RegisterEntry,
+  type RegisterKey,
+} from '../lib/registers';
+import {
   PERMISSION_CODES,
   PLATFORM_ONLY_PERMISSIONS,
   isChurchEditableRole,
@@ -1183,6 +1192,531 @@ router.delete('/visits/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'),
   } catch (error) {
     console.error('DELETE /visits/:id error:', error);
     res.status(500).json({ error: 'Failed to remove this visit' });
+  }
+});
+
+/* --- Church registers ------------------------------------------------ */
+
+/**
+ * The registers: new converts class, water baptism, Holy Spirit baptism,
+ * transfers in and out, marriages and deaths.
+ *
+ * Each register is a door onto facts that already have a home. A baptism
+ * entered here sets `waterBaptismDate` on the member, which is the same column
+ * the statistical return counts, so the register and the return can never
+ * disagree. Nothing here keeps its own tally.
+ *
+ * Only two registers need storage of their own: the new converts class (a class
+ * is not a fact about a single date) and marriages (a marriage belongs to two
+ * people, not one).
+ */
+
+const REGISTER_WRITE_ROLES = ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'];
+
+/** Reads a request date bound, returning undefined when absent or unreadable. */
+function dateBound(raw: any, endOfDay = false): Date | undefined {
+  if (!raw) return undefined;
+  const when = new Date(String(raw));
+  if (Number.isNaN(when.getTime())) return undefined;
+  if (endOfDay) when.setHours(23, 59, 59, 999);
+  else when.setHours(0, 0, 0, 0);
+  return when;
+}
+
+function isoOf(value: any): string | null {
+  if (!value) return null;
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? null : when.toISOString();
+}
+
+/** Drops the empty particulars so a row never shows a labelled blank. */
+function particulars(pairs: Array<[string, any]>): Array<{ label: string; value: string }> {
+  return pairs
+    .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== '')
+    .map(([label, value]) => ({
+      label,
+      value: value instanceof Date ? value.toISOString() : String(value),
+    }));
+}
+
+/** Members carrying a date in the given milestone column, newest first. */
+async function milestoneRows(
+  tenantId: string,
+  dateField: string,
+  from?: Date,
+  to?: Date,
+): Promise<any[]> {
+  const q = db('members').where({ tenantId }).whereNotNull(dateField);
+  if (from) q.where(dateField, '>=', from);
+  if (to) q.where(dateField, '<=', to);
+  return q.orderBy(dateField, 'desc').limit(1000);
+}
+
+/**
+ * Reads one register out of the tables that own its facts.
+ *
+ * The `origin` on every entry names the place the row was read from, so a
+ * leader querying a figure can see it was not typed into a register of its own.
+ */
+async function readRegister(
+  tenantId: string,
+  key: RegisterKey,
+  from?: Date,
+  to?: Date,
+): Promise<RegisterEntry[]> {
+  if (key === 'converts') {
+    const rows = await milestoneRows(tenantId, 'convertDate', from, to);
+    const ids = rows.map((r) => r.id);
+    const classes = ids.length
+      ? await db('convert_classes').where({ tenantId }).whereIn('memberId', ids)
+      : [];
+    const byMember = new Map<string, any>(classes.map((c: any) => [c.memberId, c]));
+    return rows.map((r) => {
+      const cls = byMember.get(r.id);
+      const finished = cls?.completedDate;
+      return {
+        id: r.id,
+        memberId: r.id,
+        memberName: memberLabel(r),
+        date: isoOf(r.convertDate),
+        detail: cls?.className
+          ? `${cls.className}${finished ? ' \u2014 completed' : ' \u2014 in class'}`
+          : 'Not yet enrolled in a class',
+        particulars: particulars([
+          ['Won by', r.wonByName || r.wonByMemberId],
+          ['Class', cls?.className],
+          ['Class started', isoOf(cls?.startDate)],
+          ['Class completed', isoOf(finished)],
+          ['Counsellor', cls?.counsellorName],
+          ['Standing', r.membershipStatus],
+        ]),
+        origin: cls ? 'Member record and new converts class' : 'Member record',
+        notes: cls?.notes || null,
+      };
+    });
+  }
+
+  if (key === 'water_baptism') {
+    const rows = await milestoneRows(tenantId, 'waterBaptismDate', from, to);
+    return rows.map((r) => ({
+      id: r.id,
+      memberId: r.id,
+      memberName: memberLabel(r),
+      date: isoOf(r.waterBaptismDate),
+      detail: r.baptismVenue || 'Water baptism',
+      particulars: particulars([
+        ['Officiating minister', r.baptismOfficiant],
+        ['Place', r.baptismVenue],
+        ['Group', r.groupName],
+      ]),
+      origin: 'Member record',
+      notes: null,
+    }));
+  }
+
+  if (key === 'holy_spirit_baptism') {
+    const rows = await milestoneRows(tenantId, 'holySpiritBaptismDate', from, to);
+    return rows.map((r) => ({
+      id: r.id,
+      memberId: r.id,
+      memberName: memberLabel(r),
+      date: isoOf(r.holySpiritBaptismDate),
+      detail: r.holySpiritOccasion || 'Holy Spirit baptism',
+      particulars: particulars([
+        ['Occasion', r.holySpiritOccasion],
+        ['Minister present', r.baptismOfficiant],
+        ['Group', r.groupName],
+      ]),
+      origin: 'Member record',
+      notes: null,
+    }));
+  }
+
+  if (key === 'transfer_in') {
+    const rows = await milestoneRows(tenantId, 'transferInDate', from, to);
+    return rows.map((r) => ({
+      id: r.id,
+      memberId: r.id,
+      memberName: memberLabel(r),
+      date: isoOf(r.transferInDate),
+      detail: r.transferredFrom ? `From ${r.transferredFrom}` : 'Transferred in',
+      particulars: particulars([
+        ['Transferred from', r.transferredFrom],
+        ['Standing', r.membershipStatus],
+        ['Group', r.groupName],
+      ]),
+      origin: 'Member record',
+      notes: null,
+    }));
+  }
+
+  if (key === 'transfer_out') {
+    const rows = await milestoneRows(tenantId, 'transferOutDate', from, to);
+    return rows.map((r) => ({
+      id: r.id,
+      memberId: r.id,
+      memberName: memberLabel(r),
+      date: isoOf(r.transferOutDate),
+      detail: r.transferredTo ? `To ${r.transferredTo}` : 'Transferred out',
+      particulars: particulars([
+        ['Transferred to', r.transferredTo],
+        ['Standing', r.membershipStatus],
+        ['Group at the time', r.groupName],
+      ]),
+      origin: 'Member record and status history',
+      notes: null,
+    }));
+  }
+
+  if (key === 'death') {
+    const rows = await milestoneRows(tenantId, 'dateOfDeath', from, to);
+    return rows.map((r) => ({
+      id: r.id,
+      memberId: r.id,
+      memberName: memberLabel(r),
+      date: isoOf(r.dateOfDeath),
+      detail: r.causeOfDeath || 'Passed on',
+      particulars: particulars([
+        ['Cause', r.causeOfDeath],
+        ['Funeral', isoOf(r.funeralDate)],
+        ['Standing', r.membershipStatus],
+        ['Group at the time', r.groupName],
+      ]),
+      origin: 'Member record and status history',
+      notes: null,
+    }));
+  }
+
+  // Marriages.
+  const q = db('marriages').where({ tenantId }).whereNotNull('weddingDate');
+  if (from) q.where('weddingDate', '>=', from);
+  if (to) q.where('weddingDate', '<=', to);
+  const rows = await q.orderBy('weddingDate', 'desc').limit(1000);
+  return rows.map((r: any) => ({
+    id: r.id,
+    memberId: r.memberId || null,
+    memberName: r.memberName || 'Unnamed',
+    date: isoOf(r.weddingDate),
+    detail: r.spouseName ? `Married ${r.spouseName}` : 'Marriage',
+    particulars: particulars([
+      ['Spouse', r.spouseName],
+      ['Spouse is a member here', r.spouseMemberId ? 'Yes' : ''],
+      ['Type', r.marriageType],
+      ['Officiating minister', r.officiantName],
+      ['Place', r.venue],
+    ]),
+    origin: 'Marriage register',
+    notes: r.notes || null,
+  }));
+}
+
+/**
+ * GET /registers -- the catalogue, so the page builds its own tabs and boxes
+ * from the definitions rather than repeating them in the client.
+ */
+router.get('/registers', async (_req: AuthRequest, res) => {
+  res.json({ data: REGISTER_DEFINITIONS });
+});
+
+/**
+ * GET /registers/summary -- how many entries each register holds in a period,
+ * for the strip above the tabs.
+ */
+router.get('/registers/summary', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const from = dateBound(req.query.from);
+    const to = dateBound(req.query.to, true);
+    const counts: Record<string, number> = {};
+    await Promise.all(
+      REGISTER_DEFINITIONS.map(async (def) => {
+        const entries = await readRegister(tenantId!, def.key, from, to);
+        counts[def.key] = entries.length;
+      }),
+    );
+    res.json({ data: counts });
+  } catch (error) {
+    console.error('GET /registers/summary error:', error);
+    res.status(500).json({ error: 'Failed to load the registers' });
+  }
+});
+
+/**
+ * GET /registers/:key/entries -- one register, filtered by period and search.
+ */
+router.get('/registers/:key/entries', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const key = String(req.params.key);
+    if (!isRegisterKey(key)) {
+      return res.status(404).json({ error: 'There is no register by that name.' });
+    }
+
+    const from = dateBound(req.query.from);
+    const to = dateBound(req.query.to, true);
+    const entries = await readRegister(tenantId!, key, from, to);
+    const filtered = filterRegisterEntries(entries, String(req.query.q || ''));
+
+    res.json({
+      register: registerDefinition(key),
+      period: { from: from ? from.toISOString() : null, to: to ? to.toISOString() : null },
+      total: filtered.length,
+      data: filtered,
+    });
+  } catch (error) {
+    console.error('GET /registers/:key/entries error:', error);
+    res.status(500).json({ error: 'Failed to load this register' });
+  }
+});
+
+/**
+ * POST /registers/:key/entries -- file an entry.
+ *
+ * Every branch writes to the member's own record, and the two branches that
+ * change a member's standing also write a status-history row dated to the event
+ * so that a return for a past period keeps the membership it had at the time.
+ */
+router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const key = String(req.params.key);
+    if (!isRegisterKey(key)) {
+      return res.status(404).json({ error: 'There is no register by that name.' });
+    }
+
+    const body = req.body || {};
+    const check = validateRegisterEntry(key, body);
+    if (!check.ok) {
+      return res.status(400).json({ error: check.errors[0], errors: check.errors });
+    }
+
+    const member = await db('members').where({ id: body.memberId, tenantId }).first();
+    if (!member) {
+      return res.status(400).json({ error: 'That member is not in this church.' });
+    }
+
+    const actor = req.user?.uid || null;
+    const text = (value: any) => (value === undefined || value === null || String(value).trim() === '' ? null : String(value).trim());
+
+    if (key === 'converts') {
+      const updates: any = { convertDate: new Date(body.convertDate) };
+      if (body.wonByMemberId) {
+        const winner = await db('members').where({ id: body.wonByMemberId, tenantId }).first();
+        if (!winner) return res.status(400).json({ error: 'The member credited with winning this soul is not in this church.' });
+        updates.wonByMemberId = winner.id;
+        // Kept alongside the id so a drill-down reads as a name, not an id.
+        updates.wonByName = memberLabel(winner);
+      }
+      await db('members').where({ id: member.id, tenantId }).update(updates);
+
+      const completed = body.classCompletedDate ? new Date(body.classCompletedDate) : null;
+      const classRow: any = {
+        tenantId,
+        memberId: member.id,
+        memberName: memberLabel(member),
+        className: text(body.className),
+        startDate: body.classStartDate ? new Date(body.classStartDate) : null,
+        completedDate: completed,
+        status: completed ? 'completed' : 'enrolled',
+        counsellorName: text(body.counsellorName),
+        notes: text(body.notes),
+      };
+      // One class record per convert: filing twice corrects the first entry
+      // rather than enrolling the same person twice.
+      const existing = await db('convert_classes').where({ tenantId, memberId: member.id }).first();
+      if (existing) {
+        await db('convert_classes').where({ id: existing.id }).update(classRow);
+      } else {
+        await db('convert_classes').insert({ ...classRow, id: genId('cclass'), recordedBy: actor, createdAt: new Date() });
+      }
+    }
+
+    if (key === 'water_baptism') {
+      await db('members').where({ id: member.id, tenantId }).update({
+        waterBaptismDate: new Date(body.waterBaptismDate),
+        baptismOfficiant: text(body.officiantName),
+        baptismVenue: text(body.venue),
+      });
+    }
+
+    if (key === 'holy_spirit_baptism') {
+      await db('members').where({ id: member.id, tenantId }).update({
+        holySpiritBaptismDate: new Date(body.holySpiritBaptismDate),
+        holySpiritOccasion: text(body.occasion),
+        baptismOfficiant: text(body.officiantName) || member.baptismOfficiant || null,
+      });
+    }
+
+    if (key === 'transfer_in') {
+      const when = new Date(body.transferInDate);
+      await db('members').where({ id: member.id, tenantId }).update({
+        transferInDate: when,
+        transferredFrom: text(body.transferredFrom),
+        membershipStatus: 'active',
+      });
+      // A member received from elsewhere is on the roll from the date they were
+      // received, so the change of standing is dated to that day.
+      if (member.membershipStatus !== 'active') {
+        await recordStatusChange(tenantId!, member, 'membership', member.membershipStatus || null, 'active', actor, when);
+      }
+    }
+
+    if (key === 'transfer_out') {
+      const when = new Date(body.transferOutDate);
+      await db('members').where({ id: member.id, tenantId }).update({
+        transferOutDate: when,
+        transferredTo: text(body.transferredTo),
+        membershipStatus: 'transferred',
+      });
+      await recordStatusChange(tenantId!, member, 'membership', member.membershipStatus || null, 'transferred', actor, when);
+    }
+
+    if (key === 'death') {
+      const when = new Date(body.dateOfDeath);
+      await db('members').where({ id: member.id, tenantId }).update({
+        dateOfDeath: when,
+        causeOfDeath: text(body.causeOfDeath),
+        funeralDate: body.funeralDate ? new Date(body.funeralDate) : null,
+        membershipStatus: 'deceased',
+      });
+      await recordStatusChange(tenantId!, member, 'membership', member.membershipStatus || null, 'deceased', actor, when);
+    }
+
+    if (key === 'marriage') {
+      const when = new Date(body.weddingDate);
+      let spouse: any = null;
+      if (body.spouseMemberId) {
+        spouse = await db('members').where({ id: body.spouseMemberId, tenantId }).first();
+        if (!spouse) return res.status(400).json({ error: 'That spouse is not a member of this church.' });
+      }
+      const spouseName = spouse ? memberLabel(spouse) : text(body.spouseName);
+
+      await db('marriages').insert({
+        id: genId('marriage'),
+        tenantId,
+        weddingDate: when,
+        memberId: member.id,
+        memberName: memberLabel(member),
+        spouseMemberId: spouse?.id || null,
+        spouseName,
+        marriageType: text(body.marriageType),
+        officiantName: text(body.officiantName),
+        venue: text(body.venue),
+        notes: text(body.notes),
+        recordedBy: actor,
+        createdAt: new Date(),
+      });
+
+      await db('members').where({ id: member.id, tenantId }).update({
+        weddingDate: when,
+        maritalStatus: 'married',
+        spouseName,
+        spouseMemberId: spouse?.id || null,
+      });
+      // Both records are updated, so the marriage is visible from either side
+      // rather than only from the record it happened to be filed against.
+      if (spouse) {
+        await db('members').where({ id: spouse.id, tenantId }).update({
+          weddingDate: when,
+          maritalStatus: 'married',
+          spouseName: memberLabel(member),
+          spouseMemberId: member.id,
+        });
+      }
+    }
+
+    await logActivity(req, 'REGISTER_ENTRY', 'members', member.id, `${key} recorded`);
+    const entries = await readRegister(tenantId!, key);
+    res.status(201).json({
+      success: true,
+      message: 'The entry was filed, and the figures it feeds have moved with it.',
+      data: entries.find((e) => e.memberId === member.id) || null,
+    });
+  } catch (error) {
+    console.error('POST /registers/:key/entries error:', error);
+    res.status(500).json({ error: 'Failed to file this entry' });
+  }
+});
+
+/**
+ * DELETE /registers/:key/entries/:id -- withdraw an entry filed in error.
+ *
+ * This clears the fact from the member's record rather than hiding a register
+ * row, because the record is where the fact lives. Where the entry had taken
+ * the member off the roll, their standing is returned to active and the dated
+ * history row is removed, so a past return is not left with a phantom loss.
+ */
+router.delete('/registers/:key/entries/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const key = String(req.params.key);
+    if (!isRegisterKey(key)) {
+      return res.status(404).json({ error: 'There is no register by that name.' });
+    }
+    const id = String(req.params.id);
+
+    if (key === 'marriage') {
+      const row = await db('marriages').where({ id, tenantId }).first();
+      if (!row) return res.status(404).json({ error: 'That entry is no longer in the register.' });
+      await db('marriages').where({ id, tenantId }).del();
+      const ids = [row.memberId, row.spouseMemberId].filter(Boolean);
+      if (ids.length) {
+        await db('members').where({ tenantId }).whereIn('id', ids).update({
+          weddingDate: null,
+          maritalStatus: null,
+          spouseMemberId: null,
+        });
+      }
+      await logActivity(req, 'REGISTER_ENTRY_WITHDRAWN', 'marriages', id, 'marriage withdrawn');
+      return res.json({ success: true, message: 'The marriage entry was withdrawn.' });
+    }
+
+    const member = await db('members').where({ id, tenantId }).first();
+    if (!member) return res.status(404).json({ error: 'That member is not in this church.' });
+
+    const updates: any = {};
+    if (key === 'converts') {
+      updates.convertDate = null;
+      updates.wonByMemberId = null;
+      updates.wonByName = null;
+      await db('convert_classes').where({ tenantId, memberId: member.id }).del();
+    }
+    if (key === 'water_baptism') {
+      updates.waterBaptismDate = null;
+      updates.baptismVenue = null;
+    }
+    if (key === 'holy_spirit_baptism') {
+      updates.holySpiritBaptismDate = null;
+      updates.holySpiritOccasion = null;
+    }
+    if (key === 'transfer_in') {
+      updates.transferInDate = null;
+      updates.transferredFrom = null;
+    }
+    if (key === 'transfer_out') {
+      updates.transferOutDate = null;
+      updates.transferredTo = null;
+      updates.membershipStatus = 'active';
+      await db('member_status_history')
+        .where({ tenantId, memberId: member.id, kind: 'membership', toStatus: 'transferred' })
+        .del();
+    }
+    if (key === 'death') {
+      updates.dateOfDeath = null;
+      updates.causeOfDeath = null;
+      updates.funeralDate = null;
+      updates.membershipStatus = 'active';
+      await db('member_status_history')
+        .where({ tenantId, memberId: member.id, kind: 'membership', toStatus: 'deceased' })
+        .del();
+    }
+
+    await db('members').where({ id: member.id, tenantId }).update(updates);
+    await logActivity(req, 'REGISTER_ENTRY_WITHDRAWN', 'members', member.id, `${key} withdrawn`);
+    res.json({ success: true, message: 'The entry was withdrawn from the register.' });
+  } catch (error) {
+    console.error('DELETE /registers/:key/entries/:id error:', error);
+    res.status(500).json({ error: 'Failed to withdraw this entry' });
   }
 });
 
