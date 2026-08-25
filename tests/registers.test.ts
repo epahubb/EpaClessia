@@ -9,6 +9,8 @@ import {
   validateRegisterEntry,
   filterRegisterEntries,
   summarizeRegisters,
+  acceptsDocuments,
+  resolveDocumentKind,
   type RegisterEntry,
 } from '../src/lib/registers';
 
@@ -24,7 +26,11 @@ test('every register the church asked for has a book', () => {
       'transfer_in',
       'transfer_out',
       'marriage',
+      'birth',
+      'child_dedication',
       'death',
+      'promotion',
+      'demotion',
     ],
   );
   assert.equal(REGISTER_DEFINITIONS.length, REGISTER_KEYS.length);
@@ -40,26 +46,39 @@ test('every register says what an entry writes and where it lands', () => {
       registerDateFields(def.key).includes(def.primaryDateField),
       `${def.key} does not collect its own primary date`,
     );
-    // A member has to be named, or the entry cannot reach a record.
-    assert.ok(
-      def.fields.some((f) => f.name === 'memberId' && f.required),
-      `${def.key} does not require a member`,
-    );
+    // A member has to be named, or the entry cannot reach a record. Which
+    // member differs by register: a birth or a dedication hangs from the
+    // parent, because the child may have no record of their own yet.
+    const member = def.fields.find((f) => f.name === def.memberField);
+    assert.ok(member, `${def.key} names a member field it does not collect`);
+    assert.equal(member!.type, 'member', `${def.key} member field is not a member picker`);
+    assert.equal(member!.required, true, `${def.key} does not require a member`);
   }
 });
 
 test('the registers that move a figure name the figure they move', () => {
   const counted = REGISTER_DEFINITIONS.filter((d) => d.countsAs.length > 0).map((d) => d.key);
-  // Marriage is the one register with no figure on the statistical return.
   assert.deepEqual(counted.sort(), [
     'converts',
     'death',
+    'demotion',
     'holy_spirit_baptism',
+    'promotion',
     'transfer_in',
     'transfer_out',
     'water_baptism',
   ]);
-  assert.deepEqual(registerDefinition('marriage')!.countsAs, []);
+  // The family registers are kept for their own sake: a marriage, a birth and a
+  // dedication are events in a member's life that no figure on the return asks
+  // about, and inventing one for them would be inventing a statistic.
+  for (const key of ['marriage', 'birth', 'child_dedication'] as const) {
+    assert.deepEqual(registerDefinition(key)!.countsAs, []);
+  }
+  // A change of office moves the officer counts, which are read off the roster.
+  assert.deepEqual(registerDefinition('promotion')!.countsAs, [
+    'Officers',
+    'Other office holders',
+  ]);
 });
 
 test('the three registers that take a member off the roll are flagged as such', () => {
@@ -284,4 +303,181 @@ test('the summary strip lists every register, quiet ones at zero', () => {
   assert.equal(summary.find((s) => s.key === 'water_baptism')!.count, 12);
   assert.equal(summary.find((s) => s.key === 'marriage')!.count, 0);
   assert.equal(summary.find((s) => s.key === 'water_baptism')!.label, 'Water baptism');
+});
+
+/* ---------------------------------------------------------------------- */
+/* Dropdowns, paperwork and the certificate                               */
+/* ---------------------------------------------------------------------- */
+
+test('a converts class is chosen from the church\u2019s own intakes', () => {
+  const field = registerDefinition('converts')!.fields.find((f) => f.name === 'convertClassId')!;
+  assert.equal(field.type, 'select');
+  assert.equal(field.optionSource, 'convert_classes');
+  // No fixed list: the church names its own intakes, so the choices can only
+  // come from its records.
+  assert.equal(field.options, undefined);
+});
+
+test('the counsellor on a converts entry is a member, not typed-in text', () => {
+  const field = registerDefinition('converts')!.fields.find(
+    (f) => f.name === 'counsellorMemberId',
+  )!;
+  assert.equal(field.type, 'member');
+});
+
+test('an office on a promotion is chosen from the offices the church spelt out', () => {
+  for (const key of ['promotion', 'demotion'] as const) {
+    const field = registerDefinition(key)!.fields.find((f) => f.name === 'toOffice')!;
+    assert.equal(field.optionSource, 'offices');
+  }
+});
+
+test('a dropdown filled from the church\u2019s records is not judged against a fixed list', () => {
+  // The validator cannot know the church's class ids, so checking them here
+  // would reject every real class.
+  const check = validateRegisterEntry(
+    'converts',
+    { memberId: 'm1', convertDate: '2026-03-01', convertClassId: 'cclassgrp_abc' },
+    NOW,
+  );
+  assert.equal(check.ok, true, check.errors.join('; '));
+});
+
+test('paperwork is offered on every register where a church holds papers', () => {
+  const withDocs = REGISTER_DEFINITIONS.filter((d) => acceptsDocuments(d.key)).map((d) => d.key);
+  assert.deepEqual(withDocs.sort(), [
+    'birth',
+    'child_dedication',
+    'death',
+    'demotion',
+    'marriage',
+    'promotion',
+    'transfer_in',
+    'transfer_out',
+    'water_baptism',
+  ]);
+  // A converts class and a Holy Spirit baptism produce no paper, so none is
+  // asked for.
+  assert.equal(acceptsDocuments('converts'), false);
+  assert.equal(acceptsDocuments('holy_spirit_baptism'), false);
+});
+
+test('a transfer or a death is filed whether or not the paper has arrived', () => {
+  // The document must never gate the fact: a member released today is off the
+  // roll today, even if the letter is written next week.
+  for (const def of REGISTER_DEFINITIONS.filter((d) => acceptsDocuments(d.key))) {
+    assert.ok(
+      !def.fields.some((f) => f.required && f.name.toLowerCase().includes('document')),
+      `${def.key} makes paperwork compulsory`,
+    );
+  }
+  const transfer = validateRegisterEntry(
+    'transfer_out',
+    { memberId: 'm1', transferOutDate: '2026-06-01', transferredTo: 'Grace Chapel, Kumasi' },
+    NOW,
+  );
+  assert.equal(transfer.ok, true, transfer.errors.join('; '));
+
+  const death = validateRegisterEntry('death', { memberId: 'm1', dateOfDeath: '2026-07-04' }, NOW);
+  assert.equal(death.ok, true, death.errors.join('; '));
+});
+
+test('a death takes the several papers a bereavement actually produces', () => {
+  const kinds = registerDefinition('death')!.documentKinds!.map((k) => k.value);
+  assert.deepEqual(kinds, ['certificate', 'burial_permit', 'obituary', 'other']);
+});
+
+test('only the baptism register follows a certificate through to delivery', () => {
+  const tracking = REGISTER_DEFINITIONS.filter((d) => d.tracksCertificate).map((d) => d.key);
+  assert.deepEqual(tracking, ['water_baptism']);
+  assert.ok(
+    registerDefinition('water_baptism')!.documentKinds!.some((k) => k.value === 'certificate'),
+  );
+});
+
+test('a paper we have no label for is filed rather than refused', () => {
+  // Losing a document because there was no name for it would be worse than
+  // filing it under "other".
+  assert.equal(resolveDocumentKind('transfer_in', 'transfer_letter'), 'transfer_letter');
+  assert.equal(resolveDocumentKind('death', 'coroner report'), 'other');
+  assert.equal(resolveDocumentKind('death', undefined), 'other');
+  assert.equal(resolveDocumentKind('converts', 'certificate'), 'other');
+});
+
+/* ---------------------------------------------------------------------- */
+/* The four new registers                                                 */
+/* ---------------------------------------------------------------------- */
+
+test('a birth names the child, the date and a parent on the roll', () => {
+  const good = validateRegisterEntry(
+    'birth',
+    { parentMemberId: 'm1', childName: 'Kofi Mensah', dateOfBirth: '2026-04-01' },
+    NOW,
+  );
+  assert.equal(good.ok, true, good.errors.join('; '));
+
+  const bare = validateRegisterEntry('birth', {}, NOW);
+  assert.equal(bare.errors.length, 3);
+});
+
+test('a child cannot be born tomorrow', () => {
+  const check = validateRegisterEntry(
+    'birth',
+    { parentMemberId: 'm1', childName: 'Kofi', dateOfBirth: '2027-01-01' },
+    NOW,
+  );
+  assert.ok(check.errors.some((e) => e.includes('cannot be in the future')));
+});
+
+test('one member cannot be both parents of the same child', () => {
+  const check = validateRegisterEntry(
+    'birth',
+    {
+      parentMemberId: 'm1',
+      secondParentMemberId: 'm1',
+      childName: 'Kofi',
+      dateOfBirth: '2026-04-01',
+    },
+    NOW,
+  );
+  assert.ok(check.errors.includes('The two parents cannot be the same member.'));
+});
+
+test('a child cannot be dedicated before they were born', () => {
+  const check = validateRegisterEntry(
+    'child_dedication',
+    {
+      parentMemberId: 'm1',
+      childName: 'Kofi',
+      childDateOfBirth: '2026-04-01',
+      dedicationDate: '2026-03-01',
+    },
+    NOW,
+  );
+  assert.ok(check.errors.includes('A child cannot be dedicated before they were born.'));
+});
+
+test('a promotion must say which office; a demotion need not', () => {
+  // Stepping out of office altogether is a real event, and it is recorded by
+  // leaving the new office empty.
+  const promotion = validateRegisterEntry(
+    'promotion',
+    { memberId: 'm1', effectiveDate: '2026-01-11' },
+    NOW,
+  );
+  assert.equal(promotion.ok, false);
+
+  const demotion = validateRegisterEntry(
+    'demotion',
+    { memberId: 'm1', effectiveDate: '2026-01-11' },
+    NOW,
+  );
+  assert.equal(demotion.ok, true, demotion.errors.join('; '));
+});
+
+test('the summary strip covers all eleven registers, quiet ones at zero', () => {
+  const summary = summarizeRegisters({ water_baptism: 12, birth: 3 });
+  assert.equal(summary.length, REGISTER_KEYS.length);
+  assert.equal(summary.find((s) => s.key === 'birth')!.count, 3);
+  assert.equal(summary.find((s) => s.key === 'demotion')!.count, 0);
 });

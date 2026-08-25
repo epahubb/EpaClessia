@@ -50,6 +50,7 @@ import {
 } from 'lucide-react';
 import { Link as RouterLink } from 'react-router-dom';
 import churchApi from '../../services/churchApi';
+import { COMPARISON_MODES, type ComparisonMode } from '../../lib/unitStatistics';
 
 type Unit = {
   id: string;
@@ -101,6 +102,18 @@ const defaultRange = () => {
   const from = new Date(to.getTime() - 29 * 24 * 60 * 60 * 1000);
   return { from: iso(from), to: iso(to) };
 };
+
+/** The same date a year earlier, kept on the calendar rather than by 365 days. */
+const shiftYears = (value: string, years: number) => {
+  const d = new Date(value);
+  d.setFullYear(d.getFullYear() - years);
+  return iso(d);
+};
+
+const lastYearOf = (r: { from: string; to: string }) => ({
+  from: shiftYears(r.from, 1),
+  to: shiftYears(r.to, 1),
+});
 
 const money = (n: number) =>
   `GHS ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -294,11 +307,19 @@ export function UnitStatisticsPage() {
   const [range, setRange] = useState(defaultRange);
   const [query, setQuery] = useState('');
 
+  // What the second column is measured against. The period just before is the
+  // default because it is the commonest question, but a church judging a
+  // December only judges it fairly against a December, which is what the
+  // year-on-year comparison is for.
+  const [compare, setCompare] = useState<ComparisonMode>('previous_period');
+  const [compareRange, setCompareRange] = useState(() => lastYearOf(defaultRange()));
+
   const [rows, setRows] = useState<StatRow[]>([]);
   const [summary, setSummary] = useState<any>(null);
   const [cover, setCover] = useState<any>(null);
   const [period, setPeriod] = useState<any>(null);
   const [prior, setPrior] = useState<any>(null);
+  const [comparison, setComparison] = useState<any>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -326,19 +347,25 @@ export function UnitStatisticsPage() {
         from: range.from,
         to: range.to,
         q: query || undefined,
+        compare,
+        // Only sent for a chosen comparison; the other two modes are worked out
+        // from the current period on the server, so there is one rule, not two.
+        compareFrom: compare === 'custom' ? compareRange.from : undefined,
+        compareTo: compare === 'custom' ? compareRange.to : undefined,
       });
       setRows(res?.data || []);
       setSummary(res?.summary || null);
       setCover(res?.coverage || null);
       setPeriod(res?.period || null);
       setPrior(res?.previousPeriod || null);
+      setComparison(res?.comparison || null);
       setError('');
     } catch (e: any) {
       setError(e?.friendlyMessage || 'Could not build the statistics for this unit.');
     } finally {
       setLoading(false);
     }
-  }, [unit, range.from, range.to, query]);
+  }, [unit, range.from, range.to, query, compare, compareRange.from, compareRange.to]);
 
   // Typing in the search box should not fire a request per keystroke.
   useEffect(() => {
@@ -444,6 +471,75 @@ export function UnitStatisticsPage() {
           </Grid>
         </Grid>
 
+        {/* ---- What this period is measured against ---- */}
+        <Divider sx={{ my: 2 }} />
+        <Grid container spacing={2} alignItems="center">
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField
+              select
+              fullWidth
+              size="small"
+              label="Compare with"
+              value={compare}
+              onChange={(e) => {
+                const mode = e.target.value as ComparisonMode;
+                setCompare(mode);
+                // Choosing your own dates opens on the same period last year,
+                // which is the comparison people reach for most often.
+                if (mode === 'custom') setCompareRange(lastYearOf(range));
+              }}
+              helperText={COMPARISON_MODES.find((m) => m.value === compare)?.description}
+            >
+              {COMPARISON_MODES.map((m) => (
+                <MenuItem key={m.value} value={m.value}>
+                  {m.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+
+          {compare === 'custom' && (
+            <>
+              <Grid size={{ xs: 6, md: 2 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="Compare from"
+                  value={compareRange.from}
+                  onChange={(e) => setCompareRange({ ...compareRange, from: e.target.value })}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              <Grid size={{ xs: 6, md: 2 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="Compare to"
+                  value={compareRange.to}
+                  onChange={(e) => setCompareRange({ ...compareRange, to: e.target.value })}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+            </>
+          )}
+
+          <Grid size={{ xs: 12, md: compare === 'custom' ? 4 : 8 }}>
+            <Alert severity="info" icon={<Info size={16} />} sx={{ py: 0.25 }}>
+              {comparison ? (
+                <>
+                  <b>{shortDate(period?.from)} to {shortDate(period?.to)}</b> is being compared
+                  against <b>{shortDate(comparison.from)} to {shortDate(comparison.to)}</b>. The
+                  variance on every row is the current figure less the earlier one.
+                </>
+              ) : (
+                'Choose a unit to build the return.'
+              )}
+            </Alert>
+          </Grid>
+        </Grid>
+
         <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: 'wrap', gap: 1 }}>
           <Button size="small" variant="outlined" onClick={thisMonth}>
             This month
@@ -457,10 +553,9 @@ export function UnitStatisticsPage() {
           <Button size="small" variant="outlined" onClick={() => preset(365)}>
             Last 12 months
           </Button>
-          {period && prior && (
+          {period && (
             <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', ml: 1 }}>
-              Compared against the {period.days} days before this period ({shortDate(prior.from)}{' '}
-              to {shortDate(prior.to)})
+              {period.days} day{period.days === 1 ? '' : 's'} in this period
             </Typography>
           )}
         </Stack>
@@ -485,7 +580,7 @@ export function UnitStatisticsPage() {
                       sx={{ color: c.delta > 0 ? 'success.main' : 'error.main' }}
                     >
                       {c.delta > 0 ? '+' : ''}
-                      {c.delta} on the previous period
+                      {c.delta} against {comparison ? comparison.label.toLowerCase() : 'the previous period'}
                     </Typography>
                   )}
                   {c.hint && (
@@ -521,12 +616,40 @@ export function UnitStatisticsPage() {
                 <TableCell sx={{ fontWeight: 700 }}>Counted from</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>
                   Current
+                  {period && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      display="block"
+                      sx={{ fontWeight: 400 }}
+                    >
+                      {shortDate(period.from)} to {shortDate(period.to)}
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>
                   Previous
+                  {prior && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      display="block"
+                      sx={{ fontWeight: 400 }}
+                    >
+                      {shortDate(prior.from)} to {shortDate(prior.to)}
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>
                   Variance
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ fontWeight: 400 }}
+                  >
+                    Current − previous
+                  </Typography>
                 </TableCell>
               </TableRow>
             </TableHead>

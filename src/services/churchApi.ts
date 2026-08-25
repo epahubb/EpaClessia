@@ -372,7 +372,19 @@ export const churchApi = {
   getUnitStatistics: async (
     unitType: string,
     unitId: string,
-    params?: { from?: string; to?: string; q?: string },
+    params?: {
+      from?: string;
+      to?: string;
+      q?: string;
+      /**
+       * What the previous column is measured against: the period just before,
+       * the same period last year, or a pair of dates of your own. The variance
+       * is always the current figure less the earlier one.
+       */
+      compare?: 'previous_period' | 'previous_year' | 'custom';
+      compareFrom?: string;
+      compareTo?: string;
+    },
   ) =>
     (await api.get(`/church/units/${unitType}/${unitId}/statistics`, { params })).data,
 
@@ -425,6 +437,42 @@ export const churchApi = {
 
   fileRegisterEntry: async (key: string, data: any) =>
     (await api.post(`/church/registers/${key}/entries`, data)).data,
+
+  // ---- Paperwork attached to a register entry ----
+  // Letters of transfer, certificates, permits. Never required: a church files
+  // the fact when it happens and attaches the paper whenever it arrives.
+  getRegisterDocuments: async (key: string, entryId: string) =>
+    (await api.get(`/church/registers/${key}/entries/${entryId}/documents`)).data,
+
+  uploadRegisterDocument: async (
+    key: string,
+    entryId: string,
+    data: { fileName: string; dataUrl: string; kind?: string },
+  ) => (await api.post(`/church/registers/${key}/entries/${entryId}/documents`, data)).data,
+
+  /** The document itself, as a data URL the browser can open or save. */
+  openRegisterDocument: async (docId: string) =>
+    (await api.get(`/church/register-documents/${docId}`)).data,
+
+  deleteRegisterDocument: async (docId: string) =>
+    (await api.delete(`/church/register-documents/${docId}`)).data,
+
+  /** Move a baptism certificate along between written and handed over. */
+  setBaptismCertificateStatus: async (memberId: string, status: string) =>
+    (await api.put(`/church/registers/water_baptism/entries/${memberId}/certificate`, { status }))
+      .data,
+
+  // ---- The classes behind the converts dropdown ----
+  getConvertClasses: async () => unwrap((await api.get('/church/convert-classes')).data),
+
+  createConvertClass: async (data: any) =>
+    (await api.post('/church/convert-classes', data)).data,
+
+  updateConvertClass: async (id: string, data: any) =>
+    (await api.put(`/church/convert-classes/${id}`, data)).data,
+
+  deleteConvertClass: async (id: string) =>
+    (await api.delete(`/church/convert-classes/${id}`)).data,
 
   withdrawRegisterEntry: async (key: string, id: string) =>
     (await api.delete(`/church/registers/${key}/entries/${id}`)).data,

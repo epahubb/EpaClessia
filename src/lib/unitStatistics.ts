@@ -365,6 +365,83 @@ export function previousPeriod(period: Period): Period {
   return { from: start, to: end };
 }
 
+/* ------------------------------------------------------------------ */
+/* What "previous" is compared against                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A church rarely wants only one comparison. "How are we doing against last
+ * month" and "how are we doing against this time last year" are different
+ * questions, and a growing church answers the second one more often, because it
+ * cancels out the seasons: a December is only fairly judged against a December.
+ *
+ * `custom` exists because no fixed rule covers a church comparing against the
+ * period before a building project, or before a split.
+ */
+export const COMPARISON_MODES = [
+  {
+    value: 'previous_period',
+    label: 'The period just before',
+    description: 'The same number of days immediately before this period.',
+  },
+  {
+    value: 'previous_year',
+    label: 'The same period last year',
+    description: 'The very same dates, one year earlier.',
+  },
+  {
+    value: 'custom',
+    label: 'Dates I choose',
+    description: 'Any period you name, however long.',
+  },
+] as const;
+
+export type ComparisonMode = (typeof COMPARISON_MODES)[number]['value'];
+
+export function isComparisonMode(value: unknown): value is ComparisonMode {
+  return COMPARISON_MODES.some((m) => m.value === value);
+}
+
+export const comparisonModeLabel = (mode: ComparisonMode): string =>
+  COMPARISON_MODES.find((m) => m.value === mode)?.label || mode;
+
+/**
+ * The same dates a year earlier.
+ *
+ * Shifting the calendar year rather than subtracting 365 days is deliberate: it
+ * keeps "1 January to 31 March" comparing against "1 January to 31 March", which
+ * is what a church means by last year, and it stays right across a leap year.
+ */
+export function sameperiodLastYear(period: Period): Period {
+  const shift = (date: Date): Date => {
+    const moved = new Date(date);
+    moved.setFullYear(moved.getFullYear() - 1);
+    return moved;
+  };
+  return { from: startOfDay(shift(period.from)), to: endOfDay(shift(period.to)) };
+}
+
+/**
+ * Resolves what this return is measured against.
+ *
+ * A custom comparison falls back to the period just before when the dates are
+ * missing or unreadable, so the table always has a second column rather than
+ * failing outright.
+ */
+export function comparisonPeriod(
+  period: Period,
+  mode: ComparisonMode = 'previous_period',
+  customFrom?: string | Date | null,
+  customTo?: string | Date | null,
+): Period {
+  if (mode === 'previous_year') return sameperiodLastYear(period);
+  if (mode === 'custom') {
+    if (!customFrom && !customTo) return previousPeriod(period);
+    return resolvePeriod(customFrom, customTo);
+  }
+  return previousPeriod(period);
+}
+
 /** Whole days covered by a period, counting both ends. */
 export function periodDays(period: Period): number {
   return Math.max(1, Math.round((period.to.getTime() - period.from.getTime()) / DAY_MS));

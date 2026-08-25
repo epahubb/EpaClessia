@@ -35,9 +35,23 @@ import {
   registerDefinition,
   validateRegisterEntry,
   filterRegisterEntries,
+  acceptsDocuments,
+  resolveDocumentKind,
   type RegisterEntry,
   type RegisterKey,
 } from '../lib/registers';
+import {
+  decodeDocumentDataUrl,
+  documentToDataUrl,
+  DocumentValidationError,
+  safeFileName,
+  humanFileSize,
+  INITIAL_CERTIFICATE_STATUS,
+  isCertificateStatus,
+  certificateStatusLabel,
+  statusAfterCertificateUpload,
+  CERTIFICATE_STATUSES,
+} from '../lib/documents';
 import {
   PERMISSION_CODES,
   PLATFORM_ONLY_PERMISSIONS,
@@ -86,6 +100,9 @@ import {
   coverage,
   resolvePeriod,
   previousPeriod,
+  comparisonPeriod,
+  isComparisonMode,
+  comparisonModeLabel,
   periodDays,
   metricDefinition,
   isPeriodMetric,
@@ -956,7 +973,17 @@ router.get('/units/:unitType/:unitId/statistics', async (req: AuthRequest, res) 
     }
 
     const period = resolvePeriod(req.query.from as string, req.query.to as string);
-    const prior = previousPeriod(period);
+    // What this return is measured against. The period just before is the
+    // default because it is what most churches mean by "previous", but a
+    // year-on-year comparison is the fairer reading for anything seasonal, and
+    // a chosen pair of dates covers the rest.
+    const mode = isComparisonMode(req.query.compare) ? req.query.compare : 'previous_period';
+    const prior = comparisonPeriod(
+      period,
+      mode,
+      req.query.compareFrom as string,
+      req.query.compareTo as string,
+    );
     const memberIds = await unitMemberIds(tenantId!, unit);
 
     const [current, previous] = await Promise.all([
@@ -976,6 +1003,15 @@ router.get('/units/:unitType/:unitId/statistics', async (req: AuthRequest, res) 
       },
       period: { from: period.from, to: period.to, days: periodDays(period) },
       previousPeriod: { from: prior.from, to: prior.to },
+      // Named so the table can say what the second column actually is, rather
+      // than leaving "previous" to be guessed at.
+      comparison: {
+        mode,
+        label: comparisonModeLabel(mode),
+        from: prior.from,
+        to: prior.to,
+        days: periodDays(prior),
+      },
       // The summary and the coverage note are built from the unfiltered table:
       // narrowing the rows with the search box must not change the headline.
       summary: summarizeStatistics(full),
@@ -1198,20 +1234,30 @@ router.delete('/visits/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'),
 /* --- Church registers ------------------------------------------------ */
 
 /**
- * The registers: new converts class, water baptism, Holy Spirit baptism,
- * transfers in and out, marriages and deaths.
+ * The registers: the new converts class, the two baptisms, transfers in and
+ * out, marriages, births, children's dedications, deaths, and changes of office.
  *
  * Each register is a door onto facts that already have a home. A baptism
  * entered here sets `waterBaptismDate` on the member, which is the same column
  * the statistical return counts, so the register and the return can never
  * disagree. Nothing here keeps its own tally.
  *
- * Only two registers need storage of their own: the new converts class (a class
- * is not a fact about a single date) and marriages (a marriage belongs to two
- * people, not one).
+ * Four registers need storage of their own, because none of them is a single
+ * fact about a single member: the converts class, marriages (two people), births
+ * and dedications (a child who may have no record yet), and office changes (a
+ * history, where a member record can only hold the office held now).
  */
 
 const REGISTER_WRITE_ROLES = ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'];
+
+/** The registers kept in a table of their own, and the table that holds each. */
+const REGISTER_TABLES: Record<string, string> = {
+  marriage: 'marriages',
+  birth: 'births',
+  child_dedication: 'dedications',
+  promotion: 'office_changes',
+  demotion: 'office_changes',
+};
 
 /** Reads a request date bound, returning undefined when absent or unreadable. */
 function dateBound(raw: any, endOfDay = false): Date | undefined {
@@ -1253,6 +1299,43 @@ async function milestoneRows(
 }
 
 /**
+ * How many papers are attached to each entry, in one query rather than one per
+ * row, so a register of two hundred baptisms does not become two hundred
+ * queries just to show a paperclip.
+ */
+async function documentCounts(
+  tenantId: string,
+  register: string,
+  entryIds: string[],
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (!entryIds.length) return counts;
+  const rows = await db('register_documents')
+    .where({ tenantId, register })
+    .whereIn('entryId', entryIds)
+    .select('entryId')
+    .count({ total: '*' })
+    .groupBy('entryId');
+  for (const row of rows as any[]) {
+    counts.set(row.entryId, Number(row.total) || 0);
+  }
+  return counts;
+}
+
+/** A member's children as an array, whatever state the JSON column is in. */
+function parseChildren(raw: any): any[] {
+  try {
+    const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+const sameName = (a: any, b: any) =>
+  String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+/**
  * Reads one register out of the tables that own its facts.
  *
  * The `origin` on every entry names the place the row was read from, so a
@@ -1264,127 +1347,227 @@ async function readRegister(
   from?: Date,
   to?: Date,
 ): Promise<RegisterEntry[]> {
+  const withCounts = async (entries: RegisterEntry[]): Promise<RegisterEntry[]> => {
+    const counts = await documentCounts(tenantId, key, entries.map((e) => e.id));
+    return entries.map((e) => ({ ...e, documentCount: counts.get(e.id) || 0 }));
+  };
+
   if (key === 'converts') {
     const rows = await milestoneRows(tenantId, 'convertDate', from, to);
     const ids = rows.map((r) => r.id);
     const classes = ids.length
       ? await db('convert_classes').where({ tenantId }).whereIn('memberId', ids)
       : [];
+    const groups = await db('convert_class_groups').where({ tenantId });
+    const groupName = new Map<string, string>(groups.map((g: any) => [g.id, g.name]));
     const byMember = new Map<string, any>(classes.map((c: any) => [c.memberId, c]));
-    return rows.map((r) => {
-      const cls = byMember.get(r.id);
-      const finished = cls?.completedDate;
-      return {
-        id: r.id,
-        memberId: r.id,
-        memberName: memberLabel(r),
-        date: isoOf(r.convertDate),
-        detail: cls?.className
-          ? `${cls.className}${finished ? ' \u2014 completed' : ' \u2014 in class'}`
-          : 'Not yet enrolled in a class',
-        particulars: particulars([
-          ['Won by', r.wonByName || r.wonByMemberId],
-          ['Class', cls?.className],
-          ['Class started', isoOf(cls?.startDate)],
-          ['Class completed', isoOf(finished)],
-          ['Counsellor', cls?.counsellorName],
-          ['Standing', r.membershipStatus],
-        ]),
-        origin: cls ? 'Member record and new converts class' : 'Member record',
-        notes: cls?.notes || null,
-      };
-    });
+    return withCounts(
+      rows.map((r) => {
+        const cls = byMember.get(r.id);
+        const finished = cls?.completedDate;
+        const className = cls?.convertClassId
+          ? groupName.get(cls.convertClassId) || cls?.className
+          : cls?.className;
+        return {
+          id: r.id,
+          memberId: r.id,
+          memberName: memberLabel(r),
+          date: isoOf(r.convertDate),
+          detail: className
+            ? `${className}${finished ? ' \u2014 completed' : ' \u2014 in class'}`
+            : 'Not yet enrolled in a class',
+          particulars: particulars([
+            ['Won by', r.wonByName || r.wonByMemberId],
+            ['Class', className],
+            ['Class started', isoOf(cls?.startDate)],
+            ['Class completed', isoOf(finished)],
+            ['Counsellor', cls?.counsellorName],
+            ['Standing', r.membershipStatus],
+          ]),
+          origin: cls ? 'Member record and new converts class' : 'Member record',
+          notes: cls?.notes || null,
+        };
+      }),
+    );
   }
 
   if (key === 'water_baptism') {
     const rows = await milestoneRows(tenantId, 'waterBaptismDate', from, to);
-    return rows.map((r) => ({
-      id: r.id,
-      memberId: r.id,
-      memberName: memberLabel(r),
-      date: isoOf(r.waterBaptismDate),
-      detail: r.baptismVenue || 'Water baptism',
-      particulars: particulars([
-        ['Officiating minister', r.baptismOfficiant],
-        ['Place', r.baptismVenue],
-        ['Group', r.groupName],
-      ]),
-      origin: 'Member record',
-      notes: null,
-    }));
+    return withCounts(
+      rows.map((r) => ({
+        id: r.id,
+        memberId: r.id,
+        memberName: memberLabel(r),
+        date: isoOf(r.waterBaptismDate),
+        detail: `Certificate: ${certificateStatusLabel(r.baptismCertificateStatus)}`,
+        particulars: particulars([
+          ['Officiating minister', r.baptismOfficiant],
+          ['Place', r.baptismVenue],
+          ['Certificate', certificateStatusLabel(r.baptismCertificateStatus)],
+          ['Group', r.groupName],
+        ]),
+        origin: 'Member record',
+        notes: null,
+        certificateStatus: r.baptismCertificateStatus || null,
+      })),
+    );
   }
 
   if (key === 'holy_spirit_baptism') {
     const rows = await milestoneRows(tenantId, 'holySpiritBaptismDate', from, to);
-    return rows.map((r) => ({
-      id: r.id,
-      memberId: r.id,
-      memberName: memberLabel(r),
-      date: isoOf(r.holySpiritBaptismDate),
-      detail: r.holySpiritOccasion || 'Holy Spirit baptism',
-      particulars: particulars([
-        ['Occasion', r.holySpiritOccasion],
-        ['Minister present', r.baptismOfficiant],
-        ['Group', r.groupName],
-      ]),
-      origin: 'Member record',
-      notes: null,
-    }));
+    return withCounts(
+      rows.map((r) => ({
+        id: r.id,
+        memberId: r.id,
+        memberName: memberLabel(r),
+        date: isoOf(r.holySpiritBaptismDate),
+        detail: r.holySpiritOccasion || 'Holy Spirit baptism',
+        particulars: particulars([
+          ['Occasion', r.holySpiritOccasion],
+          ['Minister present', r.baptismOfficiant],
+          ['Group', r.groupName],
+        ]),
+        origin: 'Member record',
+        notes: null,
+      })),
+    );
   }
 
   if (key === 'transfer_in') {
     const rows = await milestoneRows(tenantId, 'transferInDate', from, to);
-    return rows.map((r) => ({
-      id: r.id,
-      memberId: r.id,
-      memberName: memberLabel(r),
-      date: isoOf(r.transferInDate),
-      detail: r.transferredFrom ? `From ${r.transferredFrom}` : 'Transferred in',
-      particulars: particulars([
-        ['Transferred from', r.transferredFrom],
-        ['Standing', r.membershipStatus],
-        ['Group', r.groupName],
-      ]),
-      origin: 'Member record',
-      notes: null,
-    }));
+    return withCounts(
+      rows.map((r) => ({
+        id: r.id,
+        memberId: r.id,
+        memberName: memberLabel(r),
+        date: isoOf(r.transferInDate),
+        detail: r.transferredFrom ? `From ${r.transferredFrom}` : 'Transferred in',
+        particulars: particulars([
+          ['Transferred from', r.transferredFrom],
+          ['Standing', r.membershipStatus],
+          ['Group', r.groupName],
+        ]),
+        origin: 'Member record',
+        notes: null,
+      })),
+    );
   }
 
   if (key === 'transfer_out') {
     const rows = await milestoneRows(tenantId, 'transferOutDate', from, to);
-    return rows.map((r) => ({
-      id: r.id,
-      memberId: r.id,
-      memberName: memberLabel(r),
-      date: isoOf(r.transferOutDate),
-      detail: r.transferredTo ? `To ${r.transferredTo}` : 'Transferred out',
-      particulars: particulars([
-        ['Transferred to', r.transferredTo],
-        ['Standing', r.membershipStatus],
-        ['Group at the time', r.groupName],
-      ]),
-      origin: 'Member record and status history',
-      notes: null,
-    }));
+    return withCounts(
+      rows.map((r) => ({
+        id: r.id,
+        memberId: r.id,
+        memberName: memberLabel(r),
+        date: isoOf(r.transferOutDate),
+        detail: r.transferredTo ? `To ${r.transferredTo}` : 'Transferred out',
+        particulars: particulars([
+          ['Transferred to', r.transferredTo],
+          ['Standing', r.membershipStatus],
+          ['Group at the time', r.groupName],
+        ]),
+        origin: 'Member record and status history',
+        notes: null,
+      })),
+    );
   }
 
   if (key === 'death') {
     const rows = await milestoneRows(tenantId, 'dateOfDeath', from, to);
-    return rows.map((r) => ({
-      id: r.id,
-      memberId: r.id,
-      memberName: memberLabel(r),
-      date: isoOf(r.dateOfDeath),
-      detail: r.causeOfDeath || 'Passed on',
-      particulars: particulars([
-        ['Cause', r.causeOfDeath],
-        ['Funeral', isoOf(r.funeralDate)],
-        ['Standing', r.membershipStatus],
-        ['Group at the time', r.groupName],
-      ]),
-      origin: 'Member record and status history',
-      notes: null,
-    }));
+    return withCounts(
+      rows.map((r) => ({
+        id: r.id,
+        memberId: r.id,
+        memberName: memberLabel(r),
+        date: isoOf(r.dateOfDeath),
+        detail: r.causeOfDeath || 'Passed on',
+        particulars: particulars([
+          ['Cause', r.causeOfDeath],
+          ['Funeral', isoOf(r.funeralDate)],
+          ['Standing', r.membershipStatus],
+          ['Group at the time', r.groupName],
+        ]),
+        origin: 'Member record and status history',
+        notes: null,
+      })),
+    );
+  }
+
+  if (key === 'birth') {
+    const q = db('births').where({ tenantId }).whereNotNull('dateOfBirth');
+    if (from) q.where('dateOfBirth', '>=', from);
+    if (to) q.where('dateOfBirth', '<=', to);
+    const rows = await q.orderBy('dateOfBirth', 'desc').limit(1000);
+    return withCounts(
+      rows.map((r: any) => ({
+        id: r.id,
+        memberId: r.parentMemberId || null,
+        memberName: r.childName || 'Unnamed child',
+        date: isoOf(r.dateOfBirth),
+        detail: r.parentName ? `Child of ${r.parentName}` : 'Birth',
+        particulars: particulars([
+          ['Parent', r.parentName],
+          ['Other parent', r.secondParentName],
+          ['Sex', r.gender],
+          ['Place of birth', r.placeOfBirth],
+        ]),
+        origin: 'Birth register and parent record',
+        notes: r.notes || null,
+        linkLabel: 'Parent record',
+      })),
+    );
+  }
+
+  if (key === 'child_dedication') {
+    const q = db('dedications').where({ tenantId }).whereNotNull('dedicationDate');
+    if (from) q.where('dedicationDate', '>=', from);
+    if (to) q.where('dedicationDate', '<=', to);
+    const rows = await q.orderBy('dedicationDate', 'desc').limit(1000);
+    return withCounts(
+      rows.map((r: any) => ({
+        id: r.id,
+        memberId: r.parentMemberId || null,
+        memberName: r.childName || 'Unnamed child',
+        date: isoOf(r.dedicationDate),
+        detail: r.parentName ? `Child of ${r.parentName}` : 'Dedication',
+        particulars: particulars([
+          ['Parent', r.parentName],
+          ['Date of birth', isoOf(r.childDateOfBirth)],
+          ['Officiating minister', r.officiantName],
+          ['Place', r.venue],
+        ]),
+        origin: 'Dedication register and parent record',
+        notes: r.notes || null,
+        linkLabel: 'Parent record',
+      })),
+    );
+  }
+
+  if (key === 'promotion' || key === 'demotion') {
+    const q = db('office_changes')
+      .where({ tenantId, kind: key })
+      .whereNotNull('effectiveDate');
+    if (from) q.where('effectiveDate', '>=', from);
+    if (to) q.where('effectiveDate', '<=', to);
+    const rows = await q.orderBy('effectiveDate', 'desc').limit(1000);
+    return withCounts(
+      rows.map((r: any) => ({
+        id: r.id,
+        memberId: r.memberId || null,
+        memberName: r.memberName || 'Unnamed',
+        date: isoOf(r.effectiveDate),
+        detail: `${r.fromOffice || 'No office'} \u2192 ${r.toOffice || 'No office'}`,
+        particulars: particulars([
+          ['Office before', r.fromOffice || 'None'],
+          ['Office now', r.toOffice || 'None'],
+          ['Reason', r.reason],
+          ['Approved by', r.approvedBy],
+        ]),
+        origin: 'Office register and member record',
+        notes: r.notes || null,
+      })),
+    );
   }
 
   // Marriages.
@@ -1392,22 +1575,24 @@ async function readRegister(
   if (from) q.where('weddingDate', '>=', from);
   if (to) q.where('weddingDate', '<=', to);
   const rows = await q.orderBy('weddingDate', 'desc').limit(1000);
-  return rows.map((r: any) => ({
-    id: r.id,
-    memberId: r.memberId || null,
-    memberName: r.memberName || 'Unnamed',
-    date: isoOf(r.weddingDate),
-    detail: r.spouseName ? `Married ${r.spouseName}` : 'Marriage',
-    particulars: particulars([
-      ['Spouse', r.spouseName],
-      ['Spouse is a member here', r.spouseMemberId ? 'Yes' : ''],
-      ['Type', r.marriageType],
-      ['Officiating minister', r.officiantName],
-      ['Place', r.venue],
-    ]),
-    origin: 'Marriage register',
-    notes: r.notes || null,
-  }));
+  return withCounts(
+    rows.map((r: any) => ({
+      id: r.id,
+      memberId: r.memberId || null,
+      memberName: r.memberName || 'Unnamed',
+      date: isoOf(r.weddingDate),
+      detail: r.spouseName ? `Married ${r.spouseName}` : 'Marriage',
+      particulars: particulars([
+        ['Spouse', r.spouseName],
+        ['Spouse is a member here', r.spouseMemberId ? 'Yes' : ''],
+        ['Type', r.marriageType],
+        ['Officiating minister', r.officiantName],
+        ['Place', r.venue],
+      ]),
+      origin: 'Marriage register',
+      notes: r.notes || null,
+    })),
+  );
 }
 
 /**
@@ -1415,7 +1600,102 @@ async function readRegister(
  * from the definitions rather than repeating them in the client.
  */
 router.get('/registers', async (_req: AuthRequest, res) => {
-  res.json({ data: REGISTER_DEFINITIONS });
+  res.json({ data: REGISTER_DEFINITIONS, certificateStatuses: CERTIFICATE_STATUSES });
+});
+
+/* --- The classes behind the converts dropdown ------------------------ */
+
+/**
+ * The intakes a church runs, so a convert is enrolled by choosing a class
+ * rather than by typing its name again. Named once, spelt the same everywhere.
+ */
+router.get('/convert-classes', async (req: AuthRequest, res) => {
+  try {
+    const rows = await db('convert_class_groups')
+      .where({ tenantId: tid(req) })
+      .orderBy([{ column: 'sortOrder' }, { column: 'name' }]);
+    res.json({ data: rows });
+  } catch (error) {
+    console.error('GET /convert-classes error:', error);
+    res.status(500).json({ error: 'Failed to load the converts classes' });
+  }
+});
+
+router.post('/convert-classes', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Give the class a name.' });
+
+    const clash = await db('convert_class_groups').where({ tenantId }).whereRaw('LOWER(name) = ?', [name.toLowerCase()]).first();
+    if (clash) return res.status(400).json({ error: 'There is already a class by that name.' });
+
+    const row = {
+      id: genId('cclassgrp'),
+      tenantId,
+      name,
+      description: req.body?.description || null,
+      startDate: req.body?.startDate ? new Date(req.body.startDate) : null,
+      endDate: req.body?.endDate ? new Date(req.body.endDate) : null,
+      sortOrder: Number(req.body?.sortOrder) || 0,
+      active: req.body?.active === false ? false : true,
+      createdBy: req.user?.uid || null,
+      createdAt: new Date(),
+    };
+    await db('convert_class_groups').insert(row);
+    res.status(201).json({ ...row, success: true });
+  } catch (error) {
+    console.error('POST /convert-classes error:', error);
+    res.status(500).json({ error: 'Failed to add this class' });
+  }
+});
+
+router.put('/convert-classes/:id', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const updates: any = {};
+    if ('name' in req.body) updates.name = String(req.body.name || '').trim() || null;
+    if ('description' in req.body) updates.description = req.body.description || null;
+    if ('startDate' in req.body) updates.startDate = req.body.startDate ? new Date(req.body.startDate) : null;
+    if ('endDate' in req.body) updates.endDate = req.body.endDate ? new Date(req.body.endDate) : null;
+    if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
+    if ('active' in req.body) updates.active = !!req.body.active;
+
+    const updated = await db('convert_class_groups').where({ id: req.params.id, tenantId }).update(updates);
+    if (!updated) return res.status(404).json({ error: 'That class could not be found.' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('PUT /convert-classes/:id error:', error);
+    res.status(500).json({ error: 'Failed to update this class' });
+  }
+});
+
+/**
+ * A class is retired rather than deleted when converts are enrolled in it:
+ * removing it outright would leave their enrolment pointing at nothing.
+ */
+router.delete('/convert-classes/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const enrolled = await db('convert_classes')
+      .where({ tenantId, convertClassId: req.params.id })
+      .count({ total: '*' })
+      .first();
+    const count = Number((enrolled as any)?.total || 0);
+    if (count > 0) {
+      await db('convert_class_groups').where({ id: req.params.id, tenantId }).update({ active: false });
+      return res.json({
+        success: true,
+        message: `${count} convert${count === 1 ? ' is' : 's are'} enrolled in this class, so it was closed rather than deleted.`,
+      });
+    }
+    const removed = await db('convert_class_groups').where({ id: req.params.id, tenantId }).del();
+    if (!removed) return res.status(404).json({ error: 'That class could not be found.' });
+    res.json({ success: true, message: 'The class was removed.' });
+  } catch (error) {
+    console.error('DELETE /convert-classes/:id error:', error);
+    res.status(500).json({ error: 'Failed to remove this class' });
+  }
 });
 
 /**
@@ -1472,9 +1752,9 @@ router.get('/registers/:key/entries', async (req: AuthRequest, res) => {
 /**
  * POST /registers/:key/entries -- file an entry.
  *
- * Every branch writes to the member's own record, and the two branches that
- * change a member's standing also write a status-history row dated to the event
- * so that a return for a past period keeps the membership it had at the time.
+ * Every branch writes to the member's own record, and the branches that change
+ * a member's standing also write a status-history row dated to the event so that
+ * a return for a past period keeps the membership it had at the time.
  */
 router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
   try {
@@ -1484,19 +1764,23 @@ router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), asy
       return res.status(404).json({ error: 'There is no register by that name.' });
     }
 
+    const def = registerDefinition(key)!;
     const body = req.body || {};
     const check = validateRegisterEntry(key, body);
     if (!check.ok) {
       return res.status(400).json({ error: check.errors[0], errors: check.errors });
     }
 
-    const member = await db('members').where({ id: body.memberId, tenantId }).first();
+    // Every register is filed against a member: the person it happened to, or
+    // the parent, for a child who may have no record of their own.
+    const member = await db('members').where({ id: body[def.memberField], tenantId }).first();
     if (!member) {
       return res.status(400).json({ error: 'That member is not in this church.' });
     }
 
     const actor = req.user?.uid || null;
     const text = (value: any) => (value === undefined || value === null || String(value).trim() === '' ? null : String(value).trim());
+    let entryId = member.id;
 
     if (key === 'converts') {
       const updates: any = { convertDate: new Date(body.convertDate) };
@@ -1509,16 +1793,34 @@ router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), asy
       }
       await db('members').where({ id: member.id, tenantId }).update(updates);
 
+      // The class is chosen from the church's own list, so a mistyped intake
+      // cannot create a class that nobody set up.
+      let group: any = null;
+      if (body.convertClassId) {
+        group = await db('convert_class_groups').where({ id: body.convertClassId, tenantId }).first();
+        if (!group) return res.status(400).json({ error: 'That converts class could not be found. Set it up under Settings first.' });
+      }
+
+      let counsellor: any = null;
+      if (body.counsellorMemberId) {
+        counsellor = await db('members').where({ id: body.counsellorMemberId, tenantId }).first();
+        if (!counsellor) return res.status(400).json({ error: 'That counsellor is not a member of this church.' });
+      }
+
       const completed = body.classCompletedDate ? new Date(body.classCompletedDate) : null;
       const classRow: any = {
         tenantId,
         memberId: member.id,
         memberName: memberLabel(member),
-        className: text(body.className),
-        startDate: body.classStartDate ? new Date(body.classStartDate) : null,
+        convertClassId: group?.id || null,
+        // The name is kept beside the id so the register still reads properly if
+        // a class is later renamed or retired.
+        className: group?.name || null,
+        startDate: body.classStartDate ? new Date(body.classStartDate) : group?.startDate || null,
         completedDate: completed,
         status: completed ? 'completed' : 'enrolled',
-        counsellorName: text(body.counsellorName),
+        counsellorMemberId: counsellor?.id || null,
+        counsellorName: counsellor ? memberLabel(counsellor) : null,
         notes: text(body.notes),
       };
       // One class record per convert: filing twice corrects the first entry
@@ -1536,6 +1838,10 @@ router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), asy
         waterBaptismDate: new Date(body.waterBaptismDate),
         baptismOfficiant: text(body.officiantName),
         baptismVenue: text(body.venue),
+        // Filing the baptism starts the certificate on its way, so no member is
+        // baptised and then quietly forgotten at the certificate stage.
+        baptismCertificateStatus: member.baptismCertificateStatus || INITIAL_CERTIFICATE_STATUS,
+        baptismCertificateUpdatedAt: new Date(),
       });
     }
 
@@ -1591,8 +1897,9 @@ router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), asy
       }
       const spouseName = spouse ? memberLabel(spouse) : text(body.spouseName);
 
+      entryId = genId('marriage');
       await db('marriages').insert({
-        id: genId('marriage'),
+        id: entryId,
         tenantId,
         weddingDate: when,
         memberId: member.id,
@@ -1625,12 +1932,134 @@ router.post('/registers/:key/entries', requireRole(...REGISTER_WRITE_ROLES), asy
       }
     }
 
+    if (key === 'birth') {
+      let second: any = null;
+      if (body.secondParentMemberId) {
+        second = await db('members').where({ id: body.secondParentMemberId, tenantId }).first();
+        if (!second) return res.status(400).json({ error: 'The other parent is not a member of this church.' });
+      }
+
+      entryId = genId('birth');
+      const born = new Date(body.dateOfBirth);
+      await db('births').insert({
+        id: entryId,
+        tenantId,
+        childName: text(body.childName),
+        dateOfBirth: born,
+        gender: text(body.gender),
+        parentMemberId: member.id,
+        parentName: memberLabel(member),
+        secondParentMemberId: second?.id || null,
+        secondParentName: second ? memberLabel(second) : text(body.secondParentName),
+        placeOfBirth: text(body.placeOfBirth),
+        notes: text(body.notes),
+        recordedBy: actor,
+        createdAt: new Date(),
+      });
+
+      // The child is added to the parent's record too, so a dedication filed
+      // later is entered against a child the church already knows about.
+      const children = parseChildren(member.children);
+      if (!children.some((c: any) => sameName(c?.name, body.childName))) {
+        children.push({
+          name: text(body.childName),
+          dateOfBirth: born.toISOString().slice(0, 10),
+          dedicated: false,
+        });
+      }
+      await db('members').where({ id: member.id, tenantId }).update({
+        hasChildren: true,
+        children: JSON.stringify(children),
+      });
+    }
+
+    if (key === 'child_dedication') {
+      entryId = genId('dedication');
+      const when = new Date(body.dedicationDate);
+      await db('dedications').insert({
+        id: entryId,
+        tenantId,
+        childName: text(body.childName),
+        childDateOfBirth: body.childDateOfBirth ? new Date(body.childDateOfBirth) : null,
+        dedicationDate: when,
+        parentMemberId: member.id,
+        parentName: memberLabel(member),
+        officiantName: text(body.officiantName),
+        venue: text(body.venue),
+        notes: text(body.notes),
+        recordedBy: actor,
+        createdAt: new Date(),
+      });
+
+      // The same child on the parent's record is marked dedicated, so the two
+      // registers agree rather than each holding half the story.
+      const children = parseChildren(member.children);
+      const dedicatedOn = when.toISOString().slice(0, 10);
+      const existing = children.find((c: any) => sameName(c?.name, body.childName));
+      if (existing) {
+        existing.dedicated = true;
+        existing.dedicationDate = dedicatedOn;
+      } else {
+        children.push({
+          name: text(body.childName),
+          dateOfBirth: body.childDateOfBirth ? new Date(body.childDateOfBirth).toISOString().slice(0, 10) : null,
+          dedicated: true,
+          dedicationDate: dedicatedOn,
+        });
+      }
+      await db('members').where({ id: member.id, tenantId }).update({
+        hasChildren: true,
+        children: JSON.stringify(children),
+      });
+    }
+
+    if (key === 'promotion' || key === 'demotion') {
+      // The office must be one the church recognises, so the register cannot
+      // invent titles that the offices list has never heard of.
+      let office: any = null;
+      if (body.toOffice) {
+        office = await db('church_offices')
+          .where({ tenantId })
+          .whereRaw('LOWER(name) = ?', [String(body.toOffice).toLowerCase()])
+          .first();
+        if (!office) {
+          return res.status(400).json({ error: 'That office is not one this church has set up. Add it under Settings first.' });
+        }
+      }
+
+      entryId = genId('office');
+      await db('office_changes').insert({
+        id: entryId,
+        tenantId,
+        memberId: member.id,
+        memberName: memberLabel(member),
+        kind: key,
+        // Read from the record rather than asked for: the office they hold now
+        // is the office they are coming from, and asking invites a wrong answer.
+        fromOffice: member.office || null,
+        toOffice: office?.name || null,
+        effectiveDate: new Date(body.effectiveDate),
+        reason: text(body.reason),
+        approvedBy: text(body.approvedBy),
+        notes: text(body.notes),
+        recordedBy: actor,
+        createdAt: new Date(),
+      });
+
+      await db('members').where({ id: member.id, tenantId }).update({
+        office: office?.name || null,
+      });
+    }
+
     await logActivity(req, 'REGISTER_ENTRY', 'members', member.id, `${key} recorded`);
     const entries = await readRegister(tenantId!, key);
     res.status(201).json({
       success: true,
-      message: 'The entry was filed, and the figures it feeds have moved with it.',
-      data: entries.find((e) => e.memberId === member.id) || null,
+      message: acceptsDocuments(key)
+        ? 'The entry was filed. You can attach the paperwork now or whenever it arrives.'
+        : 'The entry was filed, and the figures it feeds have moved with it.',
+      entryId,
+      data: entries.find((e) => e.id === entryId) || null,
     });
   } catch (error) {
     console.error('POST /registers/:key/entries error:', error);
@@ -1655,6 +2084,10 @@ router.delete('/registers/:key/entries/:id', requireRole('CHURCH_ADMIN', 'PASTOR
     }
     const id = String(req.params.id);
 
+    // The paperwork goes with the entry it belonged to.
+    const dropDocuments = () =>
+      db('register_documents').where({ tenantId, register: key, entryId: id }).del();
+
     if (key === 'marriage') {
       const row = await db('marriages').where({ id, tenantId }).first();
       if (!row) return res.status(404).json({ error: 'That entry is no longer in the register.' });
@@ -1667,8 +2100,60 @@ router.delete('/registers/:key/entries/:id', requireRole('CHURCH_ADMIN', 'PASTOR
           spouseMemberId: null,
         });
       }
+      await dropDocuments();
       await logActivity(req, 'REGISTER_ENTRY_WITHDRAWN', 'marriages', id, 'marriage withdrawn');
       return res.json({ success: true, message: 'The marriage entry was withdrawn.' });
+    }
+
+    if (key === 'birth' || key === 'child_dedication') {
+      const table = REGISTER_TABLES[key];
+      const row = await db(table).where({ id, tenantId }).first();
+      if (!row) return res.status(404).json({ error: 'That entry is no longer in the register.' });
+      await db(table).where({ id, tenantId }).del();
+
+      const parent = row.parentMemberId
+        ? await db('members').where({ id: row.parentMemberId, tenantId }).first()
+        : null;
+      if (parent) {
+        const children = parseChildren(parent.children);
+        const kept =
+          key === 'birth'
+            ? // A withdrawn birth takes the child off the record entirely.
+              children.filter((c: any) => !sameName(c?.name, row.childName))
+            : // A withdrawn dedication leaves the child, but no longer dedicated.
+              children.map((c: any) =>
+                sameName(c?.name, row.childName)
+                  ? { ...c, dedicated: false, dedicationDate: null }
+                  : c,
+              );
+        await db('members').where({ id: parent.id, tenantId }).update({
+          children: JSON.stringify(kept),
+          hasChildren: kept.length > 0,
+        });
+      }
+      await dropDocuments();
+      await logActivity(req, 'REGISTER_ENTRY_WITHDRAWN', table, id, `${key} withdrawn`);
+      return res.json({ success: true, message: 'The entry was withdrawn from the register.' });
+    }
+
+    if (key === 'promotion' || key === 'demotion') {
+      const row = await db('office_changes').where({ id, tenantId, kind: key }).first();
+      if (!row) return res.status(404).json({ error: 'That entry is no longer in the register.' });
+      await db('office_changes').where({ id, tenantId }).del();
+      // The member goes back to the office they held before the change.
+      if (row.memberId) {
+        await db('members').where({ id: row.memberId, tenantId }).update({
+          office: row.fromOffice || null,
+        });
+      }
+      await dropDocuments();
+      await logActivity(req, 'REGISTER_ENTRY_WITHDRAWN', 'office_changes', id, `${key} withdrawn`);
+      return res.json({
+        success: true,
+        message: row.fromOffice
+          ? `The entry was withdrawn, and the member holds ${row.fromOffice} again.`
+          : 'The entry was withdrawn, and the member holds no office again.',
+      });
     }
 
     const member = await db('members').where({ id, tenantId }).first();
@@ -1684,6 +2169,8 @@ router.delete('/registers/:key/entries/:id', requireRole('CHURCH_ADMIN', 'PASTOR
     if (key === 'water_baptism') {
       updates.waterBaptismDate = null;
       updates.baptismVenue = null;
+      updates.baptismCertificateStatus = null;
+      updates.baptismCertificateUpdatedAt = null;
     }
     if (key === 'holy_spirit_baptism') {
       updates.holySpiritBaptismDate = null;
@@ -1712,11 +2199,213 @@ router.delete('/registers/:key/entries/:id', requireRole('CHURCH_ADMIN', 'PASTOR
     }
 
     await db('members').where({ id: member.id, tenantId }).update(updates);
+    await dropDocuments();
     await logActivity(req, 'REGISTER_ENTRY_WITHDRAWN', 'members', member.id, `${key} withdrawn`);
     res.json({ success: true, message: 'The entry was withdrawn from the register.' });
   } catch (error) {
     console.error('DELETE /registers/:key/entries/:id error:', error);
     res.status(500).json({ error: 'Failed to withdraw this entry' });
+  }
+});
+
+/* --- Paperwork attached to an entry ---------------------------------- */
+
+/** Confirms an entry exists before paperwork is hung off it. */
+async function registerEntryExists(
+  tenantId: string,
+  key: RegisterKey,
+  entryId: string,
+): Promise<any | null> {
+  const table = REGISTER_TABLES[key];
+  if (table) {
+    const where: any = { id: entryId, tenantId };
+    if (key === 'promotion' || key === 'demotion') where.kind = key;
+    return db(table).where(where).first();
+  }
+  // The rest are kept on the member record, so the entry id is a member id.
+  return db('members').where({ id: entryId, tenantId }).first();
+}
+
+router.get('/registers/:key/entries/:id/documents', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const key = String(req.params.key);
+    if (!isRegisterKey(key)) {
+      return res.status(404).json({ error: 'There is no register by that name.' });
+    }
+
+    const rows = await db('register_documents')
+      .where({ tenantId, register: key, entryId: req.params.id })
+      .orderBy('createdAt', 'desc')
+      // The bytes are deliberately left out: a list of ten certificates should
+      // not carry ten megabytes to draw a list of file names.
+      .select('id', 'kind', 'fileName', 'mimeType', 'bytes', 'createdAt', 'uploadedBy');
+
+    const kinds = registerDefinition(key)?.documentKinds || [];
+    res.json({
+      data: rows.map((r: any) => ({
+        id: r.id,
+        kind: r.kind,
+        kindLabel: kinds.find((k) => k.value === r.kind)?.label || 'Other paper',
+        fileName: r.fileName,
+        mimeType: r.mimeType,
+        bytes: r.bytes,
+        size: humanFileSize(Number(r.bytes) || 0),
+        uploadedAt: isoOf(r.createdAt),
+      })),
+      kinds,
+    });
+  } catch (error) {
+    console.error('GET register documents error:', error);
+    res.status(500).json({ error: 'Failed to load the paperwork for this entry' });
+  }
+});
+
+/**
+ * Attach a document to an entry. Never required: a church should be able to
+ * file the fact today and find the paperwork later.
+ */
+router.post('/registers/:key/entries/:id/documents', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const key = String(req.params.key);
+    if (!isRegisterKey(key)) {
+      return res.status(404).json({ error: 'There is no register by that name.' });
+    }
+    if (!acceptsDocuments(key)) {
+      return res.status(400).json({ error: 'This register does not take attachments.' });
+    }
+
+    const entry = await registerEntryExists(tenantId!, key, String(req.params.id));
+    if (!entry) return res.status(404).json({ error: 'That entry could not be found.' });
+
+    const decoded = decodeDocumentDataUrl(req.body?.dataUrl);
+    const kind = resolveDocumentKind(key, req.body?.kind);
+
+    const row = {
+      id: genId('doc'),
+      tenantId,
+      register: key,
+      entryId: String(req.params.id),
+      memberId: entry.memberId || entry.parentMemberId || entry.id || null,
+      kind,
+      fileName: safeFileName(req.body?.fileName, `${key}-document`),
+      mimeType: decoded.mimeType,
+      bytes: decoded.bytes,
+      content: decoded.buffer,
+      uploadedBy: req.user?.uid || null,
+      createdAt: new Date(),
+    };
+    await db('register_documents').insert(row);
+
+    // Attaching the certificate is what proves it was handed over, so the two
+    // are treated as one act rather than asking the church to say so twice.
+    let certificateStatus: string | null = null;
+    if (key === 'water_baptism' && kind === 'certificate') {
+      certificateStatus = statusAfterCertificateUpload();
+      await db('members').where({ id: String(req.params.id), tenantId }).update({
+        baptismCertificateStatus: certificateStatus,
+        baptismCertificateUpdatedAt: new Date(),
+      });
+    }
+
+    await logActivity(req, 'REGISTER_DOCUMENT_ADDED', 'register_documents', row.id, `${key} ${kind}`);
+    res.status(201).json({
+      success: true,
+      message: certificateStatus
+        ? 'The certificate was uploaded and the entry now reads as delivered.'
+        : 'The document was attached to this entry.',
+      id: row.id,
+      size: humanFileSize(decoded.bytes),
+      certificateStatus,
+    });
+  } catch (error) {
+    if (error instanceof DocumentValidationError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error('POST register document error:', error);
+    res.status(500).json({ error: 'Failed to attach this document' });
+  }
+});
+
+/** The document itself, as a data URL the browser can open or save. */
+router.get('/register-documents/:docId', async (req: AuthRequest, res) => {
+  try {
+    const row = await db('register_documents')
+      .where({ id: req.params.docId, tenantId: tid(req) })
+      .first();
+    if (!row) return res.status(404).json({ error: 'That document could not be found.' });
+
+    res.json({
+      id: row.id,
+      fileName: row.fileName,
+      mimeType: row.mimeType,
+      bytes: row.bytes,
+      size: humanFileSize(Number(row.bytes) || 0),
+      dataUrl: documentToDataUrl(row.content, row.mimeType),
+    });
+  } catch (error) {
+    console.error('GET register document error:', error);
+    res.status(500).json({ error: 'Failed to open this document' });
+  }
+});
+
+router.delete('/register-documents/:docId', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const row = await db('register_documents').where({ id: req.params.docId, tenantId }).first();
+    if (!row) return res.status(404).json({ error: 'That document could not be found.' });
+
+    await db('register_documents').where({ id: row.id, tenantId }).del();
+
+    // Removing the certificate means it is no longer evidence of delivery, so
+    // the entry goes back to being processed rather than silently staying done.
+    if (row.register === 'water_baptism' && row.kind === 'certificate') {
+      const remaining = await db('register_documents')
+        .where({ tenantId, register: 'water_baptism', entryId: row.entryId, kind: 'certificate' })
+        .first();
+      if (!remaining) {
+        await db('members').where({ id: row.entryId, tenantId }).update({
+          baptismCertificateStatus: INITIAL_CERTIFICATE_STATUS,
+          baptismCertificateUpdatedAt: new Date(),
+        });
+      }
+    }
+
+    await logActivity(req, 'REGISTER_DOCUMENT_REMOVED', 'register_documents', row.id, row.register);
+    res.json({ success: true, message: 'The document was removed.' });
+  } catch (error) {
+    console.error('DELETE register document error:', error);
+    res.status(500).json({ error: 'Failed to remove this document' });
+  }
+});
+
+/**
+ * Move a baptism certificate along by hand, for the stage between writing it
+ * and handing it over.
+ */
+router.put('/registers/water_baptism/entries/:id/certificate', requireRole(...REGISTER_WRITE_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const status = req.body?.status;
+    if (!isCertificateStatus(status)) {
+      return res.status(400).json({ error: 'Choose where the certificate has got to.' });
+    }
+
+    const updated = await db('members')
+      .where({ id: req.params.id, tenantId })
+      .update({ baptismCertificateStatus: status, baptismCertificateUpdatedAt: new Date() });
+    if (!updated) return res.status(404).json({ error: 'That member is not in this church.' });
+
+    await logActivity(req, 'BAPTISM_CERTIFICATE_UPDATED', 'members', req.params.id, status);
+    res.json({
+      success: true,
+      status,
+      message: `The certificate is now marked \u201c${certificateStatusLabel(status)}\u201d.`,
+    });
+  } catch (error) {
+    console.error('PUT certificate status error:', error);
+    res.status(500).json({ error: 'Failed to update the certificate' });
   }
 });
 

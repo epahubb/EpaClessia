@@ -359,12 +359,154 @@ async function addRegisterTables(db: Knex): Promise<void> {
   }
 }
 
+/**
+ * The rest of the registers: births, children's dedications, changes of office,
+ * the class list behind the converts dropdown, and the papers attached to an
+ * entry.
+ *
+ * Births, dedications and office changes each need a table because none of them
+ * is a single fact about a single member. A birth concerns a child who may have
+ * no record of their own; an office change is a history, and a member's record
+ * can only ever hold the office they hold now.
+ */
+async function addRegisterExtras(db: Knex): Promise<void> {
+  // The classes a church runs, so the converts register offers a dropdown
+  // instead of asking every secretary to spell the same intake differently.
+  if (!(await db.schema.hasTable('convert_class_groups'))) {
+    await db.schema.createTable('convert_class_groups', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('name').notNullable();
+      t.text('description');
+      t.timestamp('startDate');
+      t.timestamp('endDate');
+      t.integer('sortOrder').defaultTo(0);
+      t.boolean('active').defaultTo(true);
+      t.string('createdBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'active']);
+    });
+    console.log('Table "convert_class_groups" created.');
+  }
+
+  // A convert now points at a class from that list, and at the member teaching
+  // it, rather than holding typed-in text for either.
+  await addColumn(db, 'convert_classes', 'convertClassId', (t) => t.string('convertClassId'));
+  await addColumn(db, 'convert_classes', 'counsellorMemberId', (t) =>
+    t.string('counsellorMemberId'),
+  );
+
+  // How far the baptism certificate has got. Filing a baptism starts this at
+  // 'processing'; attaching the certificate advances it to 'delivered'.
+  await addColumn(db, 'members', 'baptismCertificateStatus', (t) =>
+    t.string('baptismCertificateStatus'),
+  );
+  await addColumn(db, 'members', 'baptismCertificateUpdatedAt', (t) =>
+    t.timestamp('baptismCertificateUpdatedAt'),
+  );
+
+  // Papers attached to an entry: letters of transfer, certificates, permits.
+  // Held as bytes in the row, the same way member photographs already are, so a
+  // church running this on one database has nothing else to back up.
+  if (!(await db.schema.hasTable('register_documents'))) {
+    await db.schema.createTable('register_documents', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      // Which register and which entry within it. `entryId` is a member id for
+      // the registers kept on the member record, and a row id for the others.
+      t.string('register').notNullable();
+      t.string('entryId').notNullable();
+      t.string('memberId');
+      t.string('kind');
+      t.string('fileName');
+      t.string('mimeType');
+      t.integer('bytes');
+      t.binary('content');
+      t.string('uploadedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'register', 'entryId']);
+      t.index(['tenantId', 'memberId']);
+    });
+    console.log('Table "register_documents" created.');
+  }
+
+  // Births. The child is also written onto the parent's record, which is what
+  // lets a dedication later on be entered against a child already known.
+  if (!(await db.schema.hasTable('births'))) {
+    await db.schema.createTable('births', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('childName');
+      t.timestamp('dateOfBirth');
+      t.string('gender');
+      t.string('parentMemberId');
+      t.string('parentName');
+      t.string('secondParentMemberId');
+      t.string('secondParentName');
+      t.string('placeOfBirth');
+      t.text('notes');
+      t.string('recordedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'dateOfBirth']);
+      t.index(['tenantId', 'parentMemberId']);
+    });
+    console.log('Table "births" created.');
+  }
+
+  // Children presented to the Lord.
+  if (!(await db.schema.hasTable('dedications'))) {
+    await db.schema.createTable('dedications', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('childName');
+      t.timestamp('childDateOfBirth');
+      t.timestamp('dedicationDate');
+      t.string('parentMemberId');
+      t.string('parentName');
+      t.string('officiantName');
+      t.string('venue');
+      t.text('notes');
+      t.string('recordedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'dedicationDate']);
+      t.index(['tenantId', 'parentMemberId']);
+    });
+    console.log('Table "dedications" created.');
+  }
+
+  // Promotions and demotions. One table with a `kind`, because they are the same
+  // event read in two directions, and a member's history should read in order
+  // whichever way each step went.
+  if (!(await db.schema.hasTable('office_changes'))) {
+    await db.schema.createTable('office_changes', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('memberId').notNullable();
+      t.string('memberName');
+      t.string('kind');
+      t.string('fromOffice');
+      t.string('toOffice');
+      t.timestamp('effectiveDate');
+      t.string('reason');
+      t.string('approvedBy');
+      t.text('notes');
+      t.string('recordedBy');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'effectiveDate']);
+      t.index(['tenantId', 'memberId']);
+      t.index(['tenantId', 'kind']);
+    });
+    console.log('Table "office_changes" created.');
+  }
+}
+
 export async function applyFeatureMigrations(db: Knex): Promise<void> {
   await addExtendedMemberColumns(db);
   await addMemberPortalColumns(db);
   await addGroupTables(db);
   await addStatisticsTables(db);
   await addRegisterTables(db);
+  await addRegisterExtras(db);
   /* ---------------------------------------------------------------- */
   /* Denomination: decides which portal the church admin gets         */
   /* ---------------------------------------------------------------- */

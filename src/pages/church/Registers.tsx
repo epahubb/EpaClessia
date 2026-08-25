@@ -1,4 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+/**
+ * The church registers.
+ *
+ * One page, one tab per register: the new converts class, the two baptisms,
+ * transfers in and out, marriages, births, children's dedications, deaths, and
+ * changes of office.
+ *
+ * Two ideas hold the page together. First, a register is a door onto facts that
+ * already have a home, so every tab says plainly what filing an entry will write
+ * to a member's record and which figures on the statistical return it moves --
+ * nothing is changed invisibly. Second, the paperwork follows the fact rather
+ * than gating it: a transfer or a death is filed the day it happens, and the
+ * letter or certificate is attached whenever it arrives.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -10,22 +24,26 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
+  DialogContentText,
   DialogTitle,
   Divider,
   Grid,
   IconButton,
   InputAdornment,
   Link,
+  List,
+  ListItem,
+  ListItemText,
   MenuItem,
   Paper,
   Stack,
-  Tab,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
+  Tab,
   Tabs,
   TextField,
   Tooltip,
@@ -40,23 +58,15 @@ import {
   Database,
   Info,
   AlertTriangle,
+  Paperclip,
+  Upload,
+  Download,
+  X,
+  GraduationCap,
+  Award,
 } from 'lucide-react';
-import { churchApi } from '../../services/churchApi';
-
-/**
- * The church registers.
- *
- * One page for the books a church actually keeps: the new converts class, the
- * two baptisms, transfers in and out, marriages and deaths. Before this, those
- * facts could only be reached one member at a time through the member record,
- * which is the wrong shape for a secretary sitting down after a baptismal
- * service with twenty names to enter.
- *
- * Nothing here is a separate tally. An entry writes the same member columns and
- * dated history rows the statistical return counts from, so the register and
- * the return are two views of one fact and cannot drift apart. Each register
- * says plainly what an entry will write and which figures it moves.
- */
+import { Link as RouterLink } from 'react-router-dom';
+import churchApi from '../../services/churchApi';
 
 type RegisterField = {
   name: string;
@@ -65,6 +75,7 @@ type RegisterField = {
   required?: boolean;
   allowFuture?: boolean;
   options?: Array<{ value: string; label: string }>;
+  optionSource?: 'convert_classes' | 'offices';
   helperText?: string;
 };
 
@@ -74,9 +85,12 @@ type RegisterDef = {
   plural: string;
   description: string;
   primaryDateField: string;
+  memberField: string;
   writes: string[];
   countsAs: string[];
   changesStanding?: boolean;
+  documentKinds?: Array<{ value: string; label: string }>;
+  tracksCertificate?: boolean;
   fields: RegisterField[];
 };
 
@@ -89,127 +103,559 @@ type Entry = {
   particulars: Array<{ label: string; value: string }>;
   origin: string;
   notes?: string | null;
+  documentCount?: number;
+  certificateStatus?: string | null;
+  linkLabel?: string;
 };
 
 type MemberOption = { id: string; label: string };
 
+type StoredDocument = {
+  id: string;
+  kind: string;
+  kindLabel: string;
+  fileName: string;
+  mimeType: string;
+  bytes: number;
+  size: string;
+  uploadedAt: string | null;
+};
+
+type ConvertClass = {
+  id: string;
+  name: string;
+  description?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  active?: boolean;
+};
+
+/**
+ * Held here rather than imported from the server library: that module reads and
+ * writes file bytes, which has no business in a browser bundle.
+ */
+const CERTIFICATE_STATUSES = [
+  { value: 'processing', label: 'Being processed' },
+  { value: 'ready', label: 'Ready for collection' },
+  { value: 'delivered', label: 'Delivered' },
+];
+
+const certificateLabel = (value?: string | null) =>
+  CERTIFICATE_STATUSES.find((s) => s.value === value)?.label || 'Not yet processed';
+
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 
-/** Defaults to the year so far, which is the period a register is usually read for. */
-function defaultRange() {
+/** Opens on the year to date, which is the period a register is usually read for. */
+const defaultRange = () => {
   const now = new Date();
   return { from: iso(new Date(now.getFullYear(), 0, 1)), to: iso(now) };
-}
+};
 
 const ISO_LIKE = /^\d{4}-\d{2}-\d{2}T/;
 
-function shortDate(value?: string | null): string {
-  if (!value) return '—';
-  const when = new Date(value);
-  if (Number.isNaN(when.getTime())) return value;
-  return when.toLocaleDateString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
+const shortDate = (value?: string | null) =>
+  value
+    ? new Date(value).toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      })
+    : '\u2014';
+
+/** Particulars may hold a date or a plain word; dates are shown as dates. */
+const pretty = (value: string) => (ISO_LIKE.test(value) ? shortDate(value) : value);
+
+/** Reads a chosen file into a data URL, which is how the server takes it. */
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('That file could not be read.'));
+    reader.readAsDataURL(file);
   });
 }
 
-/** Particulars arrive as text; dates among them are printed as dates. */
-function pretty(value: string): string {
-  return ISO_LIKE.test(value) ? shortDate(value) : value;
+/* ------------------------------------------------------------------ */
+/* The paperwork behind one entry                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Letters of transfer, certificates, permits.
+ *
+ * Uploading a baptism certificate here is what marks it delivered: the file is
+ * the evidence, so asking the church to attach it and then separately say it was
+ * handed over would be asking the same question twice.
+ */
+function DocumentsDialog({
+  def,
+  entry,
+  onClose,
+  onChanged,
+}: {
+  def: RegisterDef;
+  entry: Entry;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const kinds = def.documentKinds || [];
+  const [docs, setDocs] = useState<StoredDocument[]>([]);
+  const [kind, setKind] = useState(kinds[0]?.value || 'other');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await churchApi.getRegisterDocuments(def.key, entry.id);
+      setDocs(res?.data || []);
+      setError('');
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'Could not load the paperwork for this entry.');
+    } finally {
+      setLoading(false);
+    }
+  }, [def.key, entry.id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const upload = async (file: File) => {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const dataUrl = await readAsDataUrl(file);
+      const res = await churchApi.uploadRegisterDocument(def.key, entry.id, {
+        fileName: file.name,
+        dataUrl,
+        kind,
+      });
+      setNotice(res?.message || 'The document was attached.');
+      await load();
+      onChanged();
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'That document could not be attached.');
+    } finally {
+      setBusy(false);
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  };
+
+  /**
+   * Opened from the data URL rather than a direct link, because the file is
+   * held in the church's own database behind the same permissions as the entry.
+   */
+  const open = async (doc: StoredDocument) => {
+    try {
+      const res = await churchApi.openRegisterDocument(doc.id);
+      if (!res?.dataUrl) throw new Error('empty');
+      const anchor = document.createElement('a');
+      anchor.href = res.dataUrl;
+      anchor.download = doc.fileName || 'document';
+      anchor.click();
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'That document could not be opened.');
+    }
+  };
+
+  const remove = async (doc: StoredDocument) => {
+    setBusy(true);
+    try {
+      const res = await churchApi.deleteRegisterDocument(doc.id);
+      setNotice(res?.message || 'The document was removed.');
+      await load();
+      onChanged();
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'That document could not be removed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ pb: 1 }}>
+        <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+          <Box>
+            <Typography variant="h6">Paperwork</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {entry.memberName} \u00b7 {shortDate(entry.date)}
+            </Typography>
+          </Box>
+          <IconButton size="small" onClick={onClose}>
+            <X size={18} />
+          </IconButton>
+        </Stack>
+      </DialogTitle>
+      <DialogContent dividers>
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
+            {error}
+          </Alert>
+        )}
+        {notice && (
+          <Alert severity="success" sx={{ mb: 2 }} onClose={() => setNotice('')}>
+            {notice}
+          </Alert>
+        )}
+
+        <Alert severity="info" icon={<Info size={18} />} sx={{ mb: 2 }}>
+          Attachments are never required. File the entry when it happens and attach the paper
+          whenever it arrives. PDFs or photographs, up to 5MB each.
+          {def.tracksCertificate && ' Attaching the certificate marks it as delivered.'}
+        </Alert>
+
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mb: 2 }}>
+          <TextField
+            select
+            size="small"
+            label="What is this paper?"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+            sx={{ minWidth: 220 }}
+          >
+            {kinds.map((k) => (
+              <MenuItem key={k.value} value={k.value}>
+                {k.label}
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button
+            variant="contained"
+            startIcon={<Upload size={16} />}
+            disabled={busy}
+            onClick={() => fileInput.current?.click()}
+          >
+            {busy ? 'Uploading\u2026' : 'Choose a file'}
+          </Button>
+          <input
+            ref={fileInput}
+            type="file"
+            hidden
+            accept="application/pdf,image/jpeg,image/png,image/webp"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) upload(file);
+            }}
+          />
+        </Stack>
+
+        {loading ? (
+          <Box sx={{ py: 3, textAlign: 'center' }}>
+            <CircularProgress size={24} />
+          </Box>
+        ) : docs.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
+            Nothing has been attached to this entry yet.
+          </Typography>
+        ) : (
+          <List dense disablePadding>
+            {docs.map((doc) => (
+              <ListItem
+                key={doc.id}
+                divider
+                secondaryAction={
+                  <Stack direction="row" spacing={0.5}>
+                    <Tooltip title="Download">
+                      <IconButton size="small" onClick={() => open(doc)}>
+                        <Download size={16} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Remove">
+                      <IconButton size="small" color="error" disabled={busy} onClick={() => remove(doc)}>
+                        <Trash2 size={16} />
+                      </IconButton>
+                    </Tooltip>
+                  </Stack>
+                }
+              >
+                <ListItemText
+                  primary={doc.fileName}
+                  secondary={`${doc.kindLabel} \u00b7 ${doc.size} \u00b7 attached ${shortDate(doc.uploadedAt)}`}
+                />
+              </ListItem>
+            ))}
+          </List>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Done</Button>
+      </DialogActions>
+    </Dialog>
+  );
 }
+
+/* ------------------------------------------------------------------ */
+/* The classes behind the converts dropdown                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Intakes are named once here so that enrolling a convert is a choice rather
+ * than a piece of typing. Two secretaries spelling the same class differently is
+ * how a class list quietly becomes useless.
+ */
+function ClassesDialog({
+  classes,
+  onClose,
+  onChanged,
+}: {
+  classes: ConvertClass[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const add = async () => {
+    if (!name.trim()) {
+      setError('Give the class a name.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await churchApi.createConvertClass({ name: name.trim(), startDate: startDate || null });
+      setName('');
+      setStartDate('');
+      setNotice('The class was added.');
+      onChanged();
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'That class could not be added.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (cls: ConvertClass) => {
+    setBusy(true);
+    setError('');
+    try {
+      const res = await churchApi.deleteConvertClass(cls.id);
+      setNotice(res?.message || 'The class was removed.');
+      onChanged();
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'That class could not be removed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Converts classes</DialogTitle>
+      <DialogContent dividers>
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
+            {error}
+          </Alert>
+        )}
+        {notice && (
+          <Alert severity="success" sx={{ mb: 2 }} onClose={() => setNotice('')}>
+            {notice}
+          </Alert>
+        )}
+
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Name each intake once \u2014 "January 2026 intake", "Easter convention class" \u2014 and it
+          becomes a choice on the converts register. A class with converts enrolled in it is closed
+          rather than deleted, so their enrolment is never left pointing at nothing.
+        </Typography>
+
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mb: 2 }}>
+          <TextField
+            size="small"
+            label="Class name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            fullWidth
+          />
+          <TextField
+            size="small"
+            type="date"
+            label="Starts"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+          />
+          <Button variant="contained" onClick={add} disabled={busy} startIcon={<Plus size={16} />}>
+            Add
+          </Button>
+        </Stack>
+
+        {classes.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
+            No classes have been set up yet.
+          </Typography>
+        ) : (
+          <List dense disablePadding>
+            {classes.map((cls) => (
+              <ListItem
+                key={cls.id}
+                divider
+                secondaryAction={
+                  <IconButton size="small" color="error" disabled={busy} onClick={() => remove(cls)}>
+                    <Trash2 size={16} />
+                  </IconButton>
+                }
+              >
+                <ListItemText
+                  primary={
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <span>{cls.name}</span>
+                      {cls.active === false && <Chip label="Closed" size="small" />}
+                    </Stack>
+                  }
+                  secondary={cls.startDate ? `Started ${shortDate(cls.startDate)}` : null}
+                />
+              </ListItem>
+            ))}
+          </List>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Done</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* The page                                                           */
+/* ------------------------------------------------------------------ */
 
 export function RegistersPage() {
   const [defs, setDefs] = useState<RegisterDef[]>([]);
   const [active, setActive] = useState(0);
   const [range, setRange] = useState(defaultRange);
   const [query, setQuery] = useState('');
+
   const [entries, setEntries] = useState<Entry[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [members, setMembers] = useState<MemberOption[]>([]);
+  const [classes, setClasses] = useState<ConvertClass[]>([]);
+  const [offices, setOffices] = useState<string[]>([]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState<Record<string, string>>({});
+  const [form, setForm] = useState<Record<string, any>>({});
   const [formErrors, setFormErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [pendingWithdrawal, setPendingWithdrawal] = useState<Entry | null>(null);
 
+  const [pendingWithdrawal, setPendingWithdrawal] = useState<Entry | null>(null);
+  const [docsFor, setDocsFor] = useState<Entry | null>(null);
+  const [classesOpen, setClassesOpen] = useState(false);
+
+  const timer = useRef<any>(null);
   const current = defs[active];
 
-  // The catalogue and the member list are loaded once. The registers describe
-  // their own boxes, so a register gained on the server appears here without a
-  // second copy of its fields living in this file.
+  /** The catalogue and the lists the dropdowns are built from, loaded once. */
   useEffect(() => {
-    (async () => {
-      try {
-        const [cat, people] = await Promise.all([
-          churchApi.getRegisters(),
-          churchApi.getMembers(),
-        ]);
-        setDefs(Array.isArray(cat) ? cat : []);
+    churchApi
+      .getRegisters()
+      .then((list: RegisterDef[]) => setDefs(list || []))
+      .catch((e: any) => setError(e?.friendlyMessage || 'Could not load the registers.'));
+
+    churchApi
+      .getMembers({ limit: 2000 })
+      .then((list: any[]) =>
         setMembers(
-          (Array.isArray(people) ? people : []).map((m: any) => ({
+          (list || []).map((m: any) => ({
             id: m.id,
-            label: [m.firstName, m.lastName].filter(Boolean).join(' ') ||
-              m.name ||
-              m.membershipId ||
-              m.id,
+            label: [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || m.id,
           })),
-        );
-      } catch (e: any) {
-        setError(e?.friendlyMessage || 'Failed to load the registers.');
-      }
-    })();
+        ),
+      )
+      .catch(() => undefined);
+
+    churchApi
+      .getOffices()
+      .then((list: any[]) => setOffices((list || []).map((o: any) => o.name).filter(Boolean)))
+      .catch(() => undefined);
   }, []);
+
+  const loadClasses = useCallback(() => {
+    churchApi
+      .getConvertClasses()
+      .then((list: ConvertClass[]) => setClasses(list || []))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    loadClasses();
+  }, [loadClasses]);
 
   const load = useCallback(async () => {
     if (!current) return;
     setLoading(true);
-    setError('');
     try {
       const [res, summary] = await Promise.all([
         churchApi.getRegisterEntries(current.key, {
           from: range.from,
           to: range.to,
-          q: query,
+          q: query || undefined,
         }),
         churchApi.getRegisterSummary({ from: range.from, to: range.to }),
       ]);
       setEntries(res?.data || []);
       setCounts(summary || {});
+      setError('');
     } catch (e: any) {
-      setError(e?.friendlyMessage || 'Failed to load this register.');
-      setEntries([]);
+      setError(e?.friendlyMessage || 'Could not load this register.');
     } finally {
       setLoading(false);
     }
   }, [current, range.from, range.to, query]);
 
-  // Debounced so typing in the search box does not fire a request per keystroke.
+  // Typing in the search box should not fire a request per keystroke.
   useEffect(() => {
-    const timer = setTimeout(load, query ? 350 : 0);
-    return () => clearTimeout(timer);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(load, query ? 350 : 0);
+    return () => timer.current && clearTimeout(timer.current);
   }, [load, query]);
 
-  const openForm = () => {
-    const blank: Record<string, string> = {};
-    for (const field of current?.fields || []) {
-      // The register's own date defaults to today, which is what it usually is.
-      blank[field.name] =
-        field.type === 'date' && field.name === current?.primaryDateField ? iso(new Date()) : '';
+  /** The choices for a dropdown whose options belong to the church. */
+  const optionsFor = (field: RegisterField): Array<{ value: string; label: string }> => {
+    if (field.optionSource === 'convert_classes') {
+      return classes
+        .filter((c) => c.active !== false)
+        .map((c) => ({ value: c.id, label: c.name }));
     }
-    setForm(blank);
+    if (field.optionSource === 'offices') {
+      return offices.map((name) => ({ value: name, label: name }));
+    }
+    return field.options || [];
+  };
+
+  const emptySourceHint = (field: RegisterField): string | null => {
+    if (field.optionSource === 'convert_classes' && classes.length === 0) {
+      return 'No classes have been set up yet. Use the Classes button on this register.';
+    }
+    if (field.optionSource === 'offices' && offices.length === 0) {
+      return 'No offices have been spelt out yet. Add them under Settings \u203a Offices.';
+    }
+    return null;
+  };
+
+  const openForm = () => {
+    if (!current) return;
+    // The primary date defaults to today, since a register is usually written up
+    // the same day. Everything else is left for the person filing to say.
+    setForm({ [current.primaryDateField]: iso(new Date()) });
     setFormErrors([]);
     setFormOpen(true);
   };
 
-  const setValue = (name: string, value: string) =>
-    setForm((prev) => ({ ...prev, [name]: value }));
-
-  const submit = async () => {
+  const file = async () => {
     if (!current) return;
     setSaving(true);
     setFormErrors([]);
@@ -218,12 +664,15 @@ export function RegistersPage() {
       setFormOpen(false);
       setNotice(res?.message || 'The entry was filed.');
       await load();
+      // A register that takes paperwork opens straight onto it, so the letter or
+      // certificate can be attached now if it is already to hand.
+      if (current.documentKinds?.length && res?.data) setDocsFor(res.data);
     } catch (e: any) {
-      const payload = e?.response?.data;
+      const list = e?.response?.data?.errors;
       setFormErrors(
-        payload?.errors?.length
-          ? payload.errors
-          : [payload?.error || e?.friendlyMessage || 'Failed to file this entry.'],
+        Array.isArray(list) && list.length
+          ? list
+          : [e?.friendlyMessage || 'That entry could not be filed.'],
       );
     } finally {
       setSaving(false);
@@ -235,34 +684,39 @@ export function RegistersPage() {
     try {
       const res = await churchApi.withdrawRegisterEntry(current.key, pendingWithdrawal.id);
       setNotice(res?.message || 'The entry was withdrawn.');
-      setPendingWithdrawal(null);
       await load();
     } catch (e: any) {
-      setError(e?.friendlyMessage || 'Failed to withdraw this entry.');
+      setError(e?.friendlyMessage || 'That entry could not be withdrawn.');
+    } finally {
       setPendingWithdrawal(null);
     }
   };
 
-  const requiredMissing = useMemo(() => {
-    if (!current) return true;
-    return current.fields.some((f) => f.required && !String(form[f.name] || '').trim());
-  }, [current, form]);
+  const setCertificate = async (entry: Entry, status: string) => {
+    try {
+      const res = await churchApi.setBaptismCertificateStatus(entry.id, status);
+      setNotice(res?.message || 'The certificate was updated.');
+      await load();
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'The certificate could not be updated.');
+    }
+  };
 
-  const memberValue = (name: string) =>
-    members.find((m) => m.id === form[name]) || null;
+  const memberOption = (id: any) => members.find((m) => m.id === id) || null;
+
+  const cards = useMemo(
+    () => defs.map((def) => ({ key: def.key, label: def.plural, count: counts[def.key] ?? 0 })),
+    [defs, counts],
+  );
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 0.5 }}>
-        <BookOpen size={22} />
-        <Typography variant="h5" fontWeight={700}>
-          Registers
-        </Typography>
-      </Stack>
+    <Box sx={{ p: { xs: 2, md: 3 } }}>
+      <Typography variant="h5" fontWeight={700}>
+        Registers
+      </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
-        The books of the church, in one place. An entry filed here is written onto the
-        member's own record, so every figure on the statistical return moves with it. Nothing
-        on this page is a second copy of a figure kept by hand.
+        A book for each kind of event in a member's life. Entries here write straight to the member's
+        own record, so the registers and the statistical return can never disagree.
       </Typography>
 
       {error && (
@@ -276,27 +730,24 @@ export function RegistersPage() {
         </Alert>
       )}
 
-      {/* How many entries each book holds in the chosen period. */}
+      {/* ---- How many entries each register holds in this period ---- */}
       <Grid container spacing={1.5} sx={{ mb: 2.5 }}>
-        {defs.map((def, index) => (
-          <Grid key={def.key} size={{ xs: 6, sm: 4, md: 12 / 7 }}>
+        {cards.map((card, index) => (
+          <Grid key={card.key} size={{ xs: 6, sm: 4, md: 12 / 6 }}>
             <Card
-              variant={index === active ? 'elevation' : 'outlined'}
-              onClick={() => setActive(index)}
+              variant="outlined"
               sx={{
                 cursor: 'pointer',
                 borderColor: index === active ? 'primary.main' : undefined,
-                borderWidth: index === active ? 2 : 1,
-                borderStyle: 'solid',
-                height: '100%',
               }}
+              onClick={() => setActive(index)}
             >
-              <CardContent sx={{ py: 1.5, px: 1.75 }}>
-                <Typography variant="h6" fontWeight={700} lineHeight={1.2}>
-                  {counts[def.key] ?? 0}
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Typography variant="caption" color="text.secondary" noWrap display="block">
+                  {card.label}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {def.plural}
+                <Typography variant="h6" fontWeight={700}>
+                  {card.count}
                 </Typography>
               </CardContent>
             </Card>
@@ -304,286 +755,410 @@ export function RegistersPage() {
         ))}
       </Grid>
 
-      <Paper variant="outlined">
+      <Paper variant="outlined" sx={{ mb: 2.5 }}>
         <Tabs
           value={active}
           onChange={(_e, v) => setActive(v)}
           variant="scrollable"
           scrollButtons="auto"
-          sx={{ borderBottom: 1, borderColor: 'divider' }}
         >
           {defs.map((def) => (
             <Tab key={def.key} label={def.plural} />
           ))}
         </Tabs>
+      </Paper>
 
-        {current && (
-          <Box sx={{ p: 2.5 }}>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+      {current && (
+        <>
+          {/* ---- What filing an entry will do ---- */}
+          <Alert severity="info" icon={<Info size={18} />} sx={{ mb: 2 }}>
+            <Typography variant="body2" sx={{ mb: 0.5 }}>
               {current.description}
             </Typography>
-
-            {/* What filing an entry actually changes, said before it is filed. */}
-            <Alert severity="info" icon={<Info size={18} />} sx={{ mb: 2.5 }}>
-              <Typography variant="subtitle2" fontWeight={700}>
-                What an entry in this register writes
-              </Typography>
-              <Box component="ul" sx={{ pl: 2.5, mb: current.countsAs.length ? 1 : 0, mt: 0.5 }}>
-                {current.writes.map((line) => (
-                  <li key={line}>
-                    <Typography variant="body2">{line}</Typography>
-                  </li>
+            <Typography variant="caption" color="text.secondary" component="div">
+              Filing an entry here will:
+            </Typography>
+            <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+              {current.writes.map((line) => (
+                <Typography key={line} component="li" variant="caption" color="text.secondary">
+                  {line}
+                </Typography>
+              ))}
+            </Box>
+            {current.countsAs.length > 0 && (
+              <Stack direction="row" spacing={0.75} sx={{ mt: 1, flexWrap: 'wrap', gap: 0.75 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
+                  Counts towards:
+                </Typography>
+                {current.countsAs.map((figure) => (
+                  <Chip
+                    key={figure}
+                    label={figure}
+                    size="small"
+                    variant="outlined"
+                    component={RouterLink}
+                    to="/church/statistics"
+                    clickable
+                  />
                 ))}
-              </Box>
-              {current.countsAs.length > 0 && (
-                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center">
-                  <Typography variant="body2">Counted on the return as</Typography>
-                  {current.countsAs.map((figure) => (
-                    <Chip
-                      key={figure}
-                      size="small"
-                      label={figure}
-                      component={Link as any}
-                      href="/church/statistics"
-                      clickable
-                    />
-                  ))}
+              </Stack>
+            )}
+          </Alert>
+
+          {/* ---- Period, search and filing ---- */}
+          <Paper variant="outlined" sx={{ p: 2, mb: 2.5 }}>
+            <Grid container spacing={2} alignItems="center">
+              <Grid size={{ xs: 6, md: 2 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="From"
+                  value={range.from}
+                  onChange={(e) => setRange({ ...range, from: e.target.value })}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              <Grid size={{ xs: 6, md: 2 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="To"
+                  value={range.to}
+                  onChange={(e) => setRange({ ...range, to: e.target.value })}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder="Search names and particulars\u2026"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Search size={16} />
+                      </InputAdornment>
+                    ),
+                  }}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <Stack direction="row" spacing={1} justifyContent="flex-end">
+                  {current.key === 'converts' && (
+                    <Button
+                      variant="outlined"
+                      startIcon={<GraduationCap size={16} />}
+                      onClick={() => setClassesOpen(true)}
+                    >
+                      Classes
+                    </Button>
+                  )}
+                  <Button variant="contained" startIcon={<Plus size={16} />} onClick={openForm}>
+                    Record {current.label}
+                  </Button>
                 </Stack>
-              )}
-            </Alert>
+              </Grid>
+            </Grid>
+          </Paper>
 
-            <Stack
-              direction={{ xs: 'column', md: 'row' }}
-              spacing={1.5}
-              alignItems={{ md: 'center' }}
-              sx={{ mb: 2 }}
-            >
-              <TextField
-                label="From"
-                type="date"
-                size="small"
-                value={range.from}
-                onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
-              />
-              <TextField
-                label="To"
-                type="date"
-                size="small"
-                value={range.to}
-                onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
-              />
-              <TextField
-                size="small"
-                placeholder="Search this register"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                sx={{ flex: 1, minWidth: 220 }}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Search size={16} />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-              <Button variant="contained" startIcon={<Plus size={16} />} onClick={openForm}>
-                Record {current.label}
-              </Button>
-            </Stack>
-
+          {/* ---- The register itself ---- */}
+          <Paper variant="outlined">
             <TableContainer>
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Date</TableCell>
-                    <TableCell>Name</TableCell>
-                    <TableCell>Particulars</TableCell>
-                    <TableCell>Kept in</TableCell>
-                    <TableCell align="right">Withdraw</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Date</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Name</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Particulars</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Kept in</TableCell>
+                    {current.documentKinds?.length ? (
+                      <TableCell align="center" sx={{ fontWeight: 700 }}>
+                        Paperwork
+                      </TableCell>
+                    ) : null}
+                    {current.tracksCertificate && (
+                      <TableCell sx={{ fontWeight: 700 }}>Certificate</TableCell>
+                    )}
+                    <TableCell align="right" sx={{ fontWeight: 700 }}>
+                      Withdraw
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {loading && (
+                  {loading && entries.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} align="center" sx={{ py: 5 }}>
-                        <CircularProgress size={22} />
+                      <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                        <CircularProgress size={24} />
                       </TableCell>
                     </TableRow>
                   )}
 
                   {!loading && entries.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} sx={{ py: 5 }} align="center">
-                        <Typography variant="body2" color="text.secondary">
-                          Nothing has been entered in this register for the chosen dates.
+                      <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                        <BookOpen size={22} />
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                          {query
+                            ? `Nothing in this register matches \u201c${query}\u201d.`
+                            : 'Nothing has been entered in this register for this period.'}
                         </Typography>
                       </TableCell>
                     </TableRow>
                   )}
 
-                  {!loading &&
-                    entries.map((entry) => (
-                      <TableRow key={entry.id} hover>
-                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{shortDate(entry.date)}</TableCell>
-                        <TableCell>
-                          {entry.memberId ? (
-                            <Link href={`/church/members?member=${entry.memberId}`} underline="hover">
+                  {entries.map((entry) => (
+                    <TableRow key={entry.id} hover>
+                      <TableCell sx={{ whiteSpace: 'nowrap' }}>{shortDate(entry.date)}</TableCell>
+                      <TableCell>
+                        {/* The name in the row is not always the member the entry
+                            hangs from -- a birth names the child -- so the link is
+                            labelled rather than pretending otherwise. */}
+                        {entry.memberId && !entry.linkLabel ? (
+                          <Link
+                            component={RouterLink}
+                            to={`/church/members?member=${entry.memberId}`}
+                            underline="hover"
+                            fontWeight={500}
+                          >
+                            {entry.memberName}
+                          </Link>
+                        ) : (
+                          <Stack spacing={0.25}>
+                            <Typography variant="body2" fontWeight={500}>
                               {entry.memberName}
-                            </Link>
-                          ) : (
-                            entry.memberName
-                          )}
-                          <Typography variant="caption" color="text.secondary" display="block">
-                            {entry.detail}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                            {entry.particulars.length === 0 && (
-                              <Typography variant="caption" color="text.secondary">
-                                —
-                              </Typography>
-                            )}
-                            {entry.particulars.map((p) => (
-                              <Chip
-                                key={p.label}
-                                size="small"
-                                variant="outlined"
-                                label={`${p.label}: ${pretty(p.value)}`}
-                              />
-                            ))}
-                          </Stack>
-                          {entry.notes && (
-                            <Typography variant="caption" color="text.secondary" display="block">
-                              {entry.notes}
                             </Typography>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Tooltip title="The entry is read from here, not stored twice">
+                            {entry.memberId && entry.linkLabel && (
+                              <Link
+                                component={RouterLink}
+                                to={`/church/members?member=${entry.memberId}`}
+                                underline="hover"
+                                variant="caption"
+                              >
+                                {entry.linkLabel}
+                              </Link>
+                            )}
+                          </Stack>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">{entry.detail}</Typography>
+                        <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5, mt: 0.25 }}>
+                          {entry.particulars.map((p) => (
                             <Chip
+                              key={`${p.label}-${p.value}`}
                               size="small"
-                              icon={<Database size={13} />}
-                              label={entry.origin}
                               variant="outlined"
+                              label={`${p.label}: ${pretty(p.value)}`}
                             />
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Tooltip title="Withdraw this entry">
-                            <IconButton size="small" onClick={() => setPendingWithdrawal(entry)}>
-                              <Trash2 size={15} />
+                          ))}
+                        </Stack>
+                        {entry.notes && (
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            {entry.notes}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip title="Where this fact is actually stored">
+                          <Chip
+                            icon={<Database size={13} />}
+                            label={entry.origin}
+                            size="small"
+                            variant="outlined"
+                          />
+                        </Tooltip>
+                      </TableCell>
+
+                      {current.documentKinds?.length ? (
+                        <TableCell align="center">
+                          <Tooltip
+                            title={
+                              entry.documentCount
+                                ? `${entry.documentCount} document${entry.documentCount === 1 ? '' : 's'} attached`
+                                : 'Attach the paperwork'
+                            }
+                          >
+                            <IconButton size="small" onClick={() => setDocsFor(entry)}>
+                              <Paperclip size={16} />
                             </IconButton>
                           </Tooltip>
+                          {entry.documentCount ? (
+                            <Typography variant="caption" color="text.secondary">
+                              {entry.documentCount}
+                            </Typography>
+                          ) : null}
                         </TableCell>
-                      </TableRow>
-                    ))}
+                      ) : null}
+
+                      {current.tracksCertificate && (
+                        <TableCell sx={{ minWidth: 190 }}>
+                          {/* The certificate has a life of its own after the
+                              baptism, so it is moved along here rather than being
+                              left to memory. Uploading it marks it delivered. */}
+                          <TextField
+                            select
+                            size="small"
+                            fullWidth
+                            value={entry.certificateStatus || ''}
+                            onChange={(e) => setCertificate(entry, e.target.value)}
+                            SelectProps={{
+                              renderValue: (value: any) => (
+                                <Stack direction="row" spacing={0.5} alignItems="center">
+                                  <Award size={13} />
+                                  <span>{certificateLabel(value)}</span>
+                                </Stack>
+                              ),
+                            }}
+                          >
+                            {CERTIFICATE_STATUSES.map((s) => (
+                              <MenuItem key={s.value} value={s.value}>
+                                {s.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </TableCell>
+                      )}
+
+                      <TableCell align="right">
+                        <Tooltip title="Withdraw this entry">
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => setPendingWithdrawal(entry)}
+                          >
+                            <Trash2 size={16} />
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </TableContainer>
-          </Box>
-        )}
-      </Paper>
+          </Paper>
+        </>
+      )}
 
-      {/* Filing dialog, built from the register's own fields. */}
-      <Dialog open={formOpen} onClose={() => setFormOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Record {current?.label}</DialogTitle>
-        <DialogContent dividers>
-          {formErrors.length > 0 && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {formErrors.map((message) => (
-                <div key={message}>{message}</div>
-              ))}
-            </Alert>
-          )}
-          <Grid container spacing={2}>
-            {(current?.fields || []).map((field) => (
-              <Grid key={field.name} size={{ xs: 12, sm: field.type === 'textarea' ? 12 : 6 }}>
-                {field.type === 'member' ? (
-                  <Autocomplete
-                    options={members}
-                    value={memberValue(field.name)}
-                    onChange={(_e, value) => setValue(field.name, value?.id || '')}
-                    isOptionEqualToValue={(a, b) => a.id === b.id}
-                    renderInput={(params) => (
+      {/* ---- Filing an entry ---- */}
+      {current && (
+        <Dialog open={formOpen} onClose={() => setFormOpen(false)} maxWidth="sm" fullWidth>
+          <DialogTitle>Record {current.label}</DialogTitle>
+          <DialogContent dividers>
+            {formErrors.length > 0 && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {formErrors.length === 1 ? (
+                  formErrors[0]
+                ) : (
+                  <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+                    {formErrors.map((message) => (
+                      <li key={message}>{message}</li>
+                    ))}
+                  </Box>
+                )}
+              </Alert>
+            )}
+
+            {current.changesStanding && (
+              <Alert severity="warning" icon={<AlertTriangle size={18} />} sx={{ mb: 2 }}>
+                This entry changes the member's standing, which moves the membership figure from the
+                date you give. Use the date it actually happened, not today's date.
+              </Alert>
+            )}
+
+            <Grid container spacing={2} sx={{ mt: 0.5 }}>
+              {current.fields.map((field) => {
+                const hint = emptySourceHint(field);
+                const wide = field.type === 'textarea';
+                return (
+                  <Grid key={field.name} size={{ xs: 12, sm: wide ? 12 : 6 }}>
+                    {field.type === 'member' ? (
+                      <Autocomplete
+                        options={members}
+                        value={memberOption(form[field.name])}
+                        onChange={(_e, value) =>
+                          setForm({ ...form, [field.name]: value ? value.id : '' })
+                        }
+                        isOptionEqualToValue={(a, b) => a.id === b.id}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            size="small"
+                            label={field.label}
+                            required={field.required}
+                            helperText={field.helperText}
+                          />
+                        )}
+                      />
+                    ) : field.type === 'select' ? (
                       <TextField
-                        {...params}
+                        select
+                        fullWidth
+                        size="small"
                         label={field.label}
                         required={field.required}
+                        value={form[field.name] || ''}
+                        onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
+                        helperText={hint || field.helperText}
+                      >
+                        <MenuItem value="">
+                          <em>Not stated</em>
+                        </MenuItem>
+                        {optionsFor(field).map((o) => (
+                          <MenuItem key={o.value} value={o.value}>
+                            {o.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    ) : (
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type={field.type === 'date' ? 'date' : 'text'}
+                        multiline={wide}
+                        minRows={wide ? 2 : undefined}
+                        label={field.label}
+                        required={field.required}
+                        value={form[field.name] || ''}
+                        onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
+                        InputLabelProps={field.type === 'date' ? { shrink: true } : undefined}
                         helperText={field.helperText}
                       />
                     )}
-                  />
-                ) : field.type === 'select' ? (
-                  <TextField
-                    select
-                    fullWidth
-                    label={field.label}
-                    required={field.required}
-                    helperText={field.helperText}
-                    value={form[field.name] || ''}
-                    onChange={(e) => setValue(field.name, e.target.value)}
-                  >
-                    {(field.options || []).map((opt) => (
-                      <MenuItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                ) : (
-                  <TextField
-                    fullWidth
-                    label={field.label}
-                    required={field.required}
-                    helperText={field.helperText}
-                    type={field.type === 'date' ? 'date' : 'text'}
-                    multiline={field.type === 'textarea'}
-                    minRows={field.type === 'textarea' ? 2 : undefined}
-                    InputLabelProps={field.type === 'date' ? { shrink: true } : undefined}
-                    value={form[field.name] || ''}
-                    onChange={(e) => setValue(field.name, e.target.value)}
-                  />
-                )}
-              </Grid>
-            ))}
-          </Grid>
+                  </Grid>
+                );
+              })}
+            </Grid>
 
-          {current?.changesStanding && (
-            <>
-              <Divider sx={{ my: 2 }} />
-              <Stack direction="row" spacing={1} alignItems="flex-start">
-                <AlertTriangle size={16} />
-                <Typography variant="caption" color="text.secondary">
-                  This entry changes the member's standing from the date given, so the membership
-                  figure for that period moves with it. A return already filed for an earlier
-                  period keeps the membership it had at the time.
-                </Typography>
-              </Stack>
-            </>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setFormOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={submit} disabled={saving || requiredMissing}>
-            {saving ? 'Filing…' : 'File entry'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+            {current.documentKinds?.length ? (
+              <Alert severity="info" icon={<Paperclip size={16} />} sx={{ mt: 2 }}>
+                Once the entry is filed you can attach the paperwork. It is never required \u2014 file
+                the fact now and attach the document whenever it arrives.
+              </Alert>
+            ) : null}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setFormOpen(false)}>Cancel</Button>
+            <Button variant="contained" onClick={file} disabled={saving}>
+              {saving ? 'Filing\u2026' : 'File the entry'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+      )}
 
-      {/* Withdrawal asks first, because an entry withdrawn clears the fact from
-          the member's record rather than only hiding a row here. */}
+      {/* ---- Withdrawing an entry ---- */}
       <Dialog open={!!pendingWithdrawal} onClose={() => setPendingWithdrawal(null)}>
         <DialogTitle>Withdraw this entry?</DialogTitle>
         <DialogContent>
-          <Typography variant="body2">
-            This clears {pendingWithdrawal?.memberName}'s entry of {shortDate(pendingWithdrawal?.date)}{' '}
-            from the member's record, and the figures it feeds fall back accordingly.
-            {current?.changesStanding
-              ? " The member's standing is returned to active."
-              : ''}
-          </Typography>
+          <DialogContentText>
+            This clears the fact from {pendingWithdrawal?.memberName}'s record, not just the row in
+            this register, and removes any paperwork attached to it.
+            {current?.changesStanding &&
+              ' Their standing goes back to active, and the dated history entry is removed.'}
+          </DialogContentText>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setPendingWithdrawal(null)}>Keep it</Button>
@@ -592,6 +1167,29 @@ export function RegistersPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {docsFor && current && (
+        <DocumentsDialog
+          def={current}
+          entry={docsFor}
+          onClose={() => setDocsFor(null)}
+          onChanged={load}
+        />
+      )}
+
+      {classesOpen && (
+        <ClassesDialog
+          classes={classes}
+          onClose={() => setClassesOpen(false)}
+          onChanged={loadClasses}
+        />
+      )}
+
+      <Divider sx={{ mt: 3, mb: 1.5 }} />
+      <Typography variant="caption" color="text.secondary">
+        Nothing on this page keeps its own tally. Each register reads and writes the same member
+        records and status history the statistical return counts from, so the two can never disagree.
+      </Typography>
     </Box>
   );
 }
