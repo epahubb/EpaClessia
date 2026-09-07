@@ -37,6 +37,21 @@ export type RollCallRow = {
 const unwrap = (r: any) =>
   Array.isArray(r) ? r : r?.data ?? r?.items ?? r?.members ?? r?.events ?? [];
 
+/**
+ * Announces that the church's list of groups has changed.
+ *
+ * Groups are maintained under Settings › Groups but chosen on the member form,
+ * so any screen showing a group dropdown listens for this and refetches its
+ * options. Without it, a group created a moment ago would be missing from the
+ * dropdown until the whole app was reloaded.
+ */
+export const GROUPS_CHANGED_EVENT = 'epaclessia:groups-changed';
+const announceGroupsChanged = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(GROUPS_CHANGED_EVENT));
+  }
+};
+
 export const churchApi = {
   // Settings
   getSettings: async (): Promise<ChurchSettings> => (await api.get('/church/settings')).data,
@@ -347,9 +362,21 @@ export const churchApi = {
   // ---- Groups (one per member: a cell, zone or house fellowship) ----
   getGroups: async () => unwrap((await api.get('/church/groups')).data),
   getGroupOptions: async () => unwrap((await api.get('/church/groups/options')).data),
-  createGroup: async (data: any) => (await api.post('/church/groups', data)).data,
-  updateGroup: async (id: string, data: any) => (await api.put(`/church/groups/${id}`, data)).data,
-  deleteGroup: async (id: string) => (await api.delete(`/church/groups/${id}`)).data,
+  createGroup: async (data: any) => {
+    const res = (await api.post('/church/groups', data)).data;
+    announceGroupsChanged();
+    return res;
+  },
+  updateGroup: async (id: string, data: any) => {
+    const res = (await api.put(`/church/groups/${id}`, data)).data;
+    announceGroupsChanged();
+    return res;
+  },
+  deleteGroup: async (id: string) => {
+    const res = (await api.delete(`/church/groups/${id}`)).data;
+    announceGroupsChanged();
+    return res;
+  },
 
   // ---- Offices the church recognises (Settings > Offices) ----
   getOffices: async () => unwrap((await api.get('/church/offices')).data),

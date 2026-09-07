@@ -9,7 +9,9 @@ export const auditLog = (action: string, resource: string) => {
     // We only log if the request is successful (status < 400)
     res.send = function (body) {
       if (res.statusCode < 400 && req.user) {
-        const resourceId = req.params.id || req.body.id || null;
+        // `req.body` is undefined on GET/DELETE requests, so it must be read
+        // defensively or audit logging would throw inside res.send.
+        const resourceId = req.params?.id || (req.body as any)?.id || null;
         
         db('audit_logs').insert({
           adminUid: req.user.uid,

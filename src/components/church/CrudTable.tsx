@@ -62,6 +62,13 @@ type Props = {
    */
   toolbarActions?: (reload: () => void) => React.ReactNode;
   emptyText?: string;
+  /**
+   * Called every time the add/edit dialog is opened, with the row being edited
+   * (or null when adding). Lets a page refresh dropdown options that another
+   * screen may have changed since this page was first loaded -- e.g. groups
+   * added under Settings must appear on the member form without a page reload.
+   */
+  onDialogOpen?: (row: any | null) => void;
 };
 
 /**
@@ -190,7 +197,8 @@ const ListField: React.FC<{
 
 export const CrudTable: React.FC<Props> = ({
   columns, fields, fetchRows, createRow, updateRow, deleteRow,
-  idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.'
+  idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.',
+  onDialogOpen,
 }) => {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -215,6 +223,9 @@ export const CrudTable: React.FC<Props> = ({
     let init: any = {};
     fields.forEach(f => { init = setField(init, f.name, blankFor(f)); });
     setForm(init); setEditing(null); setError(null); setOpen(true);
+    // Refresh any option lists this form depends on, so a group or office
+    // created moments ago on another screen is already selectable here.
+    onDialogOpen?.(null);
   };
   const openEdit = (row: any) => {
     let init: any = {};
@@ -234,6 +245,7 @@ export const CrudTable: React.FC<Props> = ({
       init = setField(init, f.name, stored ?? blankFor(f));
     });
     setForm(init); setEditing(row); setError(null); setOpen(true);
+    onDialogOpen?.(row);
   };
   /** Fields currently applicable, given what the user has chosen so far. */
   const visibleFields = fields.filter(f => !f.showIf || f.showIf(form));

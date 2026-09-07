@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Typography, Chip, Button, Avatar, Alert, Stack, Tooltip, IconButton, Snackbar } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import KeyIcon from '@mui/icons-material/VpnKey';
@@ -158,15 +158,65 @@ export const MemberList: React.FC = () => {
   // somehow, so this list is loaded regardless of the sections in play.
   const [groups, setGroups] = useState<{ value: string; label: string }[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    churchApi.getGroupOptions()
-      .then((rows) => { if (!cancelled) setGroups(rows || []); })
+  /**
+   * Loads the group dropdown.
+   *
+   * Groups are maintained on a different screen (Settings \u203a Groups), so this
+   * list cannot be fetched only once on mount -- a group added a minute ago
+   * would then be missing from the member form until the whole app was
+   * reloaded. It is refreshed whenever:
+   *   - the page mounts,
+   *   - a group is created/edited/deleted anywhere in the app (churchApi fires
+   *     the `epaclessia:groups-changed` event),
+   *   - the tab regains focus (the admin came back from another tab), and
+   *   - the Add/Edit Member dialog is opened.
+   */
+  const loadGroups = useCallback(async () => {
+    try {
+      const rows = await churchApi.getGroupOptions();
+      setGroups(Array.isArray(rows) ? rows : []);
+      return Array.isArray(rows) ? rows : [];
+    } catch {
       // A church with no groups yet still has to be able to register members;
       // the helper text below explains the empty list.
-      .catch(() => { /* leave empty */ });
-    return () => { cancelled = true; };
+      return [];
+    }
   }, []);
+
+  useEffect(() => {
+    void loadGroups();
+
+    const refresh = () => { void loadGroups(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+
+    window.addEventListener('epaclessia:groups-changed', refresh);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('epaclessia:groups-changed', refresh);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [loadGroups]);
+
+  /**
+   * Refreshes the dropdown as the dialog opens, and makes sure the group the
+   * member is already in is always one of the choices.
+   *
+   * A retired (inactive) group is not offered for new members, but a member who
+   * is still in one must not have it silently blanked when an admin edits an
+   * unrelated field.
+   */
+  const prepareGroupOptions = useCallback(async (row: any | null) => {
+    const rows = await loadGroups();
+    const currentId = row?.groupId ? String(row.groupId) : '';
+    if (currentId && !rows.some((o: any) => String(o.value) === currentId)) {
+      setGroups([
+        ...rows,
+        { value: currentId, label: `${row.groupName || 'Current group'} (inactive)` },
+      ]);
+    }
+  }, [loadGroups]);
 
   useEffect(() => {
     if (!sections.length) return;
@@ -519,6 +569,7 @@ export const MemberList: React.FC = () => {
         deleteRow={churchApi.deleteMember}
         addLabel="Add Member"
         emptyText="No members yet. Click Add Member to register your first member."
+        onDialogOpen={(row) => { void prepareGroupOptions(row); }}
         rowActions={(row, reload) => (
           <>
             <PortalInviteButton row={row} onDone={setNotice} />

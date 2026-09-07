@@ -271,7 +271,32 @@ router.get('/groups', async (req: AuthRequest, res) => {
   }
 });
 
-/** Just id and name, for the single-select on the member form. */
+/**
+ * Reads a boolean column that different database drivers return differently.
+ *
+ * Postgres gives a real boolean, MySQL gives 1/0, and a value round-tripped
+ * through JSON can arrive as the string "false". Comparing with `!== false`
+ * alone therefore treated a MySQL 0 as active, and retired groups were still
+ * offered on the member form.
+ */
+function isTruthyFlag(value: unknown, whenMissing = true): boolean {
+  if (value === null || value === undefined) return whenMissing;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const text = String(value).trim().toLowerCase();
+  if (['false', '0', 'no', 'off', ''].includes(text)) return false;
+  return true;
+}
+
+/**
+ * Just id and name, for the single-select on the member form.
+ *
+ * Retired groups stay on the members already in them but are not offered for
+ * new members. `?includeId=` keeps one specific group in the list even when it
+ * is retired, so editing a member who is still in it cannot blank their group.
+ * Sent with `no-store`: the member form refetches this every time it opens, and
+ * a group created seconds earlier must appear immediately.
+ */
 router.get('/groups/options', async (req: AuthRequest, res) => {
   try {
     const rows = await db('church_groups')
@@ -279,12 +304,17 @@ router.get('/groups/options', async (req: AuthRequest, res) => {
       .orderBy('sortOrder', 'asc')
       .orderBy('name', 'asc')
       .select('id', 'name', 'active');
-    // Retired groups stay on the members already in them, but are not offered
-    // for new members.
+
+    const keepId = req.query.includeId ? String(req.query.includeId) : '';
+
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       data: (rows as any[])
-        .filter((r) => r.active !== false)
-        .map((r) => ({ value: r.id, label: r.name })),
+        .filter((r) => isTruthyFlag(r.active) || String(r.id) === keepId)
+        .map((r) => ({
+          value: r.id,
+          label: isTruthyFlag(r.active) ? r.name : `${r.name} (inactive)`,
+        })),
     });
   } catch (error) {
     console.error('Group options error:', error);
@@ -296,6 +326,9 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
   try {
     const name = String(req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Please enter a name for the group.' });
+    if (name.length > 120) {
+      return res.status(400).json({ error: 'A group name cannot be longer than 120 characters.' });
+    }
 
     const duplicate = await db('church_groups')
       .where({ tenantId: tid(req) })
@@ -316,11 +349,13 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
       meetingTime: req.body?.meetingTime || null,
       location: req.body?.location || null,
       sortOrder: Number(req.body?.sortOrder) || 0,
-      active: req.body?.active === undefined ? true : Boolean(req.body.active),
+      active: isTruthyFlag(req.body?.active),
       createdAt: new Date(),
     };
     await db('church_groups').insert(group);
-    res.status(201).json(group);
+    // `memberCount` is part of the shape the groups table renders, so a newly
+    // created group comes back in the same shape as a listed one.
+    res.status(201).json({ ...group, memberCount: 0 });
   } catch (error) {
     console.error('Create group error:', error);
     res.status(500).json({ error: 'Failed to create group' });
@@ -343,7 +378,7 @@ router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: Aut
       if (key in req.body) updates[key] = req.body[key] || null;
     }
     if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
-    if ('active' in req.body) updates.active = Boolean(req.body.active);
+    if ('active' in req.body) updates.active = isTruthyFlag(req.body.active);
 
     if (Object.keys(updates).length) {
       await db('church_groups').where({ id: req.params.id, tenantId }).update(updates);

@@ -24,6 +24,8 @@ import {
 } from './src/lib/security';
 import {
   securityHeaders,
+  additionalSecurityHeaders,
+  enforceHttps,
   corsMiddleware,
   sanitizeRequest,
   globalApiLimiter,
@@ -89,8 +91,13 @@ async function startServer() {
   app.set('trust proxy', 1);
 
   // ---- Security apparatus (order matters) ----
-  // 1. Secure response headers (helmet + CSP + HSTS).
+  // 0. Refuse plain HTTP in production: sessions are bearer tokens and must
+  //    never travel in the clear.
+  app.use(enforceHttps);
+  // 1. Secure response headers (helmet + CSP + HSTS), plus Permissions-Policy
+  //    and no-store on API responses.
   app.use(securityHeaders);
+  app.use(additionalSecurityHeaders);
   // 2. Strict CORS allow-listing.
   app.use(corsMiddleware);
 

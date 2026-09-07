@@ -22,32 +22,113 @@ import { IS_PROD } from '../lib/config';
 /* ------------------------------------------------------------------ *
  * 1. Secure HTTP headers
  * ------------------------------------------------------------------ */
+/**
+ * Third parties the browser is actually allowed to talk to.
+ *
+ * The policy is an explicit allow-list rather than a blanket `https:`. A
+ * wildcard scheme would let an injected script exfiltrate member data to any
+ * HTTPS host it liked, which defeats the point of a CSP.
+ */
+const PAYSTACK_SCRIPT = 'https://js.paystack.co';
+const PAYSTACK_CHECKOUT = 'https://checkout.paystack.com';
+const PAYSTACK_API = 'https://api.paystack.co';
+const MNOTIFY_API = 'https://api.mnotify.com';
+
+/** Extra hosts an operator needs (a CDN, an S3 bucket), comma-separated. */
+const extraConnectSrc = (process.env.CSP_CONNECT_SRC || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const extraImgSrc = (process.env.CSP_IMG_SRC || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 export const securityHeaders: RequestHandler = helmet({
   contentSecurityPolicy: {
     useDefaults: true,
     directives: {
       defaultSrc: ["'self'"],
-      // MUI/emotion inject styles at runtime; allow inline styles only.
-      styleSrc: ["'self'", "'unsafe-inline'", 'https:'],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-      fontSrc: ["'self'", 'data:', 'https:'],
-      // Paystack + mNotify + own API.
-      connectSrc: ["'self'", 'https:'],
-      frameSrc: ["'self'", 'https://js.paystack.co', 'https://checkout.paystack.com'],
+      // MUI/emotion inject styles at runtime; inline styles only, no remote
+      // stylesheet hosts.
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      // Only our own bundle and the Paystack checkout script may execute. No
+      // 'unsafe-inline' and no 'unsafe-eval', so an injected <script> cannot
+      // run.
+      scriptSrc: ["'self'", PAYSTACK_SCRIPT, PAYSTACK_CHECKOUT],
+      scriptSrcAttr: ["'none'"],
+      // Member photos and church logos are served from our own API as data /
+      // blob URLs.
+      imgSrc: ["'self'", 'data:', 'blob:', ...extraImgSrc],
+      fontSrc: ["'self'", 'data:'],
+      // Own API + the payment and SMS gateways we call from the browser.
+      connectSrc: ["'self'", PAYSTACK_API, PAYSTACK_CHECKOUT, MNOTIFY_API, ...extraConnectSrc],
+      frameSrc: ["'self'", PAYSTACK_SCRIPT, PAYSTACK_CHECKOUT],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       formAction: ["'self'"],
-      frameAncestors: ["'self'"],
+      // Clickjacking: this app must never be framed by another site.
+      frameAncestors: ["'none'"],
+      workerSrc: ["'self'", 'blob:'],
+      manifestSrc: ["'self'"],
       upgradeInsecureRequests: IS_PROD ? [] : null,
     },
   },
   crossOriginEmbedderPolicy: false,
+  // Stops another origin from reading our images/JSON through a tag include.
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
   hsts: IS_PROD
     ? { maxAge: 63072000, includeSubDomains: true, preload: true }
     : false,
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  // Legacy Flash/PDF cross-domain policies, and MIME sniffing.
+  permittedCrossDomainPolicies: { permittedPolicies: 'none' },
+  noSniff: true,
+  frameguard: { action: 'deny' },
+  hidePoweredBy: true,
 });
+
+/**
+ * Denies the browser access to hardware it has no business using, and stops
+ * this app being embedded. Helmet does not set Permissions-Policy, so it is
+ * added by hand.
+ */
+export const additionalSecurityHeaders: RequestHandler = (_req, res, next) => {
+  res.setHeader(
+    'Permissions-Policy',
+    'geolocation=(), microphone=(), payment=(self), usb=(), magnetometer=(), accelerometer=()',
+  );
+  // Never let a browser or proxy cache an authenticated API response.
+  if (_req.path.startsWith('/api') && !res.getHeader('Cache-Control')) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+};
+
+/**
+ * Forces HTTPS in production.
+ *
+ * Sessions are bearer tokens: served over plain HTTP they can be read off the
+ * wire, so an http:// request is redirected rather than answered. Health checks
+ * are exempt so the platform's probe (which may be internal HTTP) still works.
+ */
+export const enforceHttps: RequestHandler = (req, res, next) => {
+  if (!IS_PROD || process.env.DISABLE_HTTPS_REDIRECT === 'true') return next();
+  if (req.path === '/health' || req.path === '/api/health') return next();
+
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || '')
+    .split(',')[0]
+    .trim();
+  if (proto && proto !== 'https') {
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const target = `https://${req.headers.host}${req.originalUrl}`;
+      return res.redirect(308, target);
+    }
+    return res.status(403).json({ error: 'HTTPS is required.' });
+  }
+  next();
+};
 
 /* ------------------------------------------------------------------ *
  * 2. Strict CORS allow-listing (no extra dependency)
@@ -57,11 +138,22 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .map((o) => o.trim())
   .filter(Boolean);
 
+let warnedAboutOrigins = false;
+
 export const corsMiddleware: RequestHandler = (req, res, next) => {
   const origin = req.headers.origin;
 
   // Same-origin / server-to-server requests have no Origin header.
   if (!origin) return next();
+
+  // In production an unconfigured allow-list means "same origin only". That is
+  // the safe default, but it is easy to misdiagnose, so say it once.
+  if (IS_PROD && allowedOrigins.length === 0 && !warnedAboutOrigins) {
+    warnedAboutOrigins = true;
+    console.warn(
+      '[security] ALLOWED_ORIGINS is not set. Cross-origin browser requests will be refused.',
+    );
+  }
 
   const isAllowed =
     allowedOrigins.includes(origin) ||
@@ -83,6 +175,12 @@ export const corsMiddleware: RequestHandler = (req, res, next) => {
       'Content-Type, Authorization, X-Tenant-ID, X-User-Role, X-Ministry-ID',
     );
     res.setHeader('Access-Control-Max-Age', '600');
+  }
+
+  if (!isAllowed) {
+    // A rejected origin is worth recording: it is either a misconfiguration or
+    // somebody probing the API from another site.
+    void securityEvent('CORS_ORIGIN_REJECTED', req, { origin });
   }
 
   if (req.method === 'OPTIONS') {
@@ -212,8 +310,21 @@ export async function getLockoutState(email: string): Promise<LockoutState> {
  * ------------------------------------------------------------------ */
 const FORBIDDEN_KEYS = ['__proto__', 'constructor', 'prototype'];
 
-function scrub(value: any): any {
-  if (Array.isArray(value)) return value.map(scrub);
+/**
+ * Deepest object nesting accepted in a request body. A deliberately deep
+ * payload is a cheap way to burn CPU in any recursive walk (this one included),
+ * so anything past this depth is dropped rather than followed.
+ */
+const MAX_BODY_DEPTH = 32;
+
+/** Strips NUL bytes, which can truncate strings inside native DB drivers. */
+const scrubString = (value: string): string =>
+  value.includes('\u0000') ? value.split('\u0000').join('') : value;
+
+function scrub(value: any, depth = 0): any {
+  if (typeof value === 'string') return scrubString(value);
+  if (depth >= MAX_BODY_DEPTH) return undefined;
+  if (Array.isArray(value)) return value.map((v) => scrub(v, depth + 1));
   if (value && typeof value === 'object') {
     for (const key of Object.keys(value)) {
       // Strip prototype-pollution keys and Mongo-style operator keys.
@@ -221,7 +332,7 @@ function scrub(value: any): any {
         delete value[key];
         continue;
       }
-      value[key] = scrub(value[key]);
+      value[key] = scrub(value[key], depth + 1);
     }
   }
   return value;
