@@ -29,6 +29,20 @@ const statusColor = (s: string): any =>
   s === 'inactive' ? 'error' : s === 'visitor' ? 'info' : 'success';
 
 /**
+ * Reads an `active` flag that can arrive in several shapes.
+ *
+ * Postgres sends a real boolean, MySQL sends 1/0, and a value that has been
+ * through JSON can arrive as the string "false". A missing flag counts as
+ * active, so a group saved before the column existed is still offered.
+ */
+const isActiveFlag = (value: unknown): boolean => {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  return !['false', '0', 'no', 'off', ''].includes(String(value).trim().toLowerCase());
+};
+
+/**
  * Member photos live behind an authenticated endpoint, so they are fetched with
  * the auth client rather than set directly as an <img> source. The list only
  * requests a photo for members who actually have one (`hasPhoto`), and the
@@ -176,11 +190,42 @@ export const MemberList: React.FC = () => {
    *   - the Add/Edit Member dialog is opened.
    */
   const loadGroups = useCallback(async () => {
+    // Two independent sources, tried in order. `/groups/options` is the purpose
+    // built one, but if it returns nothing the full list that Settings itself
+    // renders is used instead. The dropdown therefore shows a group whenever
+    // Settings can show it, regardless of what the options endpoint does.
+    let optionsFailure: string | null = null;
+
     try {
       const rows = await churchApi.getGroupOptions();
       const list = Array.isArray(rows) ? rows : [];
+      if (list.length) {
+        setGroups(list);
+        setGroupsError(null);
+        return list;
+      }
+    } catch (e: any) {
+      optionsFailure =
+        e?.friendlyMessage || e?.response?.data?.error || 'the group list could not be loaded';
+      console.error('Failed to load group options:', e);
+    }
+
+    try {
+      const all = await churchApi.getGroups();
+      const list = (Array.isArray(all) ? all : [])
+        .filter((g: any) => isActiveFlag(g?.active))
+        .map((g: any) => ({ value: String(g.id), label: String(g.name ?? 'Unnamed group') }));
+
+      if (list.length) {
+        // Reaching here means the two endpoints disagree. The form still works,
+        // but the mismatch is worth a console warning rather than silence.
+        console.warn(
+          '[members] /church/groups/options returned nothing but /church/groups returned ' +
+            `${list.length} group(s). Falling back to the full list.`,
+        );
+      }
       setGroups(list);
-      setGroupsError(null);
+      setGroupsError(list.length ? null : optionsFailure);
       return list;
     } catch (e: any) {
       // A church with no groups yet still has to be able to register members,
@@ -188,8 +233,9 @@ export const MemberList: React.FC = () => {
       // being hidden behind an empty dropdown.
       const reason =
         e?.friendlyMessage || e?.response?.data?.error || 'the group list could not be loaded';
-      console.error('Failed to load group options:', e);
-      setGroupsError(reason);
+      console.error('Failed to load groups:', e);
+      setGroups([]);
+      setGroupsError(optionsFailure || reason);
       return [];
     }
   }, []);
