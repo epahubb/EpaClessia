@@ -2606,6 +2606,13 @@ async function applyMemberGroup(tenantId: string, body: any, target: any): Promi
 /** Why a portal login could not be created, beyond the two generic cases. */
 export type PortalFailureReason = PortalSkipReason | 'username_taken' | 'invalid_username' | 'weak_password';
 
+/**
+ * The `reason?: undefined` / `message?: undefined` members on the success
+ * variant are load-bearing; see the note on ActivationCheck in
+ * src/lib/memberPortal.ts. Without `strictNullChecks`, TypeScript does not
+ * narrow a union by a boolean discriminant, so reading `.reason` after
+ * `if (!portalAccess.created)` would not compile.
+ */
 export type PortalAccessResult =
   | {
       created: true;
@@ -2616,6 +2623,8 @@ export type PortalAccessResult =
       emailSent: boolean;
       smsSent: boolean;
       reset: boolean;
+      reason?: undefined;
+      message?: undefined;
     }
   | { created: false; reason: PortalFailureReason; message: string };
 

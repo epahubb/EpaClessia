@@ -215,7 +215,9 @@ export const PORTAL_PASSWORD_MIN_LENGTH = 8;
  * list on a desk. A length floor and a rejection of the obvious guesses is the
  * honest trade-off, and the member is told to change it at first sign-in.
  */
-export function validatePortalPassword(password: unknown): { ok: true } | { ok: false; error: string } {
+export function validatePortalPassword(
+  password: unknown,
+): { ok: true; error?: undefined } | { ok: false; error: string } {
   const value = String(password ?? '');
   if (value.length < PORTAL_PASSWORD_MIN_LENGTH) {
     return {
@@ -267,8 +269,16 @@ export function activationExpiry(from: Date = new Date()): Date {
   return new Date(from.getTime() + ACTIVATION_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
 }
 
+/**
+ * The `reason?: undefined` / `message?: undefined` members on the success
+ * variant are load-bearing. This project builds without `strictNullChecks`,
+ * and under that setting TypeScript will not narrow a union by a boolean
+ * discriminant, so `if (!check.ok) { check.reason }` fails to compile without
+ * them. Declaring the absent fields as optional-undefined keeps the access
+ * legal while still rejecting misspelled property names.
+ */
 export type ActivationCheck =
-  | { ok: true }
+  | { ok: true; reason?: undefined; message?: undefined }
   | { ok: false; reason: 'unknown' | 'expired' | 'already_active'; message: string };
 
 /**
