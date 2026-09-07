@@ -157,6 +157,10 @@ export const MemberList: React.FC = () => {
   // Groups are not tied to a denomination: every church divides its members up
   // somehow, so this list is loaded regardless of the sections in play.
   const [groups, setGroups] = useState<{ value: string; label: string }[]>([]);
+  // Why the group list is empty, when the reason is something other than "this
+  // church has no groups yet". Swallowing this silently makes an empty dropdown
+  // indistinguishable from a failed request, which is impossible to diagnose.
+  const [groupsError, setGroupsError] = useState<string | null>(null);
 
   /**
    * Loads the group dropdown.
@@ -174,11 +178,18 @@ export const MemberList: React.FC = () => {
   const loadGroups = useCallback(async () => {
     try {
       const rows = await churchApi.getGroupOptions();
-      setGroups(Array.isArray(rows) ? rows : []);
-      return Array.isArray(rows) ? rows : [];
-    } catch {
-      // A church with no groups yet still has to be able to register members;
-      // the helper text below explains the empty list.
+      const list = Array.isArray(rows) ? rows : [];
+      setGroups(list);
+      setGroupsError(null);
+      return list;
+    } catch (e: any) {
+      // A church with no groups yet still has to be able to register members,
+      // so this never blocks the form -- but the reason is reported instead of
+      // being hidden behind an empty dropdown.
+      const reason =
+        e?.friendlyMessage || e?.response?.data?.error || 'the group list could not be loaded';
+      console.error('Failed to load group options:', e);
+      setGroupsError(reason);
       return [];
     }
   }, []);
@@ -290,9 +301,11 @@ export const MemberList: React.FC = () => {
       label: 'Group',
       type: 'select',
       options: groups,
-      helperText: groups.length
-        ? 'A member belongs to one group only. Manage the list under Settings \u203a Groups.'
-        : 'No groups yet \u2014 add them under Settings \u203a Groups and they will appear here.',
+      helperText: groupsError
+        ? `Groups could not be loaded: ${groupsError}`
+        : groups.length
+          ? 'A member belongs to one group only. Manage the list under Settings \u203a Groups.'
+          : 'No groups yet \u2014 add them under Settings \u203a Groups and they will appear here.',
     },
   ];
 
