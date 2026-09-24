@@ -41,7 +41,7 @@ const SECTIONS: Section[] = [
     { key: 'senderId', label: 'Sender ID' },
     { key: 'enabled', label: 'Enable SMS', type: 'bool' },
   ] },
-  { key: 'payment', label: 'Payments', icon: <CreditCard size={18} />, description: 'Default Paystack keys for platform billing.', fields: [
+  { key: 'payment', label: 'Payments', icon: <CreditCard size={18} />, description: 'Superadmin Paystack keys for SMS bundles, subscription invoices, and separate service-charge settlements.', fields: [
     { key: 'provider', label: 'Provider', type: 'select', options: ['Paystack', 'Flutterwave'] },
     { key: 'publicKey', label: 'Public key' },
     { key: 'secretKey', label: 'Secret key', type: 'password' },
@@ -53,11 +53,10 @@ const SECTIONS: Section[] = [
      * adds the charge on top of the amount; "recipient" deducts it from what
      * the church receives.
      */
-    { key: 'transactionChargeEnabled', label: 'Apply a transaction charge', type: 'bool' },
-    { key: 'transactionChargePercent', label: 'Charge percentage (%)', type: 'number' },
+    { key: 'transactionChargeEnabled', label: 'Accrue a service charge on church collections', type: 'bool' },
+    { key: 'transactionChargePercent', label: 'Service charge percentage (%)', type: 'number' },
     { key: 'transactionChargeFlat', label: 'Flat charge per transaction', type: 'number' },
     { key: 'transactionChargeCap', label: 'Maximum charge (0 = no cap)', type: 'number' },
-    { key: 'transactionChargeBearer', label: 'Who pays the charge', type: 'select', options: ['payer', 'recipient'] },
   ] },
   { key: 'security', label: 'Security', icon: <ShieldCheck size={18} />, description: 'Authentication & session policy.', fields: [
     { key: 'passwordMinLength', label: 'Minimum password length', type: 'number' },

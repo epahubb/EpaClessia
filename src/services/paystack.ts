@@ -28,8 +28,7 @@ function authHeaders(secretKey?: string) {
 
 /**
  * Initialize a Paystack transaction. `amount` is in major units (e.g. GHS 50.00),
- * converted here to the subunit Paystack expects. Pass `secretKey` to use a
- * specific church's Paystack account instead of the platform default.
+ * converted here to the subunit Paystack expects. Pass the owner account's `secretKey`: a church key for donations/dues, or the platform key for SMS, subscriptions and service-charge settlements.
  */
 export async function initializeTransaction(params: {
   email: string;
@@ -39,12 +38,6 @@ export async function initializeTransaction(params: {
   metadata?: Record<string, unknown>;
   callback_url?: string;
   secretKey?: string;
-  /** Paystack subaccount that receives the church share. */
-  subaccount?: string;
-  /** Flat amount retained by the platform, in major currency units. */
-  transactionCharge?: number;
-  /** Which Paystack account absorbs Paystack's own processing fee. */
-  bearer?: 'account' | 'subaccount';
 }) {
   const response = await axios.post(
     `${PAYSTACK_BASE_URL}/transaction/initialize`,
@@ -55,9 +48,6 @@ export async function initializeTransaction(params: {
       reference: params.reference,
       metadata: params.metadata || {},
       callback_url: params.callback_url,
-      ...(params.subaccount ? { subaccount: params.subaccount } : {}),
-      ...(params.transactionCharge !== undefined ? { transaction_charge: Math.round(Number(params.transactionCharge) * 100) } : {}),
-      ...(params.bearer ? { bearer: params.bearer } : {}),
     },
     { headers: authHeaders(params.secretKey) },
   );

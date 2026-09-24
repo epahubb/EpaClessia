@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import db from '../lib/db';
+import { decryptSensitiveFields } from '../lib/crypto';
 import { AuthRequest } from '../middleware/auth';
 import {
   initializeTransaction,
@@ -9,10 +10,8 @@ import {
 } from '../services/paystack';
 import { parseQrPayload, checkQrToken, checkEventQrWindow } from '../lib/attendance';
 import {
-  getPlatformGateway,
   getTransactionCharge,
   applyTransactionCharge,
-  getChurchPaystackSubaccount,
 } from '../lib/platformSettings';
 
 /**
@@ -31,25 +30,38 @@ async function getTenantSettings(tenantId: string, key: string): Promise<any> {
   const row = await db('church_settings').where({ tenantId, key }).first();
   if (!row) return {};
   try {
-    return JSON.parse(row.value);
+    const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+    return decryptSensitiveFields(parsed) || {};
   } catch {
     return {};
   }
 }
 
-async function splitPaymentFor(tenantId: string, amount: number) {
-  const [gateway, subaccount, chargeSettings] = await Promise.all([
-    getPlatformGateway(),
-    getChurchPaystackSubaccount(tenantId),
+async function churchCollectionFor(tenantId: string, amount: number) {
+  const [paystack, payment, chargeSettings] = await Promise.all([
+    getTenantSettings(tenantId, 'paystack'),
+    getTenantSettings(tenantId, 'payment'),
     getTransactionCharge(),
   ]);
-  if (!gateway.enabled || !isPaystackConfigured(gateway.secretKey)) {
-    throw Object.assign(new Error('The platform Paystack gateway is not configured.'), { status: 503 });
+  const secretKey = String(paystack.secretKey || '');
+  if (paystack.enabled === false || !secretKey) {
+    throw Object.assign(new Error('Your church has not configured its Paystack secret key.'), { status: 503 });
   }
-  if (!subaccount) {
-    throw Object.assign(new Error('Your church does not yet have a Paystack subaccount configured.'), { status: 503 });
-  }
-  return { gateway, subaccount, charge: applyTransactionCharge(amount, chargeSettings) };
+  // The member pays only the church amount. The configured platform charge is
+  // accrued as a church liability and collected later in a separate checkout.
+  const assessed = applyTransactionCharge(amount, { ...chargeSettings, bearer: 'recipient' });
+  return {
+    gateway: {
+      secretKey,
+      currency: String(payment.currency || paystack.currency || 'GHS'),
+    },
+    charge: {
+      ...assessed,
+      totalAmount: assessed.baseAmount,
+      netAmount: Math.max(0, assessed.baseAmount - assessed.chargeAmount),
+      chargeBearer: 'recipient' as const,
+    },
+  };
 }
 
 /**
@@ -278,19 +290,19 @@ router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
       if (alreadyPaid) return res.status(409).json({ error: 'You have already paid this one-time membership due.' });
     }
 
-    const split = await splitPaymentFor(tenantId, amount);
+    const collection = await churchCollectionFor(tenantId, amount);
     const reference = genId('duespay');
     await db('member_dues_payments').insert({
       id: genId('duepay'),
       tenantId,
       duesId: dues.id,
       memberId: member.id,
-      amount: split.charge.baseAmount,
-      currency: split.gateway.currency,
-      chargeAmount: split.charge.chargeAmount,
-      netAmount: split.charge.netAmount,
-      totalAmount: split.charge.totalAmount,
-      chargeBearer: split.charge.chargeBearer,
+      amount: collection.charge.baseAmount,
+      currency: collection.gateway.currency,
+      chargeAmount: collection.charge.chargeAmount,
+      netAmount: collection.charge.netAmount,
+      totalAmount: collection.charge.totalAmount,
+      serviceChargeStatus: 'pending_payment',
       status: 'pending',
       paymentMethod: 'paystack',
       reference,
@@ -299,23 +311,19 @@ router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
     });
 
     const data = await initializeTransaction({
-      secretKey: split.gateway.secretKey,
+      secretKey: collection.gateway.secretKey,
       email: user.email,
-      amount: split.charge.totalAmount,
+      amount: collection.charge.totalAmount,
       reference,
-      currency: split.gateway.currency,
+      currency: collection.gateway.currency,
       callback_url: req.body?.callbackUrl,
-      subaccount: split.subaccount,
-      transactionCharge: split.charge.chargeAmount,
-      bearer: 'subaccount',
       metadata: {
         tenantId,
         memberId: member.id,
         duesId: dues.id,
         duesName: dues.name,
-        churchSubaccount: split.subaccount,
-        baseAmount: split.charge.baseAmount,
-        platformCharge: split.charge.chargeAmount,
+        baseAmount: collection.charge.baseAmount,
+        serviceChargeAccrued: collection.charge.chargeAmount,
         paymentType: 'membership_dues',
       },
     });
@@ -324,9 +332,8 @@ router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
       authorizationUrl: data?.authorization_url,
       reference,
       accessCode: data?.access_code,
-      amount: split.charge.baseAmount,
-      transactionCharge: split.charge.chargeAmount,
-      totalPayable: split.charge.totalAmount,
+      amount: collection.charge.baseAmount,
+      totalPayable: collection.charge.totalAmount,
     });
   } catch (error: any) {
     console.error('Member dues initialize error:', error);
@@ -343,16 +350,22 @@ router.get('/dues/verify/:reference', async (req: AuthRequest, res) => {
       .first();
     if (!payment) return res.status(404).json({ error: 'Dues payment not found.' });
 
-    const gateway = await getPlatformGateway();
-    const data = await verifyTransaction(req.params.reference, gateway.secretKey);
+    const collection = await churchCollectionFor(tenantId, Number(payment.amount || 0));
+    const data = await verifyTransaction(req.params.reference, collection.gateway.secretKey);
     const status = verifiedPaymentMatches(data, {
       reference: req.params.reference,
       amount: Number(payment.totalAmount || payment.amount || 0),
-      currency: payment.currency || gateway.currency,
+      currency: payment.currency || collection.gateway.currency,
     }) ? 'completed' : 'failed';
     await db('member_dues_payments')
       .where({ id: payment.id, tenantId })
-      .update({ status, paidAt: status === 'completed' ? new Date() : null });
+      .update({
+        status,
+        paidAt: status === 'completed' ? new Date() : null,
+        serviceChargeStatus: status === 'completed'
+          ? (Number(payment.chargeAmount || 0) > 0 ? 'outstanding' : 'not_applicable')
+          : 'payment_failed',
+      });
     res.json({ status, reference: req.params.reference, amount: Number(payment.amount || 0) });
   } catch (error) {
     console.error('Member dues verify error:', error);
@@ -419,12 +432,12 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Your account has no email on file, which is required for online giving.' });
     }
 
-    const split = await splitPaymentFor(tenantId, Number(amount));
+    const collection = await churchCollectionFor(tenantId, Number(amount));
     const reference = genId('gift');
     await db('donations').insert({
       tenantId,
-      amount: split.charge.baseAmount,
-      currency: split.gateway.currency,
+      amount: collection.charge.baseAmount,
+      currency: collection.gateway.currency,
       donorName: donorName(user, member),
       paymentMethod: 'paystack',
       purpose: purpose || 'General',
@@ -432,30 +445,26 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       email,
       reference,
       status: 'pending',
-      chargeAmount: split.charge.chargeAmount,
-      netAmount: split.charge.netAmount,
-      chargeBearer: split.charge.chargeBearer,
+      chargeAmount: collection.charge.chargeAmount,
+      netAmount: collection.charge.netAmount,
+      serviceChargeStatus: 'pending_payment',
       createdAt: new Date(),
     });
 
     const data = await initializeTransaction({
-      secretKey: split.gateway.secretKey,
+      secretKey: collection.gateway.secretKey,
       email,
-      amount: split.charge.totalAmount,
+      amount: collection.charge.totalAmount,
       reference,
-      currency: split.gateway.currency,
+      currency: collection.gateway.currency,
       callback_url: callbackUrl,
-      subaccount: split.subaccount,
-      transactionCharge: split.charge.chargeAmount,
-      bearer: 'subaccount',
       metadata: {
         tenantId,
         memberId: member.id,
-        churchSubaccount: split.subaccount,
         purpose: purpose || 'General',
         donorName: donorName(user, member),
-        baseAmount: split.charge.baseAmount,
-        platformCharge: split.charge.chargeAmount,
+        baseAmount: collection.charge.baseAmount,
+        serviceChargeAccrued: collection.charge.chargeAmount,
       },
     });
 
@@ -463,10 +472,8 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       authorizationUrl: data?.authorization_url,
       reference,
       accessCode: data?.access_code,
-      amount: split.charge.baseAmount,
-      transactionCharge: split.charge.chargeAmount,
-      totalPayable: split.charge.totalAmount,
-      chargeBearer: split.charge.chargeBearer,
+      amount: collection.charge.baseAmount,
+      totalPayable: collection.charge.totalAmount,
     });
   } catch (error: any) {
     console.error('Member giving initialize error:', error);
@@ -488,17 +495,22 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
       (email && String(donation.email || '').toLowerCase() === email);
     if (!isOwn) return res.status(403).json({ error: 'This gift is not associated with your account.' });
 
-    const gateway = await getPlatformGateway();
-    const data = await verifyTransaction(reference, gateway.secretKey);
+    const collection = await churchCollectionFor(tenantId, Number(donation.amount || 0));
+    const data = await verifyTransaction(reference, collection.gateway.secretKey);
     const expectedTotal = donation.chargeBearer === 'payer'
       ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
       : Number(donation.amount || 0);
     const newStatus = verifiedPaymentMatches(data, {
       reference,
       amount: expectedTotal,
-      currency: donation.currency || gateway.currency,
+      currency: donation.currency || collection.gateway.currency,
     }) ? 'completed' : 'failed';
-    await db('donations').where({ reference, tenantId }).update({ status: newStatus });
+    await db('donations').where({ reference, tenantId }).update({
+      status: newStatus,
+      serviceChargeStatus: newStatus === 'completed'
+        ? (Number(donation.chargeAmount || 0) > 0 ? 'outstanding' : 'not_applicable')
+        : 'payment_failed',
+    });
 
     res.json({
       status: newStatus,

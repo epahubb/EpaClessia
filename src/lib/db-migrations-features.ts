@@ -554,8 +554,13 @@ export async function applyFeatureMigrations(db: Knex): Promise<void> {
   await addColumn(db, 'sms_purchases', 'totalAmount', (t) => t.decimal('totalAmount', 12, 2));
   await addColumn(db, 'member_dues_payments', 'totalAmount', (t) => t.decimal('totalAmount', 12, 2));
   await addColumn(db, 'member_dues_payments', 'currency', (t) => t.string('currency').defaultTo('GHS'));
+  for (const table of ['donations', 'member_dues_payments']) {
+    await addColumn(db, table, 'serviceChargeStatus', (t) => t.string('serviceChargeStatus'));
+    await addColumn(db, table, 'serviceChargeSettlementId', (t) => t.string('serviceChargeSettlementId'));
+  }
   await addColumn(db, 'sms_purchases', 'gatewayProvider', (t) => t.string('gatewayProvider'));
   await addColumn(db, 'sms_purchases', 'purchasedBy', (t) => t.string('purchasedBy'));
+  await addColumn(db, 'invoices', 'paymentReference', (t) => t.string('paymentReference'));
 
   /* ---------------------------------------------------------------- */
   /* Church settings ownership                                        */

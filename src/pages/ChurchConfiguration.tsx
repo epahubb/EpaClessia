@@ -61,10 +61,9 @@ const SECTIONS: Array<{ key: string; label: string; description: string; fields:
   {
     key: 'paystack',
     label: 'Gateway keys',
-    description: 'Member collections use the platform Paystack keys and settle the church share to its Paystack subaccount. Church keys may be retained for other direct operations.',
+    description: 'Donations and membership dues for this church are collected directly with this church’s own Paystack keys.',
     fields: [
-      { key: 'enabled', label: 'Enable Paystack for this church', type: 'bool' },
-      { key: 'subaccountCode', label: 'Paystack subaccount code', full: true, help: 'Required for split payments, for example ACCT_xxxxxxxxxx.' },
+      { key: 'enabled', label: 'Enable this church’s Paystack account', type: 'bool' },
       { key: 'publicKey', label: 'Public key', full: true },
       { key: 'secretKey', label: 'Secret key', type: 'password', full: true },
     ],

@@ -176,6 +176,15 @@ export const churchApi = {
   createDues: async (data: any) => (await api.post('/church/dues', data)).data,
   updateDues: async (id: string, data: any) => (await api.put(`/church/dues/${id}`, data)).data,
   deleteDues: async (id: string) => (await api.delete(`/church/dues/${id}`)).data,
+  getServiceChargeSummary: async () => (await api.get('/church/service-charges/summary')).data,
+  initializeServiceChargePayment: async (callbackUrl: string) =>
+    (await api.post('/church/service-charges/initialize', { callbackUrl })).data,
+  verifyServiceChargePayment: async (reference: string) =>
+    (await api.get(`/church/service-charges/verify/${encodeURIComponent(reference)}`)).data,
+  initializeSubscriptionPayment: async (invoiceId: string, callbackUrl: string) =>
+    (await api.post(`/church/billing/invoices/${invoiceId}/initialize`, { callbackUrl })).data,
+  verifySubscriptionPayment: async (reference: string) =>
+    (await api.get(`/church/billing/invoices/verify/${encodeURIComponent(reference)}`)).data,
   getInventory: async (params?: any) => unwrap((await api.get('/church/inventory', { params })).data),
   createInventory: async (data: any) => (await api.post('/church/inventory', data)).data,
   updateInventory: async (id: string, data: any) => (await api.put(`/church/inventory/${id}`, data)).data,

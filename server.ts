@@ -127,42 +127,98 @@ async function startServer() {
   });
 
   // Paystack calls this even when a member closes the checkout tab before the
-  // browser returns to us. The signature is verified with the platform key,
-  // because all church collections are platform-owned split transactions.
+  // browser returns to us. Church collection events are verified with that
+  // church's secret key; platform billing events use the superadmin key.
   app.post('/api/v1/paystack/webhook', async (req: any, res) => {
     try {
-      const gateway = await getPlatformGateway();
-      const signature = req.headers['x-paystack-signature'] as string | undefined;
-      if (!verifyWebhookSignature(req.rawBody || Buffer.from(''), signature, gateway.secretKey)) {
-        return res.status(401).json({ error: 'Invalid Paystack signature' });
-      }
-      // Acknowledge event types we do not use; Paystack otherwise retries them.
-      if (req.body?.event !== 'charge.success') return res.status(200).json({ received: true });
-
       const data = req.body?.data || {};
       const reference = String(data.reference || '');
+      const signature = req.headers['x-paystack-signature'] as string | undefined;
       if (!reference) return res.status(200).json({ received: true });
 
+      // Determine which account initialized this reference before verifying the
+      // signature. This lookup is read-only; no unverified body value is ever
+      // written. Church collections use that church's key, while platform
+      // service-charge/SMS/subscription payments use the superadmin key.
       const donation = await db('donations').where({ reference }).first();
+      const duesPayment = donation ? null : await db('member_dues_payments').where({ reference }).first();
+      const invoice = donation || duesPayment
+        ? null
+        : await db('invoices').where({ paymentReference: reference }).first();
+      const settlement = donation || duesPayment || invoice
+        ? null
+        : await db('service_charge_settlements').where({ reference }).first();
+
+      let secretKey = '';
+      let platformGateway: any = null;
+      const tenantId = donation?.tenantId || duesPayment?.tenantId;
+      if (tenantId) {
+        const row = await db('church_settings').where({ tenantId, key: 'paystack' }).first();
+        if (row?.value) {
+          try {
+            const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+            secretKey = String((decryptSensitiveFields(parsed) || {}).secretKey || '');
+          } catch { secretKey = ''; }
+        }
+      } else {
+        platformGateway = await getPlatformGateway();
+        secretKey = platformGateway.secretKey;
+      }
+
+      if (!verifyWebhookSignature(req.rawBody || Buffer.from(''), signature, secretKey)) {
+        return res.status(401).json({ error: 'Invalid Paystack signature' });
+      }
+      if (req.body?.event !== 'charge.success') return res.status(200).json({ received: true });
+
       if (donation) {
-        const expected = donation.chargeBearer === 'payer'
-          ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
-          : Number(donation.amount || 0);
-        if (verifiedPaymentMatches(data, { reference, amount: expected, currency: donation.currency || gateway.currency })) {
-          await db('donations').where({ id: donation.id, tenantId: donation.tenantId }).update({ status: 'completed' });
+        const expected = Number(donation.amount || 0); // member pays church amount only
+        if (verifiedPaymentMatches(data, { reference, amount: expected, currency: donation.currency || 'GHS' })) {
+          await db('donations').where({ id: donation.id, tenantId: donation.tenantId }).update({
+            status: 'completed',
+            serviceChargeStatus: Number(donation.chargeAmount || 0) > 0 ? 'outstanding' : 'not_applicable',
+          });
         }
         return res.status(200).json({ received: true });
       }
 
-      const duesPayment = await db('member_dues_payments').where({ reference }).first();
-      if (duesPayment && verifiedPaymentMatches(data, {
+      if (duesPayment) {
+        if (verifiedPaymentMatches(data, {
+          reference,
+          amount: Number(duesPayment.amount || 0),
+          currency: duesPayment.currency || 'GHS',
+        })) {
+          await db('member_dues_payments').where({ id: duesPayment.id, tenantId: duesPayment.tenantId }).update({
+            status: 'completed',
+            paidAt: new Date(),
+            serviceChargeStatus: Number(duesPayment.chargeAmount || 0) > 0 ? 'outstanding' : 'not_applicable',
+          });
+        }
+        return res.status(200).json({ received: true });
+      }
+
+      if (invoice && verifiedPaymentMatches(data, {
         reference,
-        amount: Number(duesPayment.totalAmount || duesPayment.amount || 0),
-        currency: duesPayment.currency || gateway.currency,
+        amount: Number(invoice.amount || 0),
+        currency: invoice.currency || platformGateway?.currency || 'GHS',
       })) {
-        await db('member_dues_payments')
-          .where({ id: duesPayment.id, tenantId: duesPayment.tenantId })
-          .update({ status: 'completed', paidAt: new Date() });
+        await db.transaction(async (trx) => {
+          await trx('invoices').where({ id: invoice.id, tenantId: invoice.tenantId }).update({ status: 'paid', paidAt: new Date(), paymentMethod: 'Paystack' });
+          await trx('tenants').where({ id: invoice.tenantId }).update({ status: 'active', planId: invoice.planId });
+        });
+        return res.status(200).json({ received: true });
+      }
+
+      if (settlement && verifiedPaymentMatches(data, {
+        reference,
+        amount: Number(settlement.amount || 0),
+        currency: settlement.currency || platformGateway?.currency || 'GHS',
+      })) {
+        await db.transaction(async (trx) => {
+          await trx('service_charge_settlements').where({ id: settlement.id }).update({ status: 'completed', paidAt: new Date() });
+          for (const table of ['donations', 'member_dues_payments']) {
+            await trx(table).where({ tenantId: settlement.tenantId, serviceChargeSettlementId: settlement.id }).update({ serviceChargeStatus: 'settled' });
+          }
+        });
       }
       return res.status(200).json({ received: true });
     } catch (error) {

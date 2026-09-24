@@ -157,6 +157,7 @@ export async function initializeDatabase() {
         table.string('planId').defaultTo('pro');
         table.string('billingCycle').defaultTo('monthly'); // monthly, annually
         table.string('paymentMethod').defaultTo('Paystack MoMo');
+        table.string('paymentReference');
         table.text('description');
         table.timestamp('issueDate').defaultTo(db.fn.now());
         table.timestamp('dueDate');
@@ -506,6 +507,25 @@ export async function initializeDatabase() {
         t.index(['tenantId', 'duesId']);
       });
       console.log('Table "member_dues_payments" created.');
+    }
+
+    // Separate checkouts through the platform Paystack account settle service
+    // charges accrued from church-owned donation and dues transactions.
+    if (!(await db.schema.hasTable('service_charge_settlements'))) {
+      await db.schema.createTable('service_charge_settlements', (t) => {
+        t.string('id').primary();
+        t.string('tenantId').notNullable();
+        t.decimal('amount', 15, 2).notNullable();
+        t.string('currency').defaultTo('GHS');
+        t.string('reference').notNullable();
+        t.string('status').defaultTo('pending');
+        t.string('createdBy');
+        t.timestamp('paidAt');
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'status']);
+        t.unique(['reference']);
+      });
+      console.log('Table "service_charge_settlements" created.');
     }
 
     // Inventory / assets

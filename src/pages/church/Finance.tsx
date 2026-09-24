@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Tabs, Tab, Grid, Card, CardContent, Chip } from '@mui/material';
+import { Box, Typography, Tabs, Tab, Grid, Card, CardContent, Chip, Button, Alert, Stack, CircularProgress } from '@mui/material';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import CrudTable from '../../components/church/CrudTable';
 import churchApi from '../../services/churchApi';
@@ -53,6 +53,103 @@ const paymentDetailFields = (field = 'paymentMethod'): any[] => {
   ];
 };
 
+const ServiceChargesPanel: React.FC = () => {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [paying, setPaying] = useState(false);
+  const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try { setData(await churchApi.getServiceChargeSummary()); }
+    catch (e: any) { setNotice({ severity: 'error', text: e?.friendlyMessage || 'Could not load platform service charges.' }); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const reference = params.get('reference') || params.get('trxref');
+    if (reference?.startsWith('svc_') || reference?.startsWith('invpay_')) {
+      const verify = reference.startsWith('invpay_')
+        ? churchApi.verifySubscriptionPayment(reference)
+        : churchApi.verifyServiceChargePayment(reference);
+      verify
+        .then((result) => setNotice({ severity: result.status === 'completed' ? 'success' : 'error', text: result.status === 'completed' ? (reference.startsWith('invpay_') ? 'Subscription invoice paid successfully.' : 'Platform service charges paid successfully.') : 'The platform payment could not be confirmed.' }))
+        .catch((e: any) => setNotice({ severity: 'error', text: e?.friendlyMessage || 'Could not verify the service-charge payment.' }))
+        .finally(() => { window.history.replaceState({}, '', window.location.pathname); void load(); });
+    } else { void load(); }
+  }, []);
+
+  const pay = async () => {
+    setPaying(true); setNotice(null);
+    try {
+      const result = await churchApi.initializeServiceChargePayment(`${window.location.origin}${window.location.pathname}`);
+      if (!result.authorizationUrl) throw new Error('Paystack did not return a checkout link.');
+      window.location.href = result.authorizationUrl;
+    } catch (e: any) {
+      setNotice({ severity: 'error', text: e?.friendlyMessage || e?.message || 'Could not start payment.' });
+      setPaying(false);
+    }
+  };
+
+  const payInvoice = async (invoiceId: string) => {
+    setPayingInvoiceId(invoiceId); setNotice(null);
+    try {
+      const result = await churchApi.initializeSubscriptionPayment(invoiceId, `${window.location.origin}${window.location.pathname}`);
+      if (!result.authorizationUrl) throw new Error('Paystack did not return a checkout link.');
+      window.location.href = result.authorizationUrl;
+    } catch (e: any) {
+      setNotice({ severity: 'error', text: e?.friendlyMessage || e?.message || 'Could not start subscription payment.' });
+      setPayingInvoiceId(null);
+    }
+  };
+
+  if (loading && !data) return <Box sx={{ py: 6, textAlign: 'center' }}><CircularProgress /></Box>;
+  return (
+    <Stack spacing={2}>
+      {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
+      <Card variant="outlined"><CardContent>
+        <Typography color="text.secondary" variant="body2">Outstanding platform service charges</Typography>
+        <Typography variant="h4" fontWeight={800} sx={{ my: 1 }}>{GHS(data?.outstanding || 0)}</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Current service charge: {Number(data?.charge?.percent || 0)}%. These charges are collected separately through the superadmin Paystack account; member donations and dues go directly to your church Paystack account.
+        </Typography>
+        <Button variant="contained" onClick={pay} disabled={paying || Number(data?.outstanding || 0) <= 0}>
+          {paying ? 'Opening Paystack…' : 'Pay outstanding service charges'}
+        </Button>
+      </CardContent></Card>
+      <Card variant="outlined"><CardContent>
+        <Typography fontWeight={700} sx={{ mb: 1 }}>Subscription invoices</Typography>
+        <Stack spacing={1}>
+          {(data?.invoices || []).map((invoice: any) => (
+            <Box key={invoice.id} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
+              <Box><Typography variant="body2" fontWeight={700}>{invoice.description || invoice.id}</Typography>
+                <Typography variant="caption" color="text.secondary">{invoice.status} · due {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : '—'}</Typography></Box>
+              <Stack direction="row" spacing={1} alignItems="center"><Typography variant="body2" fontWeight={700}>{GHS(invoice.amount)}</Typography>
+                {invoice.status !== 'paid' && <Button size="small" variant="outlined" onClick={() => payInvoice(invoice.id)} disabled={payingInvoiceId === invoice.id}>{payingInvoiceId === invoice.id ? 'Opening…' : 'Pay'}</Button>}
+              </Stack>
+            </Box>
+          ))}
+          {!(data?.invoices || []).length && <Typography variant="body2" color="text.secondary">No subscription invoices.</Typography>}
+        </Stack>
+      </CardContent></Card>
+      <Card variant="outlined"><CardContent>
+        <Typography fontWeight={700} sx={{ mb: 1 }}>Settlement history</Typography>
+        <Stack spacing={1}>
+          {(data?.history || []).map((row: any) => (
+            <Box key={row.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+              <Typography variant="body2">{row.createdAt ? new Date(row.createdAt).toLocaleDateString() : '—'} · {row.status}</Typography>
+              <Typography variant="body2" fontWeight={700}>{GHS(row.amount)}</Typography>
+            </Box>
+          ))}
+          {!(data?.history || []).length && <Typography variant="body2" color="text.secondary">No settlements yet.</Typography>}
+        </Stack>
+      </CardContent></Card>
+    </Stack>
+  );
+};
+
 const Overview: React.FC = () => {
   const [s, setS] = useState<any>(null);
   useEffect(() => { churchApi.getFinanceSummary().then(setS).catch(() => setS(null)); }, []);
@@ -88,7 +185,10 @@ const Overview: React.FC = () => {
 };
 
 export const Finance: React.FC = () => {
-  const [tab, setTab] = useState(0);
+  const [tab, setTab] = useState(() => {
+    const reference = new URLSearchParams(window.location.search).get('reference') || new URLSearchParams(window.location.search).get('trxref');
+    return reference?.startsWith('svc_') || reference?.startsWith('invpay_') ? 8 : 0;
+  });
   // Purposes and inventory categories are church-defined, so the forms load
   // them instead of relying on a fixed list baked into this page.
   const [purposes, setPurposes] = useState<string[]>(DEFAULT_PURPOSES);
@@ -261,7 +361,7 @@ export const Finance: React.FC = () => {
     { key: 'active', label: 'Active', render: (r: any) => <Chip size="small" label={r.active === false ? 'Hidden' : 'Active'} color={r.active === false ? 'default' : 'success'} /> },
   ];
 
-  const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Member Dues', 'Payment History'];
+  const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Member Dues', 'Platform Charges', 'Payment History'];
   return (
     <Box>
       <Typography variant="h4" fontWeight={800} gutterBottom>Finance</Typography>
@@ -291,7 +391,8 @@ export const Finance: React.FC = () => {
         </Box>
       )}
       {tab === 7 && <CrudTable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={churchApi.createDues} updateRow={churchApi.updateDues} deleteRow={churchApi.deleteDues} addLabel="Set Member Dues" emptyText="No member dues have been set." />}
-      {tab === 8 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
+      {tab === 8 && <ServiceChargesPanel />}
+      {tab === 9 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
     </Box>
   );
 };

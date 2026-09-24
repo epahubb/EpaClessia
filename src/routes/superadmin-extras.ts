@@ -203,17 +203,27 @@ router.get('/church-subscriptions/', async (_req, res) => {
 });
 
 async function transactions() {
-  const invoices = await db('invoices').orderBy('issueDate', 'desc').limit(200);
-  return invoices.map((i: any) => ({
-    id: i.id,
-    tenantId: i.tenantId,
-    tenantName: i.tenantName,
-    amount: Number(i.amount || 0),
-    date: i.paidAt || i.issueDate,
-    planName: (PLANS.find((p) => p.id === i.planId)?.name) || i.planId,
-    status: i.status === 'paid' ? 'success' : i.status === 'failed' ? 'refunded' : 'failed',
-    invoiceUrl: '',
-  }));
+  const [invoices, charges] = await Promise.all([
+    db('invoices').orderBy('issueDate', 'desc').limit(200),
+    db('service_charge_settlements as s')
+      .leftJoin('tenants as t', 't.id', 's.tenantId')
+      .select('s.*', 't.name as tenantName')
+      .orderBy('s.createdAt', 'desc').limit(200),
+  ]);
+  return [
+    ...invoices.map((i: any) => ({
+      id: i.id, tenantId: i.tenantId, tenantName: i.tenantName,
+      amount: Number(i.amount || 0), date: i.paidAt || i.issueDate,
+      planName: (PLANS.find((p) => p.id === i.planId)?.name) || i.planId,
+      status: i.status === 'paid' ? 'success' : i.status === 'failed' ? 'refunded' : 'failed', invoiceUrl: '',
+    })),
+    ...charges.map((c: any) => ({
+      id: c.id, tenantId: c.tenantId, tenantName: c.tenantName,
+      amount: Number(c.amount || 0), date: c.paidAt || c.createdAt,
+      planName: 'Platform service charges',
+      status: c.status === 'completed' ? 'success' : c.status === 'failed' ? 'refunded' : 'failed', invoiceUrl: '',
+    })),
+  ].sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 200);
 }
 
 router.get('/transactions', async (_req, res) => {
@@ -232,7 +242,10 @@ router.get('/transactions/', async (_req, res) => {
 });
 
 async function revenueMonthly() {
-  const invoices = await db('invoices').where({ status: 'paid' });
+  const [invoices, serviceCharges] = await Promise.all([
+    db('invoices').where({ status: 'paid' }),
+    db('service_charge_settlements').where({ status: 'completed' }),
+  ]);
   const buckets: Record<string, number> = {};
   const now = new Date();
   for (let i = 11; i >= 0; i--) {
@@ -245,6 +258,12 @@ async function revenueMonthly() {
     if (isNaN(when.getTime())) continue;
     const key = `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}`;
     if (key in buckets) buckets[key] += Number(inv.amount || 0);
+  }
+  for (const charge of serviceCharges) {
+    const when = new Date(charge.paidAt || charge.createdAt);
+    if (isNaN(when.getTime())) continue;
+    const key = `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}`;
+    if (key in buckets) buckets[key] += Number(charge.amount || 0);
   }
   return Object.entries(buckets).map(([month, revenue]) => ({ month, revenue }));
 }
@@ -448,13 +467,6 @@ router.put('/churches/:tenantId/settings/:key', async (req, res) => {
     // Preserve a stored secret when the form posts back the mask rather than a
     // new value, so an unrelated edit cannot wipe live credentials.
     const incoming: Record<string, any> = { ...(req.body || {}) };
-    if (key === 'paystack' && incoming.subaccountCode) {
-      const code = String(incoming.subaccountCode).trim();
-      if (!/^ACCT_[A-Za-z0-9]+$/.test(code)) {
-        return res.status(400).json({ error: 'Enter a valid Paystack subaccount code, for example ACCT_xxxxxxxxxx.' });
-      }
-      incoming.subaccountCode = code;
-    }
     for (const field of SENSITIVE_SETTING_KEYS) {
       if (field in incoming) {
         const v = incoming[field];
@@ -490,7 +502,7 @@ router.post('/churches/settings/apply-to-all/:key', async (req, res) => {
   try {
     const { key } = req.params;
     if (key === 'paystack') {
-      return res.status(400).json({ error: 'Paystack subaccounts are unique to each church and cannot be applied in bulk.' });
+      return res.status(400).json({ error: 'Paystack API keys are unique to each church and cannot be applied in bulk.' });
     }
     if (!MANAGED_SECTIONS.includes(key)) {
       return res.status(400).json({ error: `'${key}' is not a platform-managed section.` });

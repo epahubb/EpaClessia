@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import db from '../lib/db';
+import { decryptSensitiveFields } from '../lib/crypto';
 import { AuthRequest } from '../middleware/auth';
 import { sendSMS } from '../services/mnotify';
 import {
@@ -68,7 +69,6 @@ import {
   isSuperadminManagedSetting,
   SUPERADMIN_MANAGED_CHURCH_SETTINGS,
   getPlatformSettings,
-  getChurchPaystackSubaccount,
 } from '../lib/platformSettings';
 import {
   normalizePaymentDetails,
@@ -4074,17 +4074,18 @@ router.get('/events/:id/attendance', async (req: AuthRequest, res) => {
  * per-church (written into church_settings by the platform admin) or once for
  * the whole platform, so a church never has to hold API keys itself.
  */
-async function resolveGateway(tenantId: string): Promise<{ secretKey: string; currency: string; provider: string; subaccount: string; enabled: boolean }> {
-  const platform = await getPlatformGateway();
-  const subaccount = await getChurchPaystackSubaccount(tenantId);
+async function resolveGateway(tenantId: string): Promise<{ secretKey: string; currency: string; provider: string; enabled: boolean }> {
+  const [paystack, payment] = await Promise.all([
+    getTenantSettings(tenantId, 'paystack'),
+    getTenantSettings(tenantId, 'payment'),
+  ]);
   return {
-    // Split transactions must be created and verified by the platform account.
-    // The church's own key cannot participate in the same Paystack transaction.
-    secretKey: platform.secretKey,
-    currency: platform.currency || 'GHS',
-    provider: platform.provider || 'Paystack',
-    subaccount,
-    enabled: platform.enabled,
+    // Donations and membership payments belong to the church and are therefore
+    // initialized and verified with that church's own Paystack secret key.
+    secretKey: String(paystack.secretKey || ''),
+    currency: String(payment.currency || paystack.currency || 'GHS'),
+    provider: String(payment.provider || paystack.provider || 'Paystack'),
+    enabled: paystack.enabled === undefined ? true : Boolean(paystack.enabled),
   };
 }
 
@@ -4156,11 +4157,8 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
   try {
     const gateway = await resolveGateway(tid(req));
     const secretKey = gateway.secretKey;
-    if (!gateway.enabled || !isPaystackConfigured(secretKey)) {
-      return res.status(503).json({ error: 'The platform Paystack gateway is not configured or enabled.' });
-    }
-    if (!gateway.subaccount) {
-      return res.status(503).json({ error: 'This church does not yet have a Paystack subaccount configured for split payments.' });
+    if (!gateway.enabled || !secretKey) {
+      return res.status(503).json({ error: 'This church has not configured its Paystack secret key.' });
     }
     const { amount, email, donorName, purpose, memberId, callbackUrl } = req.body;
     if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'A positive amount is required' });
@@ -4169,7 +4167,16 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
     // The platform transaction charge configured by the super admin applies to
     // every transaction: added on top when the payer bears it, deducted from
     // the church's settlement when the recipient does.
-    const charge = applyTransactionCharge(Number(amount), await getTransactionCharge());
+    const assessed = applyTransactionCharge(Number(amount), {
+      ...(await getTransactionCharge()),
+      bearer: 'recipient',
+    });
+    const charge = {
+      ...assessed,
+      totalAmount: assessed.baseAmount,
+      netAmount: Math.max(0, assessed.baseAmount - assessed.chargeAmount),
+      chargeBearer: 'recipient' as const,
+    };
 
     const reference = genId('gift');
     await db('donations').insert({
@@ -4185,7 +4192,7 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       status: 'pending',
       chargeAmount: charge.chargeAmount,
       netAmount: charge.netAmount,
-      chargeBearer: charge.chargeBearer,
+      serviceChargeStatus: 'pending_payment',
       createdAt: new Date(),
     });
 
@@ -4197,18 +4204,12 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       reference,
       currency: gateway.currency,
       callback_url: callbackUrl,
-      subaccount: gateway.subaccount,
-      transactionCharge: charge.chargeAmount,
-      // The church subaccount absorbs Paystack's processing fee; the platform
-      // retains exactly the configured transaction charge.
-      bearer: 'subaccount',
       metadata: {
         tenantId: tid(req),
-        churchSubaccount: gateway.subaccount,
         purpose: purpose || 'General',
         donorName,
         baseAmount: charge.baseAmount,
-        transactionCharge: charge.chargeAmount,
+        serviceChargeAccrued: charge.chargeAmount,
       },
     });
     res.json({
@@ -4216,9 +4217,7 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       reference,
       accessCode: data?.access_code,
       amount: charge.baseAmount,
-      transactionCharge: charge.chargeAmount,
       totalPayable: charge.totalAmount,
-      chargeBearer: charge.chargeBearer,
     });
   } catch (error) {
     console.error('Giving initialize error:', error);
@@ -4245,11 +4244,210 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
       amount: expectedTotal,
       currency: donation.currency || gateway.currency,
     }) ? 'completed' : 'failed';
-    await db('donations').where({ reference, tenantId: tid(req) }).update({ status: newStatus });
+    await db('donations').where({ reference, tenantId: tid(req) }).update({
+      status: newStatus,
+      serviceChargeStatus: newStatus === 'completed'
+        ? (Number(donation.chargeAmount || 0) > 0 ? 'outstanding' : 'not_applicable')
+        : 'payment_failed',
+    });
     res.json({ status: newStatus, reference });
   } catch (error) {
     console.error('Giving verify error:', error);
     res.status(502).json({ error: 'Failed to verify payment' });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Church subscription invoices (paid to the platform account)        */
+/* ------------------------------------------------------------------ */
+
+router.get('/billing/invoices', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const rows = await db('invoices').where({ tenantId: tid(req) }).orderBy('issueDate', 'desc');
+    res.json({ data: rows });
+  } catch {
+    res.status(500).json({ error: 'Failed to load subscription invoices.' });
+  }
+});
+
+router.post('/billing/invoices/:id/initialize', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const invoice = await db('invoices').where({ id: req.params.id, tenantId }).first();
+    if (!invoice) return res.status(404).json({ error: 'Subscription invoice not found.' });
+    if (invoice.status === 'paid') return res.status(409).json({ error: 'This subscription invoice is already paid.' });
+    const gateway = await getPlatformGateway();
+    if (!gateway.enabled || !isPaystackConfigured(gateway.secretKey)) {
+      return res.status(503).json({ error: 'The superadmin Paystack account is not configured.' });
+    }
+    const email = req.body?.email || (req as any).dbUser?.email || req.user?.email;
+    if (!email) return res.status(400).json({ error: 'A payer email is required by Paystack.' });
+    const reference = genId('invpay');
+    await db('invoices').where({ id: invoice.id, tenantId }).update({ paymentReference: reference, paymentMethod: 'Paystack', status: 'pending' });
+    const data = await initializeTransaction({
+      secretKey: gateway.secretKey,
+      email,
+      amount: Number(invoice.amount || 0),
+      reference,
+      currency: invoice.currency || gateway.currency,
+      callback_url: req.body?.callbackUrl,
+      metadata: { tenantId, invoiceId: invoice.id, purpose: 'church_subscription' },
+    });
+    res.json({ authorizationUrl: data?.authorization_url, accessCode: data?.access_code, reference, amount: Number(invoice.amount || 0) });
+  } catch (error: any) {
+    console.error('Subscription invoice initialize error:', error);
+    res.status(502).json({ error: error?.message || 'Failed to start subscription payment.' });
+  }
+});
+
+router.get('/billing/invoices/verify/:reference', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const invoice = await db('invoices').where({ tenantId, paymentReference: req.params.reference }).first();
+    if (!invoice) return res.status(404).json({ error: 'Subscription payment not found.' });
+    const gateway = await getPlatformGateway();
+    const data = await verifyTransaction(req.params.reference, gateway.secretKey);
+    const paid = verifiedPaymentMatches(data, {
+      reference: req.params.reference,
+      amount: Number(invoice.amount || 0),
+      currency: invoice.currency || gateway.currency,
+    });
+    await db.transaction(async (trx) => {
+      await trx('invoices').where({ id: invoice.id, tenantId }).update({ status: paid ? 'paid' : 'failed', paidAt: paid ? new Date() : null });
+      if (paid) await trx('tenants').where({ id: tenantId }).update({ status: 'active', planId: invoice.planId });
+    });
+    res.json({ status: paid ? 'completed' : 'failed', amount: Number(invoice.amount || 0), reference: req.params.reference });
+  } catch (error) {
+    console.error('Subscription invoice verify error:', error);
+    res.status(502).json({ error: 'Failed to verify subscription payment.' });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Platform service-charge settlement                                 */
+/* ------------------------------------------------------------------ */
+
+async function outstandingServiceChargeRows(tenantId: string) {
+  const outstanding = (q: any) => q
+    .where({ tenantId, status: 'completed' })
+    .where('chargeAmount', '>', 0)
+    .where('serviceChargeStatus', 'outstanding');
+  const [donations, dues] = await Promise.all([
+    outstanding(db('donations')).select('id', 'chargeAmount'),
+    outstanding(db('member_dues_payments')).select('id', 'chargeAmount'),
+  ]);
+  return { donations, dues };
+}
+
+async function completeServiceChargeSettlement(tenantId: string, settlementId: string, paid: boolean) {
+  await db.transaction(async (trx) => {
+    await trx('service_charge_settlements').where({ id: settlementId, tenantId }).update({
+      status: paid ? 'completed' : 'failed',
+      paidAt: paid ? new Date() : null,
+    });
+    for (const table of ['donations', 'member_dues_payments']) {
+      await trx(table).where({ tenantId, serviceChargeSettlementId: settlementId }).update({
+        serviceChargeStatus: paid ? 'settled' : 'outstanding',
+        serviceChargeSettlementId: paid ? settlementId : null,
+      });
+    }
+  });
+}
+
+router.get('/service-charges/summary', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const rows = await outstandingServiceChargeRows(tenantId);
+    const outstanding = [...rows.donations, ...rows.dues]
+      .reduce((sum: number, row: any) => sum + Number(row.chargeAmount || 0), 0);
+    const [history, invoices] = await Promise.all([
+      db('service_charge_settlements').where({ tenantId }).orderBy('createdAt', 'desc').limit(50),
+      db('invoices').where({ tenantId }).orderBy('issueDate', 'desc').limit(50),
+    ]);
+    const charge = await getTransactionCharge();
+    res.json({ outstanding, currency: (await getPlatformGateway()).currency, charge, history, invoices });
+  } catch (error) {
+    console.error('Service charge summary error:', error);
+    res.status(500).json({ error: 'Failed to load platform service charges.' });
+  }
+});
+
+router.post('/service-charges/initialize', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  let settlementId: string | null = null;
+  try {
+    const tenantId = tid(req);
+    const gateway = await getPlatformGateway();
+    if (!gateway.enabled || !isPaystackConfigured(gateway.secretKey)) {
+      return res.status(503).json({ error: 'The superadmin Paystack account is not configured.' });
+    }
+    const email = req.body?.email || (req as any).dbUser?.email || req.user?.email;
+    if (!email) return res.status(400).json({ error: 'A payer email is required by Paystack.' });
+
+    const rows = await outstandingServiceChargeRows(tenantId);
+    const amount = [...rows.donations, ...rows.dues]
+      .reduce((sum: number, row: any) => sum + Number(row.chargeAmount || 0), 0);
+    if (amount <= 0) return res.status(400).json({ error: 'There are no outstanding platform service charges.' });
+
+    settlementId = genId('svcsettle');
+    const reference = genId('svc');
+    await db.transaction(async (trx) => {
+      await trx('service_charge_settlements').insert({
+        id: settlementId,
+        tenantId,
+        amount,
+        currency: gateway.currency,
+        reference,
+        status: 'pending',
+        createdBy: req.user?.uid || null,
+        createdAt: new Date(),
+      });
+      if (rows.donations.length) {
+        await trx('donations').where({ tenantId }).whereIn('id', rows.donations.map((row: any) => row.id)).update({
+          serviceChargeStatus: 'settlement_pending', serviceChargeSettlementId: settlementId,
+        });
+      }
+      if (rows.dues.length) {
+        await trx('member_dues_payments').where({ tenantId }).whereIn('id', rows.dues.map((row: any) => row.id)).update({
+          serviceChargeStatus: 'settlement_pending', serviceChargeSettlementId: settlementId,
+        });
+      }
+    });
+
+    const data = await initializeTransaction({
+      secretKey: gateway.secretKey,
+      email,
+      amount,
+      reference,
+      currency: gateway.currency,
+      callback_url: req.body?.callbackUrl,
+      metadata: { tenantId, settlementId, purpose: 'platform_service_charges' },
+    });
+    res.json({ authorizationUrl: data?.authorization_url, accessCode: data?.access_code, reference, amount, currency: gateway.currency });
+  } catch (error: any) {
+    if (settlementId) await completeServiceChargeSettlement(tid(req), settlementId, false).catch(() => {});
+    console.error('Service charge initialize error:', error);
+    res.status(502).json({ error: error?.message || 'Failed to start the platform service-charge payment.' });
+  }
+});
+
+router.get('/service-charges/verify/:reference', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const settlement = await db('service_charge_settlements')
+      .where({ tenantId, reference: req.params.reference }).first();
+    if (!settlement) return res.status(404).json({ error: 'Service-charge payment not found.' });
+    const gateway = await getPlatformGateway();
+    const data = await verifyTransaction(req.params.reference, gateway.secretKey);
+    const paid = verifiedPaymentMatches(data, {
+      reference: req.params.reference,
+      amount: Number(settlement.amount || 0),
+      currency: settlement.currency || gateway.currency,
+    });
+    await completeServiceChargeSettlement(tenantId, settlement.id, paid);
+    res.json({ status: paid ? 'completed' : 'failed', amount: Number(settlement.amount || 0), reference: req.params.reference });
+  } catch (error) {
+    console.error('Service charge verify error:', error);
+    res.status(502).json({ error: 'Failed to verify the service-charge payment.' });
   }
 });
 
@@ -4519,7 +4717,8 @@ async function getTenantSettings(tenantId: string, key: string): Promise<any> {
   const row = await db('church_settings').where({ tenantId, key }).first();
   if (!row) return {};
   try {
-    return JSON.parse(row.value);
+    const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+    return decryptSensitiveFields(parsed) || {};
   } catch {
     return {};
   }
@@ -5368,11 +5567,11 @@ router.post('/sms/purchase/initialize', requireRole('CHURCH_ADMIN', 'PASTOR'), a
     const pkg = await db('sms_packages').where({ id: packageId, active: true }).first();
     if (!pkg) return res.status(404).json({ error: 'SMS package not found' });
 
-    const paystackSettings = await getTenantSettings(tenantId, 'paystack');
-    const secretKey = paystackSettings.secretKey;
-    if (!isPaystackConfigured(secretKey)) {
+    const platformGateway = await getPlatformGateway();
+    const secretKey = platformGateway.secretKey;
+    if (!platformGateway.enabled || !isPaystackConfigured(secretKey)) {
       return res.status(503).json({
-        error: 'Paystack is not configured. Add your Paystack secret key in church settings.',
+        error: 'The platform Paystack account for SMS bundle purchases is not configured.',
       });
     }
 
@@ -5385,7 +5584,7 @@ router.post('/sms/purchase/initialize', requireRole('CHURCH_ADMIN', 'PASTOR'), a
       email: payerEmail,
       amount: Number(pkg.price || 0),
       reference,
-      currency: pkg.currency || 'GHS',
+      currency: pkg.currency || platformGateway.currency || 'GHS',
       callback_url: callbackUrl,
       metadata: { tenantId, packageId: pkg.id, credits: Number(pkg.credits || 0), purpose: 'sms_bundle' },
     });
@@ -5414,8 +5613,8 @@ router.post('/sms/purchase', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
 
     const tenant = await db('tenants').where({ id: tenantId }).first();
 
-    const paystackSettings = await getTenantSettings(tenantId, 'paystack');
-    const paystackReady = isPaystackConfigured(paystackSettings.secretKey);
+    const platformGateway = await getPlatformGateway();
+    const paystackReady = platformGateway.enabled && isPaystackConfigured(platformGateway.secretKey);
     const price = Number(pkg.price || 0);
 
     /*
@@ -5428,7 +5627,7 @@ router.post('/sms/purchase', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
     if (price > 0 && !reference) {
       if (!paystackReady) {
         return res.status(503).json({
-          error: 'Paystack is not configured, so paid SMS bundles cannot be purchased. Add your Paystack secret key in church settings.',
+          error: 'The platform Paystack account is not configured, so paid SMS bundles cannot be purchased.',
         });
       }
       return res.status(402).json({
@@ -5446,17 +5645,14 @@ router.post('/sms/purchase', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
       }
 
       try {
-        const verification: any = await verifyTransaction(reference, paystackSettings.secretKey);
-        const ok = verification?.status === true || verification?.data?.status === 'success';
+        const verification: any = await verifyTransaction(reference, platformGateway.secretKey);
+        const ok = verifiedPaymentMatches(verification, {
+          reference,
+          amount: price,
+          currency: pkg.currency || platformGateway.currency || 'GHS',
+        });
         if (!ok) {
-          return res.status(402).json({ error: 'Payment could not be verified' });
-        }
-
-        // Confirm the amount actually paid covers the package price. Paystack
-        // reports amounts in the minor unit (pesewas), hence the x100.
-        const paidMinor = Number(verification?.data?.amount ?? 0);
-        if (paidMinor > 0 && paidMinor < Math.round(price * 100)) {
-          return res.status(402).json({ error: 'The amount paid does not cover the price of this SMS bundle.' });
+          return res.status(402).json({ error: 'Payment could not be verified for the exact SMS bundle amount.' });
         }
       } catch (verr) {
         console.error('SMS purchase verification error:', verr);
