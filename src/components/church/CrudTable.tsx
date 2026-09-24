@@ -205,6 +205,11 @@ export const CrudTable: React.FC<Props> = ({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>({});
+  // Snapshot of the values when the edit dialog opened. Sending every field
+  // back on every edit used to submit blank date inputs as empty strings, which
+  // Postgres rejects for timestamp columns and caused otherwise valid edits to
+  // be rolled back. It also overwrote unrelated values.
+  const [initialForm, setInitialForm] = useState<any>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -222,7 +227,7 @@ export const CrudTable: React.FC<Props> = ({
   const openCreate = () => {
     let init: any = {};
     fields.forEach(f => { init = setField(init, f.name, blankFor(f)); });
-    setForm(init); setEditing(null); setError(null); setOpen(true);
+    setForm(init); setInitialForm(init); setEditing(null); setError(null); setOpen(true);
     // Refresh any option lists this form depends on, so a group or office
     // created moments ago on another screen is already selectable here.
     onDialogOpen?.(null);
@@ -244,7 +249,7 @@ export const CrudTable: React.FC<Props> = ({
       }
       init = setField(init, f.name, stored ?? blankFor(f));
     });
-    setForm(init); setEditing(row); setError(null); setOpen(true);
+    setForm(init); setInitialForm(init); setEditing(row); setError(null); setOpen(true);
     onDialogOpen?.(row);
   };
   /** Fields currently applicable, given what the user has chosen so far. */
@@ -260,10 +265,29 @@ export const CrudTable: React.FC<Props> = ({
       let payload: any = {};
       visibleFields.forEach(f => {
         if (f.type === 'section') return;
-        payload = setField(payload, f.name, getField(form, f.name));
+        const value = getField(form, f.name);
+        // Updates are PATCH-like even though the endpoint uses PUT: submit only
+        // what the user actually changed. Apart from preventing invalid blank
+        // dates, this stops an edit to a phone number from clearing a photo or
+        // replacing a relationship loaded by another screen.
+        if (editing && JSON.stringify(value) === JSON.stringify(getField(initialForm, f.name))) return;
+        if (editing && f.name.includes('.')) {
+          // Nested groups (for example `medical.bloodGroup`) are normalized by
+          // the server as one object. If one child changes, send the complete
+          // group so unchanged siblings are not mistaken for fields to clear.
+          const root = f.name.split('.')[0];
+          payload = setField(payload, root, getField(form, root));
+        } else {
+          payload = setField(payload, f.name, value);
+        }
       });
-      if (editing && updateRow) await updateRow(editing[idKey], payload);
-      else if (createRow) await createRow(payload);
+      if (editing && updateRow) {
+        // Clicking Save without making a change is a harmless close, not an API
+        // error saying that no updatable fields were supplied.
+        if (Object.keys(payload).length > 0) await updateRow(editing[idKey], payload);
+      } else if (createRow) {
+        await createRow(payload);
+      }
       setOpen(false); await reload();
     } catch (e: any) {
       // Shown inside the dialog instead of an alert() so the user keeps their

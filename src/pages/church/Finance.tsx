@@ -93,10 +93,14 @@ export const Finance: React.FC = () => {
   // them instead of relying on a fixed list baked into this page.
   const [purposes, setPurposes] = useState<string[]>(DEFAULT_PURPOSES);
   const [categories, setCategories] = useState<string[]>([]);
+  const [members, setMembers] = useState<{ value: string; label: string }[]>([]);
 
   const loadLists = () => {
     churchApi.getPurposeOptions().then(p => { if (p.length) setPurposes(p); }).catch(() => {});
     churchApi.getInventoryCategories().then(c => { if (c.length) setCategories(c); }).catch(() => {});
+    churchApi.getMembers({ limit: 500 }).then(rows => setMembers((rows || [])
+      .filter((m: any) => m.membershipStatus !== 'visitor')
+      .map((m: any) => ({ value: m.id, label: `${m.firstName || ''} ${m.lastName || ''}`.trim() || m.membershipId || m.id })))).catch(() => setMembers([]));
   };
   useEffect(() => { loadLists(); }, []);
 
@@ -183,7 +187,7 @@ export const Finance: React.FC = () => {
     { key: 'remaining', label: 'Remaining', render: (r: any) => GHS((Number(r.allocated) || 0) - (Number(r.spent) || 0)) },
   ];
   const pledgeFields: any[] = [
-    { name: 'memberName', label: 'Member', required: true },
+    { name: 'memberId', label: 'Member', type: 'select', options: members, required: true, helperText: 'Only registered members of this church can make a pledge.' },
     {
       name: 'purpose', label: 'Purpose', type: 'autocomplete', options: asOptions(purposes),
       defaultValue: 'Building Fund', freeSolo: true,
@@ -202,6 +206,30 @@ export const Finance: React.FC = () => {
     { key: 'amountPaid', label: 'Paid', render: (r: any) => GHS(r.amountPaid) },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'active'} color={r.status === 'fulfilled' ? 'success' : r.status === 'cancelled' ? 'default' : 'warning'} /> },
   ];
+  const duesFields: any[] = [
+    { name: 'name', label: 'Dues name', required: true, helperText: 'For example: Monthly Welfare Dues.' },
+    { name: 'description', label: 'Description', type: 'textarea' },
+    { name: 'amount', label: 'Amount per collection (GHS)', type: 'number', required: true },
+    { name: 'frequency', label: 'Collection frequency', type: 'select', required: true, defaultValue: 'monthly', options: [
+      { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' },
+      { value: 'quarterly', label: 'Quarterly' }, { value: 'yearly', label: 'Yearly' },
+      { value: 'one_time', label: 'One time' },
+    ] },
+    { name: 'startDate', label: 'Collection starts', type: 'date', required: true },
+    { name: 'endDate', label: 'Collection ends (optional)', type: 'date' },
+    { name: 'collectionDay', label: 'Collection day (1–31)', type: 'number', helperText: 'For monthly dues, enter the day of the month.' },
+    { name: 'recurring', label: 'Recurring dues', type: 'checkbox', defaultValue: true },
+    { name: 'active', label: 'Active', type: 'checkbox', defaultValue: true },
+  ];
+  const duesCols: any[] = [
+    { key: 'name', label: 'Dues' },
+    { key: 'amount', label: 'Amount', render: (r: any) => GHS(r.amount) },
+    { key: 'frequency', label: 'Frequency', render: (r: any) => String(r.frequency || 'monthly').replace('_', ' ') },
+    { key: 'startDate', label: 'Starts', render: (r: any) => r.startDate ? new Date(r.startDate).toLocaleDateString() : '—' },
+    { key: 'recurring', label: 'Recurring', render: (r: any) => <Chip size="small" label={r.recurring ? 'Yes' : 'No'} color={r.recurring ? 'info' : 'default'} /> },
+    { key: 'active', label: 'Status', render: (r: any) => <Chip size="small" label={r.active ? 'Active' : 'Inactive'} color={r.active ? 'success' : 'default'} /> },
+  ];
+
   const invFields: any[] = [
     { name: 'name', label: 'Item name', required: true },
     {
@@ -233,7 +261,7 @@ export const Finance: React.FC = () => {
     { key: 'active', label: 'Active', render: (r: any) => <Chip size="small" label={r.active === false ? 'Hidden' : 'Active'} color={r.active === false ? 'default' : 'success'} /> },
   ];
 
-  const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Payment History'];
+  const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Member Dues', 'Payment History'];
   return (
     <Box>
       <Typography variant="h4" fontWeight={800} gutterBottom>Finance</Typography>
@@ -262,7 +290,8 @@ export const Finance: React.FC = () => {
           />
         </Box>
       )}
-      {tab === 7 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
+      {tab === 7 && <CrudTable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={churchApi.createDues} updateRow={churchApi.updateDues} deleteRow={churchApi.deleteDues} addLabel="Set Member Dues" emptyText="No member dues have been set." />}
+      {tab === 8 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
     </Box>
   );
 };

@@ -44,6 +44,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { usePortalProfile } from '../hooks/usePortalProfile';
 import type { PortalFeature } from '../lib/denominations';
+import { ThemeToggle } from '../components/ThemeToggle';
 
 const drawerWidth = 240;
 
@@ -176,6 +177,17 @@ export const ChurchAdminLayout: React.FC = () => {
               {user?.tenant?.name}
             </Typography>
             
+            <ThemeToggle />
+            <Button
+              variant="outlined"
+              color="inherit"
+              size="small"
+              startIcon={<LogoutIcon fontSize="small" />}
+              onClick={handleLogout}
+              sx={{ ml: 1 }}
+            >
+              Logout
+            </Button>
             <Tooltip title="Account settings">
               <IconButton onClick={handleMenuOpen} sx={{ p: 0 }}>
                 <Avatar sx={{ bgcolor: 'primary.main' }}>

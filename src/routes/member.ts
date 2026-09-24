@@ -165,6 +165,79 @@ router.get('/giving', async (req: AuthRequest, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Member pledges and church dues                                     */
+/* ------------------------------------------------------------------ */
+
+router.get('/pledges', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId, member } = ctx(req);
+    if (!member || member.membershipStatus === 'visitor') {
+      return res.status(403).json({ error: 'Only registered church members can view pledges.' });
+    }
+    const rows = await db('pledges')
+      .where({ tenantId, memberId: member.id })
+      .orderBy('createdAt', 'desc');
+    res.json({ data: rows });
+  } catch (error) {
+    console.error('Member pledges fetch error:', error);
+    res.status(500).json({ error: 'Failed to load your pledges' });
+  }
+});
+
+router.post('/pledges', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId, member } = ctx(req);
+    if (!member || member.membershipStatus === 'visitor') {
+      return res.status(403).json({ error: 'Only registered church members can make a pledge.' });
+    }
+    const amount = Number(req.body?.amountPledged);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Please enter a pledge amount greater than zero.' });
+    }
+    let dueDate: Date | null = null;
+    if (req.body?.dueDate) {
+      dueDate = new Date(req.body.dueDate);
+      if (Number.isNaN(dueDate.getTime())) return res.status(400).json({ error: 'Please choose a valid due date.' });
+    }
+    const record = {
+      id: genId('pld'),
+      tenantId,
+      memberId: member.id,
+      memberName: [member.firstName, member.lastName].filter(Boolean).join(' ') || 'Member',
+      purpose: String(req.body?.purpose || 'General').trim() || 'General',
+      amountPledged: amount,
+      amountPaid: 0,
+      currency: 'GHS',
+      status: 'active',
+      dueDate,
+      createdAt: new Date(),
+    };
+    await db('pledges').insert(record);
+    res.status(201).json(record);
+  } catch (error) {
+    console.error('Member pledge create error:', error);
+    res.status(500).json({ error: 'Failed to save your pledge' });
+  }
+});
+
+router.get('/dues', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId, member } = ctx(req);
+    if (!member || member.membershipStatus === 'visitor') {
+      return res.status(403).json({ error: 'Only registered church members can view member dues.' });
+    }
+    const [schedules, payments] = await Promise.all([
+      db('member_dues').where({ tenantId, active: true }).orderBy('startDate', 'asc'),
+      db('member_dues_payments').where({ tenantId, memberId: member.id }).orderBy('paidAt', 'desc'),
+    ]);
+    res.json({ schedules, payments });
+  } catch (error) {
+    console.error('Member dues fetch error:', error);
+    res.status(500).json({ error: 'Failed to load member dues' });
+  }
+});
+
+/* ------------------------------------------------------------------ */
 /* Annual contribution statement                                      */
 /* ------------------------------------------------------------------ */
 router.get('/giving/statement', async (req: AuthRequest, res) => {

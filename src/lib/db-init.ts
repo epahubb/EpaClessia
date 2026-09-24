@@ -462,6 +462,47 @@ export async function initializeDatabase() {
       console.log('Table "pledges" created.');
     }
 
+    // Member dues schedules. A schedule describes what every member owes and
+    // how often; individual payments are stored separately so a member's
+    // financial statement can show dues alongside giving and pledges.
+    if (!(await db.schema.hasTable('member_dues'))) {
+      await db.schema.createTable('member_dues', (t) => {
+        t.string('id').primary();
+        t.string('tenantId').notNullable();
+        t.string('name').notNullable();
+        t.text('description');
+        t.decimal('amount', 15, 2).notNullable();
+        t.string('currency').defaultTo('GHS');
+        t.string('frequency').defaultTo('monthly');
+        t.timestamp('startDate');
+        t.timestamp('endDate');
+        t.integer('collectionDay');
+        t.boolean('recurring').defaultTo(true);
+        t.boolean('active').defaultTo(true);
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'active']);
+      });
+      console.log('Table "member_dues" created.');
+    }
+
+    if (!(await db.schema.hasTable('member_dues_payments'))) {
+      await db.schema.createTable('member_dues_payments', (t) => {
+        t.string('id').primary();
+        t.string('tenantId').notNullable();
+        t.string('duesId').notNullable();
+        t.string('memberId').notNullable();
+        t.decimal('amount', 15, 2).notNullable();
+        t.string('status').defaultTo('completed');
+        t.string('paymentMethod');
+        t.string('reference');
+        t.timestamp('paidAt').defaultTo(db.fn.now());
+        t.timestamp('createdAt').defaultTo(db.fn.now());
+        t.index(['tenantId', 'memberId']);
+        t.index(['tenantId', 'duesId']);
+      });
+      console.log('Table "member_dues_payments" created.');
+    }
+
     // Inventory / assets
     if (!(await db.schema.hasTable('inventory'))) {
       await db.schema.createTable('inventory', (t) => {

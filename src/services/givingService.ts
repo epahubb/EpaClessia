@@ -65,6 +65,21 @@ export const givingService = {
     return res.data;
   },
 
+  getPledges: async (): Promise<any[]> => {
+    const res = await api.get('/member/pledges');
+    return res.data?.data || [];
+  },
+
+  createPledge: async (payload: { amountPledged: number; purpose?: string; dueDate?: string | null }): Promise<any> => {
+    const res = await api.post('/member/pledges', payload);
+    return res.data;
+  },
+
+  getDues: async (): Promise<{ schedules: any[]; payments: any[] }> => {
+    const res = await api.get('/member/dues');
+    return res.data;
+  },
+
   initialize: async (payload: {
     amount: number;
     purpose?: string;

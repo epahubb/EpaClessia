@@ -3176,8 +3176,8 @@ router.get('/members/:id/details', async (req: AuthRequest, res) => {
     if (!member) return res.status(404).json({ error: 'Member not found' });
 
     const personColumns = ['id', 'firstName', 'lastName', 'membershipId', 'email', 'phone', 'membershipStatus'];
-    const [family, familyMembers, spouse, parent, linkedChildren, ministries, group, positions, branch] =
-      await Promise.all([
+    const [family, familyMembers, spouse, parent, linkedChildren, ministries, group, positions, branch,
+      donations, memberPledges, duesSchedules, duesPayments] = await Promise.all([
         member.familyId
           ? db('families').where({ id: member.familyId, tenantId }).first()
           : Promise.resolve(null),
@@ -3222,9 +3222,26 @@ router.get('/members/:id/details', async (req: AuthRequest, res) => {
         member.branchId
           ? db('branches').where({ id: member.branchId, tenantId }).first()
           : Promise.resolve(null),
+        db('donations').where({ tenantId }).where(function () {
+          this.where('memberId', member.id);
+          if (member.email) {
+            this.orWhere(function () {
+              this.whereNull('memberId').whereRaw('lower(email) = ?', [String(member.email).toLowerCase()]);
+            });
+          }
+        }).orderBy('createdAt', 'desc'),
+        db('pledges').where({ tenantId, memberId: member.id }).orderBy('createdAt', 'desc'),
+        db('member_dues').where({ tenantId }).orderBy('startDate', 'desc'),
+        db('member_dues_payments').where({ tenantId, memberId: member.id }).orderBy('paidAt', 'desc'),
       ]);
 
     const ministryIds = (ministries as any[]).map((row) => row.ministryId).filter(Boolean);
+    const completedGiving = (donations as any[]).filter((row) => row.status === 'completed');
+    const givingTotal = completedGiving.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const pledgedTotal = (memberPledges as any[]).reduce((sum, row) => sum + Number(row.amountPledged || 0), 0);
+    const pledgePaid = (memberPledges as any[]).reduce((sum, row) => sum + Number(row.amountPaid || 0), 0);
+    const duesPaid = (duesPayments as any[]).filter((row) => row.status === 'completed')
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
     res.json({
       member: expandMemberProfile(member, ministryIds),
       connections: {
@@ -3237,6 +3254,19 @@ router.get('/members/:id/details', async (req: AuthRequest, res) => {
         group,
         positions,
         branch,
+        financial: {
+          donations,
+          pledges: memberPledges,
+          duesSchedules,
+          duesPayments,
+          summary: {
+            givingTotal,
+            pledgedTotal,
+            pledgePaid,
+            pledgeOutstanding: Math.max(0, pledgedTotal - pledgePaid),
+            duesPaid,
+          },
+        },
       },
     });
   } catch (error) {
@@ -3722,8 +3752,29 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
     for (const key of allowed) {
       if (key in req.body) updates[key] = req.body[key];
     }
-    if (updates.dateOfBirth) updates.dateOfBirth = new Date(updates.dateOfBirth);
-    if (updates.anniversaryDate) updates.anniversaryDate = new Date(updates.anniversaryDate);
+    // HTML date inputs represent an unset date as an empty string. Writing that
+    // string into a Postgres timestamp aborts the entire UPDATE, which made an
+    // edit to an unrelated field appear to do nothing. Empty dates explicitly
+    // clear the value; populated dates are validated before the write.
+    for (const field of ['dateOfBirth', 'anniversaryDate']) {
+      if (!(field in updates)) continue;
+      if (!updates[field]) {
+        updates[field] = null;
+        continue;
+      }
+      const parsed = new Date(updates[field]);
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ error: `${field} must be a valid date.` });
+      }
+      updates[field] = parsed;
+    }
+
+    // Empty optional text/select values are stored as NULL rather than empty
+    // strings, keeping relationship IDs and contact fields consistent.
+    for (const field of ['email', 'phone', 'gender', 'familyId', 'notes', 'maritalStatus',
+      'occupation', 'address', 'branchId', 'ministryId', 'photoUrl', 'approvalStatus']) {
+      if (field in updates && updates[field] === '') updates[field] = null;
+    }
 
     applyExtendedMemberFields(req.body, updates);
 
@@ -4639,9 +4690,22 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
 
   router.post(basePath, requireRole(...writeRoles), async (req: AuthRequest, res) => {
     try {
-      const problem = checkBody(req.body);
+      let body = { ...(req.body || {}) };
+      // A pledge is always owned by a real member of this church. The server
+      // resolves the display name from the member record instead of trusting a
+      // free-text name supplied by the browser.
+      if (table === 'pledges') {
+        if (!body.memberId) return res.status(400).json({ error: 'Please select a church member for this pledge.' });
+        const member = await db('members').where({ id: String(body.memberId), tenantId: tid(req) }).first();
+        if (!member || member.membershipStatus === 'visitor') {
+          return res.status(400).json({ error: 'Pledges can only be recorded for members of this church.' });
+        }
+        body.memberId = member.id;
+        body.memberName = memberLabel(member);
+      }
+      const problem = checkBody(body);
       if (problem) return res.status(400).json({ error: problem });
-      const row = { id: genId(opts.idPrefix), tenantId: tid(req), ...coerce(req.body), createdAt: new Date() };
+      const row = { id: genId(opts.idPrefix), tenantId: tid(req), ...coerce(body), createdAt: new Date() };
       await db(table).insert(row);
       await logActivity(req, 'create', table, row.id);
       res.status(201).json(row);
@@ -4660,9 +4724,21 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
     try {
       const existing = await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).first();
       if (!existing) return res.status(404).json({ error: 'Not found' });
-      const problem = checkBody({ ...existing, ...req.body });
+      let body = { ...(req.body || {}) };
+      if (table === 'pledges' && ('memberId' in body || !existing.memberId)) {
+        const memberId = body.memberId || existing.memberId;
+        const member = memberId
+          ? await db('members').where({ id: String(memberId), tenantId: tid(req) }).first()
+          : null;
+        if (!member || member.membershipStatus === 'visitor') {
+          return res.status(400).json({ error: 'Pledges can only be recorded for members of this church.' });
+        }
+        body.memberId = member.id;
+        body.memberName = memberLabel(member);
+      }
+      const problem = checkBody({ ...existing, ...body });
       if (problem) return res.status(400).json({ error: problem });
-      await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).update(coerce(req.body));
+      await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).update(coerce(body));
       await logActivity(req, 'update', table, (req as any).params.id);
       res.json({ success: true });
     } catch (e: any) {
@@ -4710,6 +4786,25 @@ registerCrud('/budgets', 'budgets', {
   numberFields: ['allocated', 'spent'],
   filterFields: ['fiscalYear'],
 });
+registerCrud('/dues', 'member_dues', {
+  idPrefix: 'due',
+  fields: ['name', 'description', 'amount', 'currency', 'frequency', 'startDate', 'endDate', 'collectionDay', 'recurring', 'active'],
+  numberFields: ['amount', 'collectionDay'],
+  dateFields: ['startDate', 'endDate'],
+  filterFields: ['frequency', 'active'],
+  orderBy: 'startDate',
+  writeRoles: ['CHURCH_ADMIN', 'PASTOR'],
+  validate: (body) => {
+    if (!String(body?.name || '').trim()) return 'Please give this dues schedule a name.';
+    if (!Number(body?.amount) || Number(body.amount) <= 0) return 'The dues amount must be greater than zero.';
+    const allowed = ['weekly', 'monthly', 'quarterly', 'yearly', 'one_time'];
+    if (!allowed.includes(String(body?.frequency || 'monthly'))) return 'Choose a valid collection frequency.';
+    const day = body?.collectionDay;
+    if (day !== '' && day != null && (Number(day) < 1 || Number(day) > 31)) return 'Collection day must be between 1 and 31.';
+    return null;
+  },
+});
+
 registerCrud('/pledges', 'pledges', {
   idPrefix: 'pld',
   fields: [

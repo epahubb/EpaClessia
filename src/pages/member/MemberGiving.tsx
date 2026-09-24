@@ -34,6 +34,12 @@ const MemberGiving: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [records, setRecords] = useState<GivingRecord[]>([]);
   const [summary, setSummary] = useState<GivingSummary | null>(null);
+  const [pledges, setPledges] = useState<any[]>([]);
+  const [dues, setDues] = useState<any[]>([]);
+  const [pledgeAmount, setPledgeAmount] = useState('');
+  const [pledgePurpose, setPledgePurpose] = useState('Building Fund');
+  const [pledgeDueDate, setPledgeDueDate] = useState('');
+  const [pledging, setPledging] = useState(false);
 
   const [amount, setAmount] = useState('');
   const [purpose, setPurpose] = useState('General');
@@ -55,9 +61,15 @@ const MemberGiving: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await givingService.getGiving();
+      const [res, pledgeRows, duesData] = await Promise.all([
+        givingService.getGiving(),
+        givingService.getPledges(),
+        givingService.getDues(),
+      ]);
       setRecords(res.data || []);
       setSummary(res.summary);
+      setPledges(pledgeRows || []);
+      setDues(duesData?.schedules || []);
     } catch (e: any) {
       notify(e?.friendlyMessage || e?.message || 'Failed to load your giving history.', 'error');
     } finally {
@@ -115,6 +127,30 @@ const MemberGiving: React.FC = () => {
     } catch (e: any) {
       notify(e?.friendlyMessage || e?.message || 'Failed to start your payment.', 'error');
       setSubmitting(false);
+    }
+  };
+
+  const handlePledge = async () => {
+    const value = Number(pledgeAmount);
+    if (!Number.isFinite(value) || value <= 0) {
+      notify('Please enter a valid pledge amount.', 'error');
+      return;
+    }
+    setPledging(true);
+    try {
+      await givingService.createPledge({
+        amountPledged: value,
+        purpose: pledgePurpose,
+        dueDate: pledgeDueDate || null,
+      });
+      setPledgeAmount('');
+      setPledgeDueDate('');
+      notify('Your pledge has been recorded.', 'success');
+      await load();
+    } catch (e: any) {
+      notify(e?.friendlyMessage || e?.message || 'Failed to save your pledge.', 'error');
+    } finally {
+      setPledging(false);
     }
   };
 
@@ -338,6 +374,53 @@ const MemberGiving: React.FC = () => {
                 </Table>
               </TableContainer>
             )}
+          </Paper>
+        </Grid>
+      </Grid>
+
+      <Grid container spacing={3} sx={{ mt: 1 }}>
+        <Grid size={{ xs: 12, md: 5 }}>
+          <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
+            <Typography variant="h6" fontWeight={700} sx={{ mb: 0.5 }}>Make a Pledge</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Pledges are available only to registered members of this church.
+            </Typography>
+            <TextField label="Amount pledged" type="number" value={pledgeAmount}
+              onChange={(e) => setPledgeAmount(e.target.value)} fullWidth sx={{ mb: 2 }}
+              InputProps={{ startAdornment: <InputAdornment position="start">GHS</InputAdornment> }} />
+            <TextField select label="Purpose" value={pledgePurpose} onChange={(e) => setPledgePurpose(e.target.value)} fullWidth sx={{ mb: 2 }}>
+              {PURPOSES.map((p) => <MenuItem key={p} value={p}>{p}</MenuItem>)}
+            </TextField>
+            <TextField label="Target date (optional)" type="date" value={pledgeDueDate}
+              onChange={(e) => setPledgeDueDate(e.target.value)} fullWidth sx={{ mb: 2 }} InputLabelProps={{ shrink: true }} />
+            <Button fullWidth variant="contained" onClick={handlePledge} disabled={pledging}>
+              {pledging ? 'Saving pledge…' : 'Submit pledge'}
+            </Button>
+          </Paper>
+        </Grid>
+        <Grid size={{ xs: 12, md: 7 }}>
+          <Paper variant="outlined" sx={{ borderRadius: 3, overflow: 'hidden' }}>
+            <Box sx={{ p: 2.5 }}><Typography variant="h6" fontWeight={700}>My Pledges</Typography></Box>
+            <Divider />
+            {pledges.length === 0 ? <Typography color="text.secondary" sx={{ p: 3 }}>You have no pledges yet.</Typography> : (
+              <TableContainer><Table size="small"><TableHead><TableRow>
+                <TableCell>Purpose</TableCell><TableCell>Pledged</TableCell><TableCell>Paid</TableCell><TableCell>Due</TableCell><TableCell>Status</TableCell>
+              </TableRow></TableHead><TableBody>{pledges.map((p: any) => <TableRow key={p.id}>
+                <TableCell>{p.purpose}</TableCell><TableCell>{fmt(p.amountPledged)}</TableCell><TableCell>{fmt(p.amountPaid)}</TableCell>
+                <TableCell>{fmtDate(p.dueDate)}</TableCell><TableCell><Chip size="small" label={p.status || 'active'} /></TableCell>
+              </TableRow>)}</TableBody></Table></TableContainer>
+            )}
+          </Paper>
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <Paper variant="outlined" sx={{ borderRadius: 3, p: 3 }}>
+            <Typography variant="h6" fontWeight={700}>Member Dues</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Dues currently set by your church.</Typography>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              {dues.length ? dues.map((d: any) => <Chip key={d.id} variant="outlined"
+                label={`${d.name}: ${fmt(d.amount)} · ${String(d.frequency || 'monthly').replace('_', ' ')}${d.recurring ? ' · recurring' : ''}`} />)
+                : <Typography variant="body2" color="text.secondary">No active member dues have been set.</Typography>}
+            </Stack>
           </Paper>
         </Grid>
       </Grid>

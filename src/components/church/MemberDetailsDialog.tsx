@@ -10,6 +10,7 @@ import churchApi from '../../services/churchApi';
 
 type Props = { row: any };
 const text = (value: unknown): string => value === null || value === undefined || value === '' ? '—' : String(value);
+const money = (value: unknown): string => new Intl.NumberFormat('en-GH', { style: 'currency', currency: 'GHS' }).format(Number(value) || 0);
 const date = (value: unknown): string => {
   if (!value) return '—';
   const parsed = new Date(String(value));
@@ -156,6 +157,54 @@ const DetailsBody: React.FC<{ data: any }> = ({ data }) => {
           ))}
           {!(c.positions || []).length && <Typography variant="body2" color="text.secondary">No position assignments.</Typography>}
         </Stack>
+      </Section>
+
+      <Section title="Financial records">
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(5, minmax(0, 1fr))' }, gap: 1.5, mb: 2 }}>
+          <Detail label="Total giving" value={money(c.financial?.summary?.givingTotal)} />
+          <Detail label="Total pledged" value={money(c.financial?.summary?.pledgedTotal)} />
+          <Detail label="Pledges paid" value={money(c.financial?.summary?.pledgePaid)} />
+          <Detail label="Pledges outstanding" value={money(c.financial?.summary?.pledgeOutstanding)} />
+          <Detail label="Dues paid" value={money(c.financial?.summary?.duesPaid)} />
+        </Box>
+        <Divider sx={{ mb: 1.5 }} />
+        <Typography variant="body2" fontWeight={700} sx={{ mb: 0.75 }}>Giving history</Typography>
+        <Stack spacing={0.75}>
+          {(c.financial?.donations || []).map((gift: any) => (
+            <Box key={gift.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+              <Typography variant="body2">{date(gift.createdAt)} · {gift.purpose || 'General'} · {gift.status || 'completed'}</Typography>
+              <Typography variant="body2" fontWeight={700}>{money(gift.amount)}</Typography>
+            </Box>
+          ))}
+          {!(c.financial?.donations || []).length && <Typography variant="body2" color="text.secondary">No giving records.</Typography>}
+        </Stack>
+        <Typography variant="body2" fontWeight={700} sx={{ mt: 2, mb: 0.75 }}>Pledges</Typography>
+        <Stack spacing={0.75}>
+          {(c.financial?.pledges || []).map((pledge: any) => (
+            <Box key={pledge.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+              <Typography variant="body2">{pledge.purpose || 'General'} · due {date(pledge.dueDate)} · {pledge.status || 'active'}</Typography>
+              <Typography variant="body2" fontWeight={700}>{money(pledge.amountPaid)} / {money(pledge.amountPledged)}</Typography>
+            </Box>
+          ))}
+          {!(c.financial?.pledges || []).length && <Typography variant="body2" color="text.secondary">No pledges.</Typography>}
+        </Stack>
+        <Typography variant="body2" fontWeight={700} sx={{ mt: 2, mb: 0.75 }}>Dues</Typography>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          {(c.financial?.duesSchedules || []).filter((due: any) => due.active).map((due: any) => (
+            <Chip key={due.id} variant="outlined" label={`${due.name}: ${money(due.amount)} · ${String(due.frequency || 'monthly').replace('_', ' ')}`} />
+          ))}
+          {!(c.financial?.duesSchedules || []).some((due: any) => due.active) && <Typography variant="body2" color="text.secondary">No active dues schedules.</Typography>}
+        </Stack>
+        {(c.financial?.duesPayments || []).length > 0 && (
+          <Stack spacing={0.75} sx={{ mt: 1.5 }}>
+            {(c.financial.duesPayments || []).map((payment: any) => (
+              <Box key={payment.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                <Typography variant="body2">Paid {date(payment.paidAt)} · {payment.paymentMethod || 'payment'} · {payment.status}</Typography>
+                <Typography variant="body2" fontWeight={700}>{money(payment.amount)}</Typography>
+              </Box>
+            ))}
+          </Stack>
+        )}
       </Section>
 
       {(education.length > 0 || hasMedical) && (
