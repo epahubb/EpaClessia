@@ -47,20 +47,16 @@ async function churchCollectionFor(tenantId: string, amount: number) {
   if (paystack.enabled === false || !secretKey) {
     throw Object.assign(new Error('Your church has not configured its Paystack secret key.'), { status: 503 });
   }
-  // The member pays only the church amount. The configured platform charge is
-  // accrued as a church liability and collected later in a separate checkout.
-  const assessed = applyTransactionCharge(amount, { ...chargeSettings, bearer: 'recipient' });
+  // The member bears the service charge: Paystack charges base + fee into the
+  // church account. The fee is then tracked as collected platform money for the
+  // church to remit separately, so it is never an expense to the church.
+  const charge = applyTransactionCharge(amount, { ...chargeSettings, bearer: 'payer' });
   return {
     gateway: {
       secretKey,
       currency: String(payment.currency || paystack.currency || 'GHS'),
     },
-    charge: {
-      ...assessed,
-      totalAmount: assessed.baseAmount,
-      netAmount: Math.max(0, assessed.baseAmount - assessed.chargeAmount),
-      chargeBearer: 'recipient' as const,
-    },
+    charge,
   };
 }
 
@@ -264,7 +260,8 @@ router.get('/dues', async (req: AuthRequest, res) => {
       db('member_dues').where({ tenantId, active: true }).orderBy('startDate', 'asc'),
       db('member_dues_payments').where({ tenantId, memberId: member.id }).orderBy('paidAt', 'desc'),
     ]);
-    res.json({ schedules, payments });
+    const charge = await getTransactionCharge();
+    res.json({ schedules, payments, serviceCharge: { enabled: charge.enabled, percent: charge.percent, flat: charge.flat, cap: charge.cap } });
   } catch (error) {
     console.error('Member dues fetch error:', error);
     res.status(500).json({ error: 'Failed to load member dues' });
@@ -302,6 +299,7 @@ router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
       chargeAmount: collection.charge.chargeAmount,
       netAmount: collection.charge.netAmount,
       totalAmount: collection.charge.totalAmount,
+      chargeBearer: 'payer',
       serviceChargeStatus: 'pending_payment',
       status: 'pending',
       paymentMethod: 'paystack',
@@ -333,6 +331,7 @@ router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
       reference,
       accessCode: data?.access_code,
       amount: collection.charge.baseAmount,
+      serviceCharge: collection.charge.chargeAmount,
       totalPayable: collection.charge.totalAmount,
     });
   } catch (error: any) {
@@ -447,6 +446,7 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       status: 'pending',
       chargeAmount: collection.charge.chargeAmount,
       netAmount: collection.charge.netAmount,
+      chargeBearer: 'payer',
       serviceChargeStatus: 'pending_payment',
       createdAt: new Date(),
     });
@@ -473,6 +473,7 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       reference,
       accessCode: data?.access_code,
       amount: collection.charge.baseAmount,
+      serviceCharge: collection.charge.chargeAmount,
       totalPayable: collection.charge.totalAmount,
     });
   } catch (error: any) {
@@ -497,9 +498,7 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
 
     const collection = await churchCollectionFor(tenantId, Number(donation.amount || 0));
     const data = await verifyTransaction(reference, collection.gateway.secretKey);
-    const expectedTotal = donation.chargeBearer === 'payer'
-      ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
-      : Number(donation.amount || 0);
+    const expectedTotal = Number(donation.amount || 0) + Number(donation.chargeAmount || 0);
     const newStatus = verifiedPaymentMatches(data, {
       reference,
       amount: expectedTotal,

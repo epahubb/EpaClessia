@@ -20,6 +20,17 @@ const PURPOSES = [
 const fmt = (n: number | null | undefined) =>
   `GHS ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+type ServiceChargeConfig = { enabled: boolean; percent: number; flat: number; cap: number };
+
+const DEFAULT_SERVICE_CHARGE: ServiceChargeConfig = { enabled: false, percent: 0, flat: 0, cap: 0 };
+
+const calculateServiceCharge = (base: number, config: ServiceChargeConfig) => {
+  if (!config.enabled || !Number.isFinite(base) || base <= 0) return 0;
+  let fee = (base * Number(config.percent || 0)) / 100 + Number(config.flat || 0);
+  if (Number(config.cap || 0) > 0) fee = Math.min(fee, Number(config.cap));
+  return Math.round(Math.max(0, fee) * 100) / 100;
+};
+
 const fmtDate = (d?: string | null) =>
   d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
@@ -37,6 +48,7 @@ const MemberGiving: React.FC = () => {
   const [pledges, setPledges] = useState<any[]>([]);
   const [dues, setDues] = useState<any[]>([]);
   const [duesPayments, setDuesPayments] = useState<any[]>([]);
+  const [serviceCharge, setServiceCharge] = useState<ServiceChargeConfig>(DEFAULT_SERVICE_CHARGE);
   const [pledgeAmount, setPledgeAmount] = useState('');
   const [pledgePurpose, setPledgePurpose] = useState('Building Fund');
   const [pledgeDueDate, setPledgeDueDate] = useState('');
@@ -73,6 +85,7 @@ const MemberGiving: React.FC = () => {
       setPledges(pledgeRows || []);
       setDues(duesData?.schedules || []);
       setDuesPayments(duesData?.payments || []);
+      setServiceCharge({ ...DEFAULT_SERVICE_CHARGE, ...(duesData?.serviceCharge || {}) });
     } catch (e: any) {
       notify(e?.friendlyMessage || e?.message || 'Failed to load your giving history.', 'error');
     } finally {
@@ -245,6 +258,9 @@ const MemberGiving: React.FC = () => {
   };
 
   const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - i);
+  const donationBase = Number(amount) || 0;
+  const donationServiceCharge = calculateServiceCharge(donationBase, serviceCharge);
+  const donationTotal = Math.round((donationBase + donationServiceCharge) * 100) / 100;
 
   if (loading) {
     return (
@@ -328,6 +344,16 @@ const MemberGiving: React.FC = () => {
                 <Chip key={q} label={fmt(q)} onClick={() => setAmount(String(q))} variant="outlined" size="small" />
               ))}
             </Stack>
+            {donationBase > 0 && (
+              <Box sx={{ mb: 2, p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+                <Stack spacing={0.5}>
+                  <Stack direction="row" justifyContent="space-between"><Typography variant="body2">Donation amount</Typography><Typography variant="body2">{fmt(donationBase)}</Typography></Stack>
+                  <Stack direction="row" justifyContent="space-between"><Typography variant="body2">Service charge</Typography><Typography variant="body2">{fmt(donationServiceCharge)}</Typography></Stack>
+                  <Divider />
+                  <Stack direction="row" justifyContent="space-between"><Typography variant="body2" fontWeight={700}>Total payable</Typography><Typography variant="body2" fontWeight={700}>{fmt(donationTotal)}</Typography></Stack>
+                </Stack>
+              </Box>
+            )}
             <Button
               fullWidth variant="contained" size="large" onClick={handleGive} disabled={submitting}
               startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : <HandCoins size={18} />}
@@ -444,8 +470,11 @@ const MemberGiving: React.FC = () => {
                 <Paper key={d.id} variant="outlined" sx={{ p: 1.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
                   <Box>
                     <Typography variant="body2" fontWeight={700}>{d.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {fmt(d.amount)} · {String(d.frequency || 'monthly').replace('_', ' ')}{d.recurring ? ' · recurring' : ''}
+                    <Typography variant="caption" color="text.secondary" component="div">
+                      {String(d.frequency || 'monthly').replace('_', ' ')}{d.recurring ? ' · recurring' : ''}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" component="div">
+                      Dues: {fmt(d.amount)} · Service charge: {fmt(calculateServiceCharge(Number(d.amount) || 0, serviceCharge))} · <strong>Total payable: {fmt((Number(d.amount) || 0) + calculateServiceCharge(Number(d.amount) || 0, serviceCharge))}</strong>
                     </Typography>
                   </Box>
                   <Button size="small" variant="contained" onClick={() => handlePayDues(d.id)} disabled={payingDuesId === d.id}>

@@ -4070,9 +4070,8 @@ router.get('/events/:id/attendance', async (req: AuthRequest, res) => {
 
 /**
  * The gateway credentials to use for a church's own collections (member
- * giving). The payment gateway is provisioned by the super admin, either
- * per-church (written into church_settings by the platform admin) or once for
- * the whole platform, so a church never has to hold API keys itself.
+ * giving). Every church has its own Paystack keys; the superadmin Paystack
+ * account is reserved for platform purchases and remittances.
  */
 async function resolveGateway(tenantId: string): Promise<{ secretKey: string; currency: string; provider: string; enabled: boolean }> {
   const [paystack, payment] = await Promise.all([
@@ -4165,18 +4164,11 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
     if (!email) return res.status(400).json({ error: 'A payer email is required by Paystack' });
 
     // The platform transaction charge configured by the super admin applies to
-    // every transaction: added on top when the payer bears it, deducted from
-    // the church's settlement when the recipient does.
-    const assessed = applyTransactionCharge(Number(amount), {
+    // every transaction and is added on top of the church amount for the payer.
+    const charge = applyTransactionCharge(Number(amount), {
       ...(await getTransactionCharge()),
-      bearer: 'recipient',
+      bearer: 'payer',
     });
-    const charge = {
-      ...assessed,
-      totalAmount: assessed.baseAmount,
-      netAmount: Math.max(0, assessed.baseAmount - assessed.chargeAmount),
-      chargeBearer: 'recipient' as const,
-    };
 
     const reference = genId('gift');
     await db('donations').insert({
@@ -4192,6 +4184,7 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       status: 'pending',
       chargeAmount: charge.chargeAmount,
       netAmount: charge.netAmount,
+      chargeBearer: 'payer',
       serviceChargeStatus: 'pending_payment',
       createdAt: new Date(),
     });
@@ -4217,6 +4210,7 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       reference,
       accessCode: data?.access_code,
       amount: charge.baseAmount,
+      serviceCharge: charge.chargeAmount,
       totalPayable: charge.totalAmount,
     });
   } catch (error) {
@@ -4236,9 +4230,7 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
 
     const gateway = await resolveGateway(tid(req));
     const data = await verifyTransaction(reference, gateway.secretKey);
-    const expectedTotal = donation.chargeBearer === 'payer'
-      ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
-      : Number(donation.amount || 0);
+    const expectedTotal = Number(donation.amount || 0) + Number(donation.chargeAmount || 0);
     const newStatus = verifiedPaymentMatches(data, {
       reference,
       amount: expectedTotal,

@@ -4,7 +4,7 @@ import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip as RTooltip, 
 import CrudTable from '../../components/church/CrudTable';
 import churchApi from '../../services/churchApi';
 
-const GHS = (n: number) => new Intl.NumberFormat('en-GH', { style: 'currency', currency: 'GHS', maximumFractionDigits: 0 }).format(Number(n) || 0);
+const GHS = (n: number) => new Intl.NumberFormat('en-GH', { style: 'currency', currency: 'GHS', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
 const COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#ec4899'];
 
 const DEFAULT_PURPOSES = ['Tithe', 'Offering', 'Welfare', 'Donation', 'Building Fund', 'Missions'];
@@ -75,7 +75,7 @@ const ServiceChargesPanel: React.FC = () => {
         ? churchApi.verifySubscriptionPayment(reference)
         : churchApi.verifyServiceChargePayment(reference);
       verify
-        .then((result) => setNotice({ severity: result.status === 'completed' ? 'success' : 'error', text: result.status === 'completed' ? (reference.startsWith('invpay_') ? 'Subscription invoice paid successfully.' : 'Platform service charges paid successfully.') : 'The platform payment could not be confirmed.' }))
+        .then((result) => setNotice({ severity: result.status === 'completed' ? 'success' : 'error', text: result.status === 'completed' ? (reference.startsWith('invpay_') ? 'Subscription invoice paid successfully.' : 'Collected platform service charges remitted successfully.') : 'The platform payment could not be confirmed.' }))
         .catch((e: any) => setNotice({ severity: 'error', text: e?.friendlyMessage || 'Could not verify the service-charge payment.' }))
         .finally(() => { window.history.replaceState({}, '', window.location.pathname); void load(); });
     } else { void load(); }
@@ -110,13 +110,13 @@ const ServiceChargesPanel: React.FC = () => {
     <Stack spacing={2}>
       {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
       <Card variant="outlined"><CardContent>
-        <Typography color="text.secondary" variant="body2">Outstanding platform service charges</Typography>
+        <Typography color="text.secondary" variant="body2">Collected service charges awaiting remittance</Typography>
         <Typography variant="h4" fontWeight={800} sx={{ my: 1 }}>{GHS(data?.outstanding || 0)}</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Current service charge: {Number(data?.charge?.percent || 0)}%. These charges are collected separately through the superadmin Paystack account; member donations and dues go directly to your church Paystack account.
+          Current service charge: {Number(data?.charge?.percent || 0)}%. Members paid these charges on top of their donations or dues into your church Paystack account. Remitting this amount transfers the platform funds already collected; it is not an expense borne by the church.
         </Typography>
         <Button variant="contained" onClick={pay} disabled={paying || Number(data?.outstanding || 0) <= 0}>
-          {paying ? 'Opening Paystack…' : 'Pay outstanding service charges'}
+          {paying ? 'Opening Paystack…' : 'Remit collected service charges'}
         </Button>
       </CardContent></Card>
       <Card variant="outlined"><CardContent>

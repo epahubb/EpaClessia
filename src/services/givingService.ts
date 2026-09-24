@@ -50,6 +50,9 @@ export interface InitializeResponse {
   authorizationUrl?: string;
   reference: string;
   accessCode?: string;
+  amount?: number;
+  serviceCharge?: number;
+  totalPayable?: number;
 }
 
 export interface VerifyResponse {
@@ -75,7 +78,7 @@ export const givingService = {
     return res.data;
   },
 
-  getDues: async (): Promise<{ schedules: any[]; payments: any[] }> => {
+  getDues: async (): Promise<{ schedules: any[]; payments: any[]; serviceCharge: { enabled: boolean; percent: number; flat: number; cap: number } }> {
     const res = await api.get('/member/dues');
     return res.data;
   },

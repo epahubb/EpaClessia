@@ -171,7 +171,7 @@ async function startServer() {
       if (req.body?.event !== 'charge.success') return res.status(200).json({ received: true });
 
       if (donation) {
-        const expected = Number(donation.amount || 0); // member pays church amount only
+        const expected = Number(donation.amount || 0) + Number(donation.chargeAmount || 0); // member pays base + service charge
         if (verifiedPaymentMatches(data, { reference, amount: expected, currency: donation.currency || 'GHS' })) {
           await db('donations').where({ id: donation.id, tenantId: donation.tenantId }).update({
             status: 'completed',
@@ -184,7 +184,7 @@ async function startServer() {
       if (duesPayment) {
         if (verifiedPaymentMatches(data, {
           reference,
-          amount: Number(duesPayment.amount || 0),
+          amount: Number(duesPayment.totalAmount || duesPayment.amount || 0),
           currency: duesPayment.currency || 'GHS',
         })) {
           await db('member_dues_payments').where({ id: duesPayment.id, tenantId: duesPayment.tenantId }).update({

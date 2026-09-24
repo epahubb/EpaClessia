@@ -230,6 +230,11 @@ export async function initializeDatabase() {
         table.string('email');
         table.string('reference');
         table.string('status').defaultTo('completed');
+        table.decimal('chargeAmount', 15, 2).defaultTo(0);
+        table.decimal('netAmount', 15, 2);
+        table.string('chargeBearer');
+        table.string('serviceChargeStatus');
+        table.string('serviceChargeSettlementId');
         table.timestamp('createdAt').defaultTo(db.fn.now());
       });
       console.log('Table "donations" created.');
@@ -498,6 +503,8 @@ export async function initializeDatabase() {
         t.decimal('netAmount', 15, 2);
         t.decimal('totalAmount', 15, 2);
         t.string('chargeBearer');
+        t.string('serviceChargeStatus');
+        t.string('serviceChargeSettlementId');
         t.string('status').defaultTo('completed');
         t.string('paymentMethod');
         t.string('reference');
