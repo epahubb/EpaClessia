@@ -448,6 +448,13 @@ router.put('/churches/:tenantId/settings/:key', async (req, res) => {
     // Preserve a stored secret when the form posts back the mask rather than a
     // new value, so an unrelated edit cannot wipe live credentials.
     const incoming: Record<string, any> = { ...(req.body || {}) };
+    if (key === 'paystack' && incoming.subaccountCode) {
+      const code = String(incoming.subaccountCode).trim();
+      if (!/^ACCT_[A-Za-z0-9]+$/.test(code)) {
+        return res.status(400).json({ error: 'Enter a valid Paystack subaccount code, for example ACCT_xxxxxxxxxx.' });
+      }
+      incoming.subaccountCode = code;
+    }
     for (const field of SENSITIVE_SETTING_KEYS) {
       if (field in incoming) {
         const v = incoming[field];
@@ -482,6 +489,9 @@ router.put('/churches/:tenantId/settings/:key', async (req, res) => {
 router.post('/churches/settings/apply-to-all/:key', async (req, res) => {
   try {
     const { key } = req.params;
+    if (key === 'paystack') {
+      return res.status(400).json({ error: 'Paystack subaccounts are unique to each church and cannot be applied in bulk.' });
+    }
     if (!MANAGED_SECTIONS.includes(key)) {
       return res.status(400).json({ error: `'${key}' is not a platform-managed section.` });
     }

@@ -492,6 +492,11 @@ export async function initializeDatabase() {
         t.string('duesId').notNullable();
         t.string('memberId').notNullable();
         t.decimal('amount', 15, 2).notNullable();
+        t.string('currency').defaultTo('GHS');
+        t.decimal('chargeAmount', 15, 2).defaultTo(0);
+        t.decimal('netAmount', 15, 2);
+        t.decimal('totalAmount', 15, 2);
+        t.string('chargeBearer');
         t.string('status').defaultTo('completed');
         t.string('paymentMethod');
         t.string('reference');

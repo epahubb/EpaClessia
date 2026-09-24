@@ -546,12 +546,14 @@ export async function applyFeatureMigrations(db: Knex): Promise<void> {
   /* ---------------------------------------------------------------- */
   /* Transaction charges                                              */
   /* ---------------------------------------------------------------- */
-  for (const table of ['donations', 'sms_purchases', 'invoices']) {
+  for (const table of ['donations', 'sms_purchases', 'invoices', 'member_dues_payments']) {
     await addChargeColumns(db, table);
   }
   // SMS bundles are billed by the platform, so record what was actually taken
   // and which gateway account collected it.
   await addColumn(db, 'sms_purchases', 'totalAmount', (t) => t.decimal('totalAmount', 12, 2));
+  await addColumn(db, 'member_dues_payments', 'totalAmount', (t) => t.decimal('totalAmount', 12, 2));
+  await addColumn(db, 'member_dues_payments', 'currency', (t) => t.string('currency').defaultTo('GHS'));
   await addColumn(db, 'sms_purchases', 'gatewayProvider', (t) => t.string('gatewayProvider'));
   await addColumn(db, 'sms_purchases', 'purchasedBy', (t) => t.string('purchasedBy'));
 

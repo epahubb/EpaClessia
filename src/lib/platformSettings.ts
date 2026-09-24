@@ -207,3 +207,22 @@ export function applyTransactionCharge(
 export async function chargeFor(amount: number): Promise<ChargeBreakdown> {
   return applyTransactionCharge(amount, await getTransactionCharge());
 }
+
+
+/**
+ * Paystack Split Payments destination for one church. All member collections
+ * are initialized with the platform secret key; Paystack settles the church
+ * share to this subaccount and retains the configured platform charge in the
+ * superadmin's main account.
+ */
+export async function getChurchPaystackSubaccount(tenantId: string): Promise<string> {
+  try {
+    const row = await db('church_settings').where({ tenantId, key: 'paystack' }).first();
+    if (!row?.value) return '';
+    const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+    const settings = decryptSensitiveFields(parsed) || {};
+    return String(settings.subaccountCode || '').trim();
+  } catch {
+    return '';
+  }
+}

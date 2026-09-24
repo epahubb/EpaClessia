@@ -39,6 +39,12 @@ export async function initializeTransaction(params: {
   metadata?: Record<string, unknown>;
   callback_url?: string;
   secretKey?: string;
+  /** Paystack subaccount that receives the church share. */
+  subaccount?: string;
+  /** Flat amount retained by the platform, in major currency units. */
+  transactionCharge?: number;
+  /** Which Paystack account absorbs Paystack's own processing fee. */
+  bearer?: 'account' | 'subaccount';
 }) {
   const response = await axios.post(
     `${PAYSTACK_BASE_URL}/transaction/initialize`,
@@ -49,6 +55,9 @@ export async function initializeTransaction(params: {
       reference: params.reference,
       metadata: params.metadata || {},
       callback_url: params.callback_url,
+      ...(params.subaccount ? { subaccount: params.subaccount } : {}),
+      ...(params.transactionCharge !== undefined ? { transaction_charge: Math.round(Number(params.transactionCharge) * 100) } : {}),
+      ...(params.bearer ? { bearer: params.bearer } : {}),
     },
     { headers: authHeaders(params.secretKey) },
   );
@@ -80,4 +89,18 @@ export function verifyWebhookSignature(
   if (!key || !signature) return false;
   const hash = crypto.createHmac('sha512', key).update(rawBody).digest('hex');
   return hash === signature;
+}
+
+
+/** Confirms that Paystack verified the exact transaction we expected. */
+export function verifiedPaymentMatches(
+  data: any,
+  expected: { reference: string; amount: number; currency?: string },
+): boolean {
+  if (!data || data.status !== 'success') return false;
+  if (String(data.reference || '') !== String(expected.reference)) return false;
+  const paidMajor = Number(data.amount) / 100;
+  if (!Number.isFinite(paidMajor) || Math.abs(paidMajor - Number(expected.amount)) > 0.001) return false;
+  if (expected.currency && data.currency && String(data.currency).toUpperCase() !== String(expected.currency).toUpperCase()) return false;
+  return true;
 }

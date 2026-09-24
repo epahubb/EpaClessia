@@ -54,6 +54,8 @@ import ministryLeaderRouter from './src/routes/ministryLeader';
 import superadminExtrasRouter from './src/routes/superadmin-extras';
 import biometricIngestRouter from './src/routes/biometricIngest';
 import { isKnownDenomination, normalizeDenomination } from './src/lib/denominations';
+import { verifyWebhookSignature, verifiedPaymentMatches } from './src/services/paystack';
+import { getPlatformGateway } from './src/lib/platformSettings';
 
 async function startServer() {
   // Fail fast on an insecure or incomplete production configuration BEFORE we
@@ -103,7 +105,10 @@ async function startServer() {
 
   // Allow large JSON/form bodies so base64 image uploads (logo, favicon,
   // login-screen background) are not rejected by the default 100kb limit.
-  app.use(express.json({ limit: '25mb' }));
+  app.use(express.json({
+    limit: '25mb',
+    verify: (req: any, _res, buf) => { req.rawBody = Buffer.from(buf); },
+  }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
   app.use(cookieParser());
 
@@ -119,6 +124,51 @@ async function startServer() {
     message: { error: 'Too many requests, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
+  });
+
+  // Paystack calls this even when a member closes the checkout tab before the
+  // browser returns to us. The signature is verified with the platform key,
+  // because all church collections are platform-owned split transactions.
+  app.post('/api/v1/paystack/webhook', async (req: any, res) => {
+    try {
+      const gateway = await getPlatformGateway();
+      const signature = req.headers['x-paystack-signature'] as string | undefined;
+      if (!verifyWebhookSignature(req.rawBody || Buffer.from(''), signature, gateway.secretKey)) {
+        return res.status(401).json({ error: 'Invalid Paystack signature' });
+      }
+      // Acknowledge event types we do not use; Paystack otherwise retries them.
+      if (req.body?.event !== 'charge.success') return res.status(200).json({ received: true });
+
+      const data = req.body?.data || {};
+      const reference = String(data.reference || '');
+      if (!reference) return res.status(200).json({ received: true });
+
+      const donation = await db('donations').where({ reference }).first();
+      if (donation) {
+        const expected = donation.chargeBearer === 'payer'
+          ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
+          : Number(donation.amount || 0);
+        if (verifiedPaymentMatches(data, { reference, amount: expected, currency: donation.currency || gateway.currency })) {
+          await db('donations').where({ id: donation.id, tenantId: donation.tenantId }).update({ status: 'completed' });
+        }
+        return res.status(200).json({ received: true });
+      }
+
+      const duesPayment = await db('member_dues_payments').where({ reference }).first();
+      if (duesPayment && verifiedPaymentMatches(data, {
+        reference,
+        amount: Number(duesPayment.totalAmount || duesPayment.amount || 0),
+        currency: duesPayment.currency || gateway.currency,
+      })) {
+        await db('member_dues_payments')
+          .where({ id: duesPayment.id, tenantId: duesPayment.tenantId })
+          .update({ status: 'completed', paidAt: new Date() });
+      }
+      return res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Paystack webhook error:', error);
+      return res.status(500).json({ error: 'Webhook processing failed' });
+    }
   });
 
   // Authentication Routes

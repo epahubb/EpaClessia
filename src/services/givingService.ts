@@ -80,6 +80,16 @@ export const givingService = {
     return res.data;
   },
 
+  initializeDuesPayment: async (duesId: string, callbackUrl: string): Promise<InitializeResponse> => {
+    const res = await api.post(`/member/dues/${duesId}/initialize`, { callbackUrl });
+    return res.data;
+  },
+
+  verifyDuesPayment: async (reference: string): Promise<any> => {
+    const res = await api.get(`/member/dues/verify/${encodeURIComponent(reference)}`);
+    return res.data;
+  },
+
   initialize: async (payload: {
     amount: number;
     purpose?: string;

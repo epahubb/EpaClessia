@@ -36,10 +36,12 @@ const MemberGiving: React.FC = () => {
   const [summary, setSummary] = useState<GivingSummary | null>(null);
   const [pledges, setPledges] = useState<any[]>([]);
   const [dues, setDues] = useState<any[]>([]);
+  const [duesPayments, setDuesPayments] = useState<any[]>([]);
   const [pledgeAmount, setPledgeAmount] = useState('');
   const [pledgePurpose, setPledgePurpose] = useState('Building Fund');
   const [pledgeDueDate, setPledgeDueDate] = useState('');
   const [pledging, setPledging] = useState(false);
+  const [payingDuesId, setPayingDuesId] = useState<string | null>(null);
 
   const [amount, setAmount] = useState('');
   const [purpose, setPurpose] = useState('General');
@@ -70,6 +72,7 @@ const MemberGiving: React.FC = () => {
       setSummary(res.summary);
       setPledges(pledgeRows || []);
       setDues(duesData?.schedules || []);
+      setDuesPayments(duesData?.payments || []);
     } catch (e: any) {
       notify(e?.friendlyMessage || e?.message || 'Failed to load your giving history.', 'error');
     } finally {
@@ -83,9 +86,14 @@ const MemberGiving: React.FC = () => {
     const reference = params.get('reference') || params.get('trxref');
     if (!reference) return false;
     try {
-      const result = await givingService.verify(reference);
+      const isDuesPayment = reference.startsWith('duespay_');
+      const result = isDuesPayment
+        ? await givingService.verifyDuesPayment(reference)
+        : await givingService.verify(reference);
       if (result.status === 'completed') {
-        notify(`Thank you! Your gift of ${fmt(result.amount)} was received.`, 'success');
+        notify(isDuesPayment
+          ? `Your membership dues payment of ${fmt(result.amount)} was received.`
+          : `Thank you! Your gift of ${fmt(result.amount)} was received.`, 'success');
       } else {
         notify('Your payment could not be confirmed. If you were charged, please contact your church.', 'error');
       }
@@ -127,6 +135,21 @@ const MemberGiving: React.FC = () => {
     } catch (e: any) {
       notify(e?.friendlyMessage || e?.message || 'Failed to start your payment.', 'error');
       setSubmitting(false);
+    }
+  };
+
+  const handlePayDues = async (duesId: string) => {
+    setPayingDuesId(duesId);
+    try {
+      const result = await givingService.initializeDuesPayment(
+        duesId,
+        `${window.location.origin}/member/giving`,
+      );
+      if (!result.authorizationUrl) throw new Error('Paystack did not return a checkout link.');
+      window.location.href = result.authorizationUrl;
+    } catch (e: any) {
+      notify(e?.friendlyMessage || e?.message || 'Failed to start the membership dues payment.', 'error');
+      setPayingDuesId(null);
     }
   };
 
@@ -416,11 +439,35 @@ const MemberGiving: React.FC = () => {
           <Paper variant="outlined" sx={{ borderRadius: 3, p: 3 }}>
             <Typography variant="h6" fontWeight={700}>Member Dues</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Dues currently set by your church.</Typography>
-            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-              {dues.length ? dues.map((d: any) => <Chip key={d.id} variant="outlined"
-                label={`${d.name}: ${fmt(d.amount)} · ${String(d.frequency || 'monthly').replace('_', ' ')}${d.recurring ? ' · recurring' : ''}`} />)
-                : <Typography variant="body2" color="text.secondary">No active member dues have been set.</Typography>}
+            <Stack spacing={1}>
+              {dues.length ? dues.map((d: any) => (
+                <Paper key={d.id} variant="outlined" sx={{ p: 1.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+                  <Box>
+                    <Typography variant="body2" fontWeight={700}>{d.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {fmt(d.amount)} · {String(d.frequency || 'monthly').replace('_', ' ')}{d.recurring ? ' · recurring' : ''}
+                    </Typography>
+                  </Box>
+                  <Button size="small" variant="contained" onClick={() => handlePayDues(d.id)} disabled={payingDuesId === d.id}>
+                    {payingDuesId === d.id ? 'Opening Paystack…' : 'Pay dues'}
+                  </Button>
+                </Paper>
+              )) : <Typography variant="body2" color="text.secondary">No active member dues have been set.</Typography>}
             </Stack>
+            {duesPayments.length > 0 && (
+              <Box sx={{ mt: 2 }}>
+                <Divider sx={{ mb: 1.5 }} />
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>Recent dues payments</Typography>
+                <Stack spacing={0.75}>
+                  {duesPayments.slice(0, 10).map((payment: any) => (
+                    <Box key={payment.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                      <Typography variant="body2">{fmtDate(payment.paidAt || payment.createdAt)} · {payment.status}</Typography>
+                      <Typography variant="body2" fontWeight={700}>{fmt(payment.amount)}</Typography>
+                    </Box>
+                  ))}
+                </Stack>
+              </Box>
+            )}
           </Paper>
         </Grid>
       </Grid>

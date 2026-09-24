@@ -61,9 +61,10 @@ const SECTIONS: Array<{ key: string; label: string; description: string; fields:
   {
     key: 'paystack',
     label: 'Gateway keys',
-    description: 'Leave these blank to use the platform keys for this church.',
+    description: 'Member collections use the platform Paystack keys and settle the church share to its Paystack subaccount. Church keys may be retained for other direct operations.',
     fields: [
-      { key: 'enabled', label: 'Use church-specific keys', type: 'bool' },
+      { key: 'enabled', label: 'Enable Paystack for this church', type: 'bool' },
+      { key: 'subaccountCode', label: 'Paystack subaccount code', full: true, help: 'Required for split payments, for example ACCT_xxxxxxxxxx.' },
       { key: 'publicKey', label: 'Public key', full: true },
       { key: 'secretKey', label: 'Secret key', type: 'password', full: true },
     ],
@@ -192,12 +193,14 @@ export const ChurchConfigurationPage: React.FC = () => {
               ))}
             </TextField>
             <Box sx={{ flex: 1 }} />
-            <Button
-              variant="outlined" startIcon={<Send size={16} />} onClick={applyToAll}
-              disabled={saving}
-            >
-              Apply {section.label} to all churches
-            </Button>
+            {section.key !== 'paystack' && (
+              <Button
+                variant="outlined" startIcon={<Send size={16} />} onClick={applyToAll}
+                disabled={saving}
+              >
+                Apply {section.label} to all churches
+              </Button>
+            )}
           </Stack>
         </CardContent>
       </Card>

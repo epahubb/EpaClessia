@@ -5,8 +5,15 @@ import {
   initializeTransaction,
   verifyTransaction,
   isPaystackConfigured,
+  verifiedPaymentMatches,
 } from '../services/paystack';
 import { parseQrPayload, checkQrToken, checkEventQrWindow } from '../lib/attendance';
+import {
+  getPlatformGateway,
+  getTransactionCharge,
+  applyTransactionCharge,
+  getChurchPaystackSubaccount,
+} from '../lib/platformSettings';
 
 /**
  * Member self-service API.
@@ -28,6 +35,21 @@ async function getTenantSettings(tenantId: string, key: string): Promise<any> {
   } catch {
     return {};
   }
+}
+
+async function splitPaymentFor(tenantId: string, amount: number) {
+  const [gateway, subaccount, chargeSettings] = await Promise.all([
+    getPlatformGateway(),
+    getChurchPaystackSubaccount(tenantId),
+    getTransactionCharge(),
+  ]);
+  if (!gateway.enabled || !isPaystackConfigured(gateway.secretKey)) {
+    throw Object.assign(new Error('The platform Paystack gateway is not configured.'), { status: 503 });
+  }
+  if (!subaccount) {
+    throw Object.assign(new Error('Your church does not yet have a Paystack subaccount configured.'), { status: 503 });
+  }
+  return { gateway, subaccount, charge: applyTransactionCharge(amount, chargeSettings) };
 }
 
 /**
@@ -237,6 +259,107 @@ router.get('/dues', async (req: AuthRequest, res) => {
   }
 });
 
+router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId, user, member } = ctx(req);
+    if (!member || member.membershipStatus === 'visitor') {
+      return res.status(403).json({ error: 'Only registered members can pay membership dues.' });
+    }
+    const dues = await db('member_dues').where({ id: req.params.id, tenantId, active: true }).first();
+    if (!dues) return res.status(404).json({ error: 'This dues schedule is not active.' });
+    const amount = Number(dues.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'This dues schedule has no valid amount.' });
+    if (!user?.email) return res.status(400).json({ error: 'Your account needs an email address for Paystack payments.' });
+
+    if (!dues.recurring) {
+      const alreadyPaid = await db('member_dues_payments')
+        .where({ tenantId, memberId: member.id, duesId: dues.id, status: 'completed' })
+        .first();
+      if (alreadyPaid) return res.status(409).json({ error: 'You have already paid this one-time membership due.' });
+    }
+
+    const split = await splitPaymentFor(tenantId, amount);
+    const reference = genId('duespay');
+    await db('member_dues_payments').insert({
+      id: genId('duepay'),
+      tenantId,
+      duesId: dues.id,
+      memberId: member.id,
+      amount: split.charge.baseAmount,
+      currency: split.gateway.currency,
+      chargeAmount: split.charge.chargeAmount,
+      netAmount: split.charge.netAmount,
+      totalAmount: split.charge.totalAmount,
+      chargeBearer: split.charge.chargeBearer,
+      status: 'pending',
+      paymentMethod: 'paystack',
+      reference,
+      paidAt: null,
+      createdAt: new Date(),
+    });
+
+    const data = await initializeTransaction({
+      secretKey: split.gateway.secretKey,
+      email: user.email,
+      amount: split.charge.totalAmount,
+      reference,
+      currency: split.gateway.currency,
+      callback_url: req.body?.callbackUrl,
+      subaccount: split.subaccount,
+      transactionCharge: split.charge.chargeAmount,
+      bearer: 'subaccount',
+      metadata: {
+        tenantId,
+        memberId: member.id,
+        duesId: dues.id,
+        duesName: dues.name,
+        churchSubaccount: split.subaccount,
+        baseAmount: split.charge.baseAmount,
+        platformCharge: split.charge.chargeAmount,
+        paymentType: 'membership_dues',
+      },
+    });
+
+    res.json({
+      authorizationUrl: data?.authorization_url,
+      reference,
+      accessCode: data?.access_code,
+      amount: split.charge.baseAmount,
+      transactionCharge: split.charge.chargeAmount,
+      totalPayable: split.charge.totalAmount,
+    });
+  } catch (error: any) {
+    console.error('Member dues initialize error:', error);
+    res.status(error?.status || 502).json({ error: error?.message || 'Failed to start the dues payment.' });
+  }
+});
+
+router.get('/dues/verify/:reference', async (req: AuthRequest, res) => {
+  try {
+    const { tenantId, member } = ctx(req);
+    if (!member) return res.status(403).json({ error: 'No member record is linked to this account.' });
+    const payment = await db('member_dues_payments')
+      .where({ tenantId, memberId: member.id, reference: req.params.reference })
+      .first();
+    if (!payment) return res.status(404).json({ error: 'Dues payment not found.' });
+
+    const gateway = await getPlatformGateway();
+    const data = await verifyTransaction(req.params.reference, gateway.secretKey);
+    const status = verifiedPaymentMatches(data, {
+      reference: req.params.reference,
+      amount: Number(payment.totalAmount || payment.amount || 0),
+      currency: payment.currency || gateway.currency,
+    }) ? 'completed' : 'failed';
+    await db('member_dues_payments')
+      .where({ id: payment.id, tenantId })
+      .update({ status, paidAt: status === 'completed' ? new Date() : null });
+    res.json({ status, reference: req.params.reference, amount: Number(payment.amount || 0) });
+  } catch (error) {
+    console.error('Member dues verify error:', error);
+    res.status(502).json({ error: 'Failed to verify the dues payment.' });
+  }
+});
+
 /* ------------------------------------------------------------------ */
 /* Annual contribution statement                                      */
 /* ------------------------------------------------------------------ */
@@ -284,53 +407,55 @@ router.get('/giving/statement', async (req: AuthRequest, res) => {
 router.post('/giving/initialize', async (req: AuthRequest, res) => {
   try {
     const { tenantId, user, member } = ctx(req);
-    const paystack = await getTenantSettings(tenantId, 'paystack');
-    const secretKey = paystack.secretKey;
-    if (!isPaystackConfigured(secretKey)) {
-      return res.status(503).json({
-        error:
-          'Online giving is not configured for your church yet. Please contact your church administrator.',
-      });
+    if (!member || member.membershipStatus === 'visitor') {
+      return res.status(403).json({ error: 'Only registered members can make an online donation.' });
     }
-
     const { amount, purpose, callbackUrl } = req.body;
     if (!amount || Number(amount) <= 0) {
       return res.status(400).json({ error: 'Please enter a valid amount.' });
     }
     const email = user?.email;
     if (!email) {
-      return res.status(400).json({
-        error: 'Your account has no email on file, which is required for online giving.',
-      });
+      return res.status(400).json({ error: 'Your account has no email on file, which is required for online giving.' });
     }
 
+    const split = await splitPaymentFor(tenantId, Number(amount));
     const reference = genId('gift');
     await db('donations').insert({
       tenantId,
-      amount: Number(amount),
-      currency: 'GHS',
+      amount: split.charge.baseAmount,
+      currency: split.gateway.currency,
       donorName: donorName(user, member),
       paymentMethod: 'paystack',
       purpose: purpose || 'General',
-      memberId: member?.id || null,
+      memberId: member.id,
       email,
       reference,
       status: 'pending',
+      chargeAmount: split.charge.chargeAmount,
+      netAmount: split.charge.netAmount,
+      chargeBearer: split.charge.chargeBearer,
       createdAt: new Date(),
     });
 
     const data = await initializeTransaction({
-      secretKey,
+      secretKey: split.gateway.secretKey,
       email,
-      amount: Number(amount),
+      amount: split.charge.totalAmount,
       reference,
-      currency: 'GHS',
+      currency: split.gateway.currency,
       callback_url: callbackUrl,
+      subaccount: split.subaccount,
+      transactionCharge: split.charge.chargeAmount,
+      bearer: 'subaccount',
       metadata: {
         tenantId,
+        memberId: member.id,
+        churchSubaccount: split.subaccount,
         purpose: purpose || 'General',
         donorName: donorName(user, member),
-        memberId: member?.id || null,
+        baseAmount: split.charge.baseAmount,
+        platformCharge: split.charge.chargeAmount,
       },
     });
 
@@ -338,10 +463,14 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       authorizationUrl: data?.authorization_url,
       reference,
       accessCode: data?.access_code,
+      amount: split.charge.baseAmount,
+      transactionCharge: split.charge.chargeAmount,
+      totalPayable: split.charge.totalAmount,
+      chargeBearer: split.charge.chargeBearer,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Member giving initialize error:', error);
-    res.status(502).json({ error: 'Failed to start your payment. Please try again.' });
+    res.status(error?.status || 502).json({ error: error?.message || 'Failed to start your payment. Please try again.' });
   }
 });
 
@@ -350,23 +479,25 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
   try {
     const { tenantId, user, member } = ctx(req);
     const reference = req.params.reference;
-    const donation = await db('donations')
-      .where({ reference, tenantId })
-      .first();
+    const donation = await db('donations').where({ reference, tenantId }).first();
     if (!donation) return res.status(404).json({ error: 'Gift not found' });
 
-    // Ensure this gift belongs to the caller before revealing/updating it.
     const email = user?.email ? String(user.email).toLowerCase() : null;
     const isOwn =
       (member?.id && donation.memberId === member.id) ||
       (email && String(donation.email || '').toLowerCase() === email);
-    if (!isOwn) {
-      return res.status(403).json({ error: 'This gift is not associated with your account.' });
-    }
+    if (!isOwn) return res.status(403).json({ error: 'This gift is not associated with your account.' });
 
-    const paystack = await getTenantSettings(tenantId, 'paystack');
-    const data = await verifyTransaction(reference, paystack.secretKey);
-    const newStatus = data?.status === 'success' ? 'completed' : 'failed';
+    const gateway = await getPlatformGateway();
+    const data = await verifyTransaction(reference, gateway.secretKey);
+    const expectedTotal = donation.chargeBearer === 'payer'
+      ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
+      : Number(donation.amount || 0);
+    const newStatus = verifiedPaymentMatches(data, {
+      reference,
+      amount: expectedTotal,
+      currency: donation.currency || gateway.currency,
+    }) ? 'completed' : 'failed';
     await db('donations').where({ reference, tenantId }).update({ status: newStatus });
 
     res.json({

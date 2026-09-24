@@ -6,6 +6,7 @@ import {
   initializeTransaction,
   verifyTransaction,
   isPaystackConfigured,
+  verifiedPaymentMatches,
 } from '../services/paystack';
 import {
   decodeImageDataUrl,
@@ -67,6 +68,7 @@ import {
   isSuperadminManagedSetting,
   SUPERADMIN_MANAGED_CHURCH_SETTINGS,
   getPlatformSettings,
+  getChurchPaystackSubaccount,
 } from '../lib/platformSettings';
 import {
   normalizePaymentDetails,
@@ -4072,13 +4074,17 @@ router.get('/events/:id/attendance', async (req: AuthRequest, res) => {
  * per-church (written into church_settings by the platform admin) or once for
  * the whole platform, so a church never has to hold API keys itself.
  */
-async function resolveGateway(tenantId: string): Promise<{ secretKey: string; currency: string; provider: string }> {
-  const perChurch = await getTenantSettings(tenantId, 'paystack');
+async function resolveGateway(tenantId: string): Promise<{ secretKey: string; currency: string; provider: string; subaccount: string; enabled: boolean }> {
   const platform = await getPlatformGateway();
+  const subaccount = await getChurchPaystackSubaccount(tenantId);
   return {
-    secretKey: perChurch?.secretKey || platform.secretKey,
-    currency: perChurch?.currency || platform.currency || 'GHS',
-    provider: perChurch?.provider || platform.provider || 'Paystack',
+    // Split transactions must be created and verified by the platform account.
+    // The church's own key cannot participate in the same Paystack transaction.
+    secretKey: platform.secretKey,
+    currency: platform.currency || 'GHS',
+    provider: platform.provider || 'Paystack',
+    subaccount,
+    enabled: platform.enabled,
   };
 }
 
@@ -4150,8 +4156,11 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
   try {
     const gateway = await resolveGateway(tid(req));
     const secretKey = gateway.secretKey;
-    if (!isPaystackConfigured(secretKey)) {
-      return res.status(503).json({ error: 'Online giving is not configured yet. Your platform administrator sets up the payment gateway.' });
+    if (!gateway.enabled || !isPaystackConfigured(secretKey)) {
+      return res.status(503).json({ error: 'The platform Paystack gateway is not configured or enabled.' });
+    }
+    if (!gateway.subaccount) {
+      return res.status(503).json({ error: 'This church does not yet have a Paystack subaccount configured for split payments.' });
     }
     const { amount, email, donorName, purpose, memberId, callbackUrl } = req.body;
     if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'A positive amount is required' });
@@ -4188,8 +4197,14 @@ router.post('/giving/initialize', async (req: AuthRequest, res) => {
       reference,
       currency: gateway.currency,
       callback_url: callbackUrl,
+      subaccount: gateway.subaccount,
+      transactionCharge: charge.chargeAmount,
+      // The church subaccount absorbs Paystack's processing fee; the platform
+      // retains exactly the configured transaction charge.
+      bearer: 'subaccount',
       metadata: {
         tenantId: tid(req),
+        churchSubaccount: gateway.subaccount,
         purpose: purpose || 'General',
         donorName,
         baseAmount: charge.baseAmount,
@@ -4222,7 +4237,14 @@ router.get('/giving/verify/:reference', async (req: AuthRequest, res) => {
 
     const gateway = await resolveGateway(tid(req));
     const data = await verifyTransaction(reference, gateway.secretKey);
-    const newStatus = data?.status === 'success' ? 'completed' : 'failed';
+    const expectedTotal = donation.chargeBearer === 'payer'
+      ? Number(donation.amount || 0) + Number(donation.chargeAmount || 0)
+      : Number(donation.amount || 0);
+    const newStatus = verifiedPaymentMatches(data, {
+      reference,
+      amount: expectedTotal,
+      currency: donation.currency || gateway.currency,
+    }) ? 'completed' : 'failed';
     await db('donations').where({ reference, tenantId: tid(req) }).update({ status: newStatus });
     res.json({ status: newStatus, reference });
   } catch (error) {
