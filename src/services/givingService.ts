@@ -78,7 +78,7 @@ export const givingService = {
     return res.data;
   },
 
-  getDues: async (): Promise<{ schedules: any[]; payments: any[]; serviceCharge: { enabled: boolean; percent: number; flat: number; cap: number } }> {
+  getDues: async (): Promise<{ schedules: any[]; payments: any[]; serviceCharge: { enabled: boolean; percent: number; flat: number; cap: number } }> => {
     const res = await api.get('/member/dues');
     return res.data;
   },
