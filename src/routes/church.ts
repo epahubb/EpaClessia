@@ -3160,6 +3160,91 @@ router.get('/members/:id', async (req: AuthRequest, res) => {
   }
 });
 
+/**
+ * Complete, read-only view of a member and every church relationship that can
+ * point at them. The normal member endpoint stays deliberately small for edit
+ * forms; this endpoint resolves IDs into names for the details drawer.
+ */
+router.get('/members/:id/details', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req)!;
+    const member = await db('members')
+      .where({ id: req.params.id, tenantId })
+      .select(await memberColumns())
+      .select(hasPhotoColumn())
+      .first();
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+
+    const personColumns = ['id', 'firstName', 'lastName', 'membershipId', 'email', 'phone', 'membershipStatus'];
+    const [family, familyMembers, spouse, parent, linkedChildren, ministries, group, positions, branch] =
+      await Promise.all([
+        member.familyId
+          ? db('families').where({ id: member.familyId, tenantId }).first()
+          : Promise.resolve(null),
+        member.familyId
+          ? db('members').where({ tenantId, familyId: member.familyId }).select(personColumns).orderBy('firstName')
+          : Promise.resolve([]),
+        member.spouseMemberId
+          ? db('members').where({ id: member.spouseMemberId, tenantId }).select(personColumns).first()
+          : Promise.resolve(null),
+        member.parentMemberId
+          ? db('members').where({ id: member.parentMemberId, tenantId }).select(personColumns).first()
+          : Promise.resolve(null),
+        db('members').where({ tenantId, parentMemberId: member.id }).select(personColumns).orderBy('firstName'),
+        db('ministry_members as mm')
+          .where({ 'mm.tenantId': tenantId, 'mm.memberId': member.id })
+          .leftJoin('ministries as mn', function () {
+            this.on('mn.id', '=', 'mm.ministryId').andOn('mn.tenantId', '=', 'mm.tenantId');
+          })
+          .select(
+            'mm.id as assignmentId', 'mm.ministryId', 'mm.role', 'mm.status', 'mm.joinedAt',
+            'mn.name', 'mn.type', 'mn.description', 'mn.leaderName', 'mn.meetingDay',
+            'mn.meetingTime', 'mn.location',
+          )
+          .orderBy('mn.name'),
+        member.groupId
+          ? db('church_groups').where({ id: member.groupId, tenantId }).first()
+          : Promise.resolve(null),
+        db('member_positions as mp')
+          .where({ 'mp.tenantId': tenantId, 'mp.memberId': member.id })
+          .leftJoin('church_positions as cp', function () {
+            this.on('cp.id', '=', 'mp.positionId').andOn('cp.tenantId', '=', 'mp.tenantId');
+          })
+          .leftJoin('ministries as pm', function () {
+            this.on('pm.id', '=', 'mp.ministryId').andOn('pm.tenantId', '=', 'mp.tenantId');
+          })
+          .select(
+            'mp.id as assignmentId', 'mp.positionId', 'mp.ministryId', 'mp.startDate',
+            'mp.endDate', 'mp.active', 'cp.name', 'cp.category', 'cp.description',
+            'cp.linkedRole', 'pm.name as ministryName',
+          )
+          .orderBy('mp.createdAt', 'desc'),
+        member.branchId
+          ? db('branches').where({ id: member.branchId, tenantId }).first()
+          : Promise.resolve(null),
+      ]);
+
+    const ministryIds = (ministries as any[]).map((row) => row.ministryId).filter(Boolean);
+    res.json({
+      member: expandMemberProfile(member, ministryIds),
+      connections: {
+        family,
+        familyMembers,
+        spouse,
+        parent,
+        children: linkedChildren,
+        ministries,
+        group,
+        positions,
+        branch,
+      },
+    });
+  } catch (error) {
+    console.error('Get member details error:', error);
+    res.status(500).json({ error: 'Failed to fetch member details' });
+  }
+});
+
 /* --- Member profile pictures --------------------------------------- */
 
 /**

@@ -5,6 +5,7 @@ import KeyIcon from '@mui/icons-material/VpnKey';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CrudTable, { CrudField } from '../../components/church/CrudTable';
 import MemberImportModal from '../../components/church/MemberImportModal';
+import MemberDetailsDialog from '../../components/church/MemberDetailsDialog';
 import useAuthedImage from '../../hooks/useAuthedImage';
 import churchApi from '../../services/churchApi';
 import usePortalProfile from '../../hooks/usePortalProfile';
@@ -631,6 +632,7 @@ export const MemberList: React.FC = () => {
         onDialogOpen={(row) => { void prepareGroupOptions(row); }}
         rowActions={(row, reload) => (
           <>
+            <MemberDetailsDialog row={row} />
             <PortalInviteButton row={row} onDone={setNotice} />
             <PortalActivateButton row={row} onDone={setNotice} reload={reload} />
           </>

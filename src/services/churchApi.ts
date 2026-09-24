@@ -91,6 +91,7 @@ export const churchApi = {
 
   // Members
   getMembers: async (params?: any) => unwrap((await api.get('/church/members', { params })).data),
+  getMemberDetails: async (id: string) => (await api.get(`/church/members/${id}/details`)).data,
   createMember: async (data: any) => (await api.post('/church/members', data)).data,
   updateMember: async (id: string, data: any) => (await api.put(`/church/members/${id}`, data)).data,
   deleteMember: async (id: string) => (await api.delete(`/church/members/${id}`)).data,
