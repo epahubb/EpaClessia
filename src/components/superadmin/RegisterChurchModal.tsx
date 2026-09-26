@@ -16,6 +16,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 // errors on the protected /superadmin endpoints.
 import api from '../../services/api';
 import { DENOMINATIONS, DEFAULT_DENOMINATION } from '../../lib/denominations';
+import { COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from '../../lib/geographicOptions';
 
 const churchSchema = z.object({
   // Basic Info
@@ -58,23 +59,6 @@ const churchSchema = z.object({
 type ChurchSchema = z.infer<typeof churchSchema>;
 
 const steps = ['Church Details', 'Primary Admin', 'Billing & Features'];
-
-const TIMEZONES = [
-  { value: 'UTC', label: 'UTC (GMT)' },
-  { value: 'Africa/Accra', label: 'Africa/Accra (GMT)' },
-  { value: 'America/New_York', label: 'America/New_York (EST/EDT)' },
-  { value: 'Europe/London', label: 'Europe/London (GMT/BST)' },
-  { value: 'Africa/Lagos', label: 'Africa/Lagos (GMT+1)' },
-  { value: 'Asia/Dubai', label: 'Asia/Dubai (GMT+4)' },
-];
-
-const COUNTRIES = [
-  { value: 'GH', label: 'Ghana' },
-  { value: 'NG', label: 'Nigeria' },
-  { value: 'US', label: 'United States' },
-  { value: 'UK', label: 'United Kingdom' },
-  { value: 'CA', label: 'Canada' },
-];
 
 export default function RegisterChurchModal({ open, onClose }: { open: boolean, onClose: () => void }) {
   const [activeStep, setActiveStep] = useState(0);
@@ -288,12 +272,13 @@ export default function RegisterChurchModal({ open, onClose }: { open: boolean, 
                       {...field} 
                       select 
                       label="Country" 
-                      fullWidth 
+                      fullWidth
+                      SelectProps={{ MenuProps: { PaperProps: { sx: { maxHeight: 360 } } } }} 
                       required
                       InputLabelProps={{ sx: { color: '#94a3b8', '&.Mui-focused': { color: '#10b981' } } }}
                       sx={{ '& .MuiOutlinedInput-root': { color: '#f8fafc', bgcolor: '#1e293b', borderRadius: 2, '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' }, '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' }, '&.Mui-focused fieldset': { borderColor: '#10b981' } } }}
                     >
-                      {COUNTRIES.map(c => <MenuItem key={c.value} value={c.value}>{c.label}</MenuItem>)}
+                      {COUNTRY_OPTIONS.map(c => <MenuItem key={c.value} value={c.value}>{c.label}</MenuItem>)}
                     </TextField>
                   )} />
                 </Box>
@@ -303,12 +288,13 @@ export default function RegisterChurchModal({ open, onClose }: { open: boolean, 
                       {...field} 
                       select 
                       label="Timezone" 
-                      fullWidth 
+                      fullWidth
+                      SelectProps={{ MenuProps: { PaperProps: { sx: { maxHeight: 360 } } } }} 
                       required
                       InputLabelProps={{ sx: { color: '#94a3b8', '&.Mui-focused': { color: '#10b981' } } }}
                       sx={{ '& .MuiOutlinedInput-root': { color: '#f8fafc', bgcolor: '#1e293b', borderRadius: 2, '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' }, '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' }, '&.Mui-focused fieldset': { borderColor: '#10b981' } } }}
                     >
-                      {TIMEZONES.map(t => <MenuItem key={t.value} value={t.value}>{t.label}</MenuItem>)}
+                      {TIMEZONE_OPTIONS.map(t => <MenuItem key={t.value} value={t.value}>{t.label}</MenuItem>)}
                     </TextField>
                   )} />
                 </Box>
