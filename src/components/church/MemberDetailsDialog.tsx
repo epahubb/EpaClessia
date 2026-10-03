@@ -7,6 +7,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import useAuthedImage from '../../hooks/useAuthedImage';
 import churchApi from '../../services/churchApi';
+import MemberAttendanceSection from './MemberAttendanceSection';
 
 type Props = { row: any };
 const text = (value: unknown): string => value === null || value === undefined || value === '' ? '—' : String(value);
@@ -82,6 +83,8 @@ const DetailsBody: React.FC<{ data: any }> = ({ data }) => {
         </Box>
         {member.notes && <><Divider sx={{ my: 1.5 }} /><Detail label="Notes" value={member.notes} /></>}
       </Section>
+
+      <MemberAttendanceSection memberId={member.id} />
 
       <Section title="Family connections">
         <Stack spacing={2}>

@@ -92,6 +92,8 @@ export const churchApi = {
   // Members
   getMembers: async (params?: any) => unwrap((await api.get('/church/members', { params })).data),
   getMemberDetails: async (id: string) => (await api.get(`/church/members/${id}/details`)).data,
+  getMemberAttendance: async (id: string, params: { from: string; to: string }, signal?: AbortSignal): Promise<{ records: import('../lib/memberAttendance').MemberAttendanceRecord[]; from: string; to: string }> =>
+    (await api.get(`/church/members/${id}/attendance`, { params, signal })).data,
   createMember: async (data: any) => (await api.post('/church/members', data)).data,
   updateMember: async (id: string, data: any) => (await api.put(`/church/members/${id}`, data)).data,
   deleteMember: async (id: string) => (await api.delete(`/church/members/${id}`)).data,

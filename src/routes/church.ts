@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import db from '../lib/db';
+import { attendanceDateRange, defaultAttendanceRange } from '../lib/memberAttendance';
 import { decryptSensitiveFields } from '../lib/crypto';
 import { AuthRequest } from '../middleware/auth';
 import { sendSMS } from '../services/mnotify';
@@ -3274,6 +3275,36 @@ router.get('/members/:id/details', async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Get member details error:', error);
     res.status(500).json({ error: 'Failed to fetch member details' });
+  }
+});
+
+/** Date-filtered member attendance; both joins are locked to the active church. */
+router.get('/members/:id/attendance', async (req: AuthRequest, res) => {
+  let range: ReturnType<typeof attendanceDateRange>;
+  try {
+    const defaults = defaultAttendanceRange();
+    range = attendanceDateRange(req.query.from ?? defaults.from, req.query.to ?? defaults.to);
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
+  try {
+    const tenantId = tid(req)!;
+    const member = await db('members').where({ id: req.params.id, tenantId }).select('id').first();
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+    const records = await db('event_attendance as a')
+      .innerJoin('events as e', function () {
+        this.on('e.id', '=', 'a.eventId').andOn('e.tenantId', '=', 'a.tenantId');
+      })
+      .where({ 'a.tenantId': tenantId, 'a.memberId': member.id })
+      .where('e.startTime', '>=', range.start)
+      .where('e.startTime', '<', range.endExclusive)
+      .select('a.id', 'a.eventId', 'a.present', 'a.status', 'a.method', 'a.checkInAt',
+        'e.title as eventTitle', 'e.startTime as eventStartTime')
+      .orderBy('e.startTime', 'desc').orderBy('a.id', 'desc');
+    res.json({ records, from: range.from, to: range.to });
+  } catch (error) {
+    console.error('Get member attendance error:', error);
+    res.status(500).json({ error: 'Failed to load member attendance' });
   }
 });
 
