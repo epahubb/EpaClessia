@@ -108,10 +108,14 @@ const Churches: React.FC = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (mode: string) => api.delete(`/superadmin/churches/${selectedChurch?.id}`, { data: { mode } }),
+    mutationFn: (mode: string) => api.delete(`/superadmin/churches/${selectedChurch?.id}`, { data: { mode, confirmationName: selectedChurch?.name } }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['churches'] });
+      queryClient.invalidateQueries({ queryKey: ['church-details'] });
       setOpenDelete(false);
+      setOpenDetails(false);
+      setSelectedChurch(null);
+      setActionError(null);
     },
     onError: (err: any) => setActionError(err.response?.data?.error || 'Failed to delete church')
   });
@@ -167,6 +171,7 @@ const Churches: React.FC = () => {
     event.stopPropagation();
     setAnchorEl(event.currentTarget);
     setSelectedChurch(church);
+    setActionError(null);
   };
 
   const handleMenuClose = () => {
@@ -396,6 +401,7 @@ const Churches: React.FC = () => {
               select
               size="small"
               label="Plan"
+              id="church-plan-filter"
               value={plan}
               onChange={(e) => setSearchParams(prev => { prev.set('plan', e.target.value); return prev; })}
               sx={{ minWidth: 120, '& .MuiOutlinedInput-root': { borderRadius: 3 } }}
@@ -411,6 +417,7 @@ const Churches: React.FC = () => {
               select
               size="small"
               label="Status"
+              id="church-status-filter"
               value={status}
               onChange={(e) => setSearchParams(prev => { prev.set('status', e.target.value); return prev; })}
               sx={{ minWidth: 120, '& .MuiOutlinedInput-root': { borderRadius: 3 } }}
@@ -563,7 +570,11 @@ const Churches: React.FC = () => {
                     })()}
                   </TableCell>
                   <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                    <IconButton size="small" onClick={(e) => handleMenuOpen(e, church)}>
+                    <IconButton aria-label={`Delete ${church.name}`} color="error" size="small" disabled={church.status === 'deleted'}
+                      onClick={() => { setSelectedChurch(church); setActionError(null); setOpenDelete(true); }}>
+                      <Trash2 size={18} />
+                    </IconButton>
+                    <IconButton aria-label={`Actions for ${church.name}`} size="small" onClick={(e) => handleMenuOpen(e, church)}>
                       <MoreVertical size={18} />
                     </IconButton>
                   </TableCell>
@@ -636,14 +647,15 @@ const Churches: React.FC = () => {
             onClick={() => selectedChurch && setActiveMutation.mutate({ id: selectedChurch.id, active: true })}
             sx={{ gap: 1.5, fontWeight: 600, color: 'success.main' }}
           >
-            <ShieldAlert size={16} /> Activate Church
+            <ShieldAlert size={16} /> {selectedChurch?.status === 'deleted' ? 'Restore Church' : 'Activate Church'}
           </MenuItem>
         ) : null}
         <MenuItem 
-          onClick={() => { setOpenDelete(true); handleMenuClose(); }} 
+          disabled={selectedChurch?.status === 'deleted'}
+          onClick={() => { setActionError(null); setOpenDelete(true); handleMenuClose(); }} 
           sx={{ gap: 1.5, fontWeight: 600, color: 'error.main' }}
         >
-          <Trash2 size={16} /> Delete / Suspend
+          <Trash2 size={16} /> Delete Church
         </MenuItem>
       </Menu>
 

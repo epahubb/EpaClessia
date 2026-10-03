@@ -6,6 +6,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CrudTable, { CrudField } from '../../components/church/CrudTable';
 import MemberImportModal from '../../components/church/MemberImportModal';
 import MemberDetailsDialog from '../../components/church/MemberDetailsDialog';
+import MemberPortalAccessDialog from '../../components/church/MemberPortalAccessDialog';
 import useAuthedImage from '../../hooks/useAuthedImage';
 import churchApi from '../../services/churchApi';
 import usePortalProfile from '../../hooks/usePortalProfile';
@@ -78,37 +79,15 @@ const engagementColor = (status: string): any => ({
  * temporary password, because the stored one is a hash that cannot be read
  * back — there is nothing to re-send, only something to replace.
  */
-const PortalInviteButton: React.FC<{ row: any; onDone: (message: string) => void }> = ({ row, onDone }) => {
-  const [busy, setBusy] = useState(false);
-
-  const send = async () => {
-    setBusy(true);
-    try {
-      const res = await churchApi.sendPortalInvite(row.id);
-      onDone(res?.message || 'Portal login sent.');
-    } catch (e: any) {
-      onDone(e?.friendlyMessage || 'Could not send the portal login.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
+const PortalInviteButton: React.FC<{ row: any; onDone: (message: string) => void; reload: () => void }> = ({ row, onDone, reload }) => {
+  const [open, setOpen] = useState(false);
   const hasEmail = Boolean(row?.email);
-  const label = !hasEmail
-    ? 'Add an email address to this member first'
-    : row?.portalUserUid
-      ? 'Send a new portal password'
-      : 'Create a portal login and send it';
-
-  return (
-    <Tooltip title={label}>
-      <span>
-        <IconButton size="small" onClick={send} disabled={busy || !hasEmail}>
-          <KeyIcon fontSize="small" />
-        </IconButton>
-      </span>
+  return <>
+    <Tooltip title={hasEmail ? 'Create or reset portal username and password' : 'Add an email address to this member first'}>
+      <span><IconButton aria-label="Manage member portal access" size="small" onClick={() => setOpen(true)} disabled={!hasEmail}><KeyIcon fontSize="small" /></IconButton></span>
     </Tooltip>
-  );
+    <MemberPortalAccessDialog open={open} row={row} onClose={() => setOpen(false)} onSaved={message => { onDone(message); reload(); }} />
+  </>;
 };
 
 /**
@@ -514,13 +493,15 @@ export const MemberList: React.FC = () => {
     {
       name: 'password',
       label: 'Password',
+      type: 'password',
       helperText: 'At least 8 characters. Leave blank to have one generated and emailed to the member.',
     },
     {
       name: 'activateNow',
-      label: 'Activate immediately (skip email verification)',
+      label: 'Allow sign-in immediately',
       type: 'checkbox',
-      helperText: 'Tick this only when you have confirmed the member\u2019s identity yourself. Otherwise they activate by clicking the link in their welcome email.',
+      defaultValue: true,
+      helperText: 'Enabled by default for church-created access. Untick only if you want the member to verify their email before signing in.',
     },
   ];
 
@@ -606,8 +587,8 @@ export const MemberList: React.FC = () => {
         Register members, manage profiles, family grouping and membership IDs — all stored in your church database.
         Each member with an email address is given a member portal login as soon as they are registered.
         You can set their username and password yourself, or leave those blank to have them created
-        automatically. New accounts stay pending until the member clicks the link in their welcome
-        email \u2014 or until you activate them here.
+        automatically. New accounts can sign in immediately by default. You can require email
+        verification instead by turning off immediate sign-in.
       </Typography>
 
       {wants('ministries') && ministries.length === 0 && (
@@ -633,7 +614,7 @@ export const MemberList: React.FC = () => {
         rowActions={(row, reload) => (
           <>
             <MemberDetailsDialog row={row} />
-            <PortalInviteButton row={row} onDone={setNotice} />
+            <PortalInviteButton row={row} onDone={setNotice} reload={reload} />
             <PortalActivateButton row={row} onDone={setNotice} reload={reload} />
           </>
         )}

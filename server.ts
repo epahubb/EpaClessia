@@ -56,6 +56,7 @@ import biometricIngestRouter from './src/routes/biometricIngest';
 import { isKnownDenomination, normalizeDenomination } from './src/lib/denominations';
 import { verifyWebhookSignature, verifiedPaymentMatches } from './src/services/paystack';
 import { getPlatformGateway } from './src/lib/platformSettings';
+import { churchBlocksAccess, CHURCH_UNAVAILABLE_MESSAGE } from './src/lib/accountAccess';
 
 async function startServer() {
   // Fail fast on an insecure or incomplete production configuration BEFORE we
@@ -203,7 +204,7 @@ async function startServer() {
       })) {
         await db.transaction(async (trx) => {
           await trx('invoices').where({ id: invoice.id, tenantId: invoice.tenantId }).update({ status: 'paid', paidAt: new Date(), paymentMethod: 'Paystack' });
-          await trx('tenants').where({ id: invoice.tenantId }).update({ status: 'active', planId: invoice.planId });
+          await trx('tenants').where({ id: invoice.tenantId }).whereNot('status', 'deleted').update({ status: 'active', planId: invoice.planId });
         });
         return res.status(200).json({ received: true });
       }
@@ -303,6 +304,11 @@ async function startServer() {
         return res.status(403).json({ error: 'Account is not active. Please contact your administrator.' });
       }
 
+      if (user.role !== 'SUPER_ADMIN' && user.tenantId) {
+        const tenant = await db('tenants').where({ id: user.tenantId }).select('status').first();
+        if (churchBlocksAccess(tenant)) return res.status(403).json({ error: CHURCH_UNAVAILABLE_MESSAGE });
+      }
+
       // Two-factor authentication challenge (superadmin + church admins).
       if (user.twoFactorEnabled && user.twoFactorSecret) {
         const code = String(req.body.twoFactorCode || req.body.totp || '').trim();
@@ -380,6 +386,10 @@ async function startServer() {
         return res
           .status(403)
           .json({ error: 'Account is not active. Please contact your administrator.' });
+      }
+      if (user.role !== 'SUPER_ADMIN' && user.tenantId) {
+        const tenant = await db('tenants').where({ id: user.tenantId }).select('status').first();
+        if (churchBlocksAccess(tenant)) return res.status(403).json({ error: CHURCH_UNAVAILABLE_MESSAGE });
       }
       const token = signAccessToken({
         uid: user.uid,
@@ -746,6 +756,7 @@ async function startServer() {
       const offset = (Number(page) - 1) * Number(limit);
 
       let query = db('tenants')
+        .modify(q => { if (status !== 'deleted') q.whereNot('tenants.status', 'deleted'); })
         .leftJoin('users', function() {
           this.on('tenants.id', '=', 'users.tenantId').andOn('users.role', '!=', db.raw('?', ['SUPER_ADMIN']));
         })
@@ -790,8 +801,9 @@ async function startServer() {
 
       const totalCount = await db('tenants')
         .modify(function(qb) {
+          if (status !== 'deleted') qb.whereNot('status', 'deleted');
           if (search) {
-            qb.where('name', 'like', `%${search}%`).orWhere('websiteUrl', 'like', `%${search}%`);
+            qb.where(function () { this.where('name', 'like', `%${search}%`).orWhere('websiteUrl', 'like', `%${search}%`); });
           }
           if (plan !== 'all') qb.where('planId', plan);
           if (status !== 'all') qb.where('status', status);
@@ -980,17 +992,21 @@ async function startServer() {
     }
   });
 
+  // Recoverable church deletion. Never promise to purge tenant data with a single row delete.
   app.delete("/api/v1/superadmin/churches/:id", authenticate, authorizeSuperAdmin, auditLog('DELETE_CHURCH', 'tenants'), async (req, res) => {
     try {
-      const { mode = 'soft' } = req.body;
-      if (mode === 'soft') {
-        await db('tenants').where({ id: req.params.id }).update({ status: 'deleted' });
-      } else {
-        // Permanent delete (DANGEROUS)
-        await db('tenants').where({ id: req.params.id }).delete();
+      if (req.body?.mode && req.body.mode !== 'soft') {
+        return res.status(400).json({ error: 'Only recoverable church deletion is supported. Church records are retained.' });
       }
-      res.json({ success: true });
+      const church = await db('tenants').where({ id: req.params.id }).first();
+      if (!church) return res.status(404).json({ error: 'Church not found' });
+      if (String(req.body?.confirmationName || '').trim() !== church.name.trim()) {
+        return res.status(400).json({ error: 'Type the church name exactly to confirm deletion.' });
+      }
+      await db('tenants').where({ id: church.id }).update({ status: 'deleted' });
+      res.json({ success: true, message: 'Church deleted. Access is blocked and records are retained for recovery.' });
     } catch (error) {
+      console.error('Delete church error:', error);
       res.status(500).json({ error: 'Failed to delete church' });
     }
   });
@@ -1167,7 +1183,7 @@ async function startServer() {
       });
 
       // Update tenant status to active if pending/trial
-      await db('tenants').where({ id: invoice.tenantId }).update({ status: 'active', planId: invoice.planId });
+      await db('tenants').where({ id: invoice.tenantId }).whereNot('status', 'deleted').update({ status: 'active', planId: invoice.planId });
 
       res.json({ success: true, message: 'Invoice marked as paid and church account activated.' });
     } catch (error) {

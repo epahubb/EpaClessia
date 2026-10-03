@@ -131,7 +131,7 @@ export const ChurchSettingsPage: React.FC = () => {
             { name: 'name', label: 'Group name', required: true, helperText: 'For example: Zone A, Grace Cell, Northside Fellowship.' },
             { name: 'description', label: 'Description', type: 'textarea' },
             { name: 'leaderName', label: 'Group leader' },
-            { name: 'meetingDay', label: 'Meeting day', type: 'select', options: dayOpts },
+            { name: 'meetingDays', label: 'Meeting days', type: 'multiselect', options: dayOpts, helperText: 'Select all days this group meets.' },
             { name: 'meetingTime', label: 'Meeting time' },
             { name: 'location', label: 'Meeting location' },
             { name: 'sortOrder', label: 'Display order', type: 'number', helperText: 'Lower numbers appear first.' },

@@ -2,12 +2,13 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import db from '../lib/db';
 import { JWT_SECRET } from '../lib/config';
+import { churchBlocksAccess, CHURCH_UNAVAILABLE_MESSAGE } from '../lib/accountAccess';
 
 export interface AuthRequest extends Request {
   user?: any;
 }
 
-export const authenticate = (req: AuthRequest, res: Response, next: NextFunction) => {
+export const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
 
@@ -17,9 +18,24 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as any;
-    req.user = decoded;
+    // Persisted state revokes existing access tokens after a church is deleted
+    // or a member is suspended. A signed JWT alone is not current permission.
+    const account = await db('users').where({ uid: decoded.uid }).select('uid', 'role', 'tenantId', 'status').first();
+    if (!account) return res.status(401).json({ error: 'Account no longer exists' });
+    if (account.status && account.status !== 'active') {
+      return res.status(403).json({ error: 'Account is not active. Please contact your administrator.' });
+    }
+    if (account.role !== 'SUPER_ADMIN' && account.tenantId) {
+      const tenant = await db('tenants').where({ id: account.tenantId }).select('status').first();
+      if (churchBlocksAccess(tenant)) return res.status(403).json({ error: CHURCH_UNAVAILABLE_MESSAGE });
+    }
+    req.user = { ...decoded, role: account.role, tenantId: account.tenantId };
     next();
   } catch (err) {
+    if (!(err instanceof jwt.JsonWebTokenError)) {
+      console.error('Authentication state check failed:', err);
+      return res.status(503).json({ error: 'Unable to verify account access. Please try again.' });
+    }
     const isExpired = err instanceof jwt.TokenExpiredError;
     if (err instanceof Error) {
       console.warn('JWT verify failed:', err.name, err.message);

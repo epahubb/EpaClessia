@@ -9,6 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useColorMode } from '../contexts/ThemeContext';
 import { useBranding } from '../contexts/BrandingContext';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { pathForRole } from '../components/RoleLanding';
 
 const FALLBACK_BG = 'https://images.unsplash.com/photo-1544427928-c49cdfebf49c?auto=format&fit=crop&q=80&w=1920';
 
@@ -22,10 +23,13 @@ const LoginPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, isAuthenticated, isLoading } = useAuth();
+  const { login, isAuthenticated, isLoading, user, currentContext } = useAuth();
   const { mode } = useColorMode();
   const { branding } = useBranding();
-  const from = (location.state as any)?.from?.pathname || "/super-admin";
+  const requestedPath = (location.state as any)?.from?.pathname;
+  const homeFor = (role: string) => typeof requestedPath === 'string' && requestedPath.startsWith('/') && !requestedPath.startsWith('//') && requestedPath !== '/login'
+    ? requestedPath : pathForRole(role);
+  const from = homeFor(currentContext?.role || user?.role);
 
   useEffect(() => {
     if (isAuthenticated && !isLoading) {
@@ -42,7 +46,7 @@ const LoginPage: React.FC = () => {
       const response = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, twoFactorCode: twoFactorCode || undefined }),
+        body: JSON.stringify({ identifier: email.trim(), password, twoFactorCode: twoFactorCode || undefined }),
       });
 
       const data = await response.json();
@@ -60,7 +64,7 @@ const LoginPage: React.FC = () => {
       }
 
       await login(data.token, data.user, data.refreshToken);
-      navigate(from, { replace: true });
+      navigate(homeFor(data.user.role), { replace: true });
     } catch (err: any) {
       console.error("Login error:", err);
       setError(err.message || 'Failed to sign in. Please check your credentials.');
@@ -128,7 +132,10 @@ const LoginPage: React.FC = () => {
               <>
                 <TextField
                   fullWidth
-                  label="Email Address"
+                  label="Username or email"
+                  required
+                  autoComplete="username"
+                  helperText="Members can use the username and password provided by their church."
                   variant="outlined"
                   margin="normal"
                   value={email}
@@ -142,6 +149,8 @@ const LoginPage: React.FC = () => {
                 <TextField
                   fullWidth
                   label="Password"
+                  required
+                  autoComplete="current-password"
                   type={showPassword ? 'text' : 'password'}
                   variant="outlined"
                   margin="normal"
@@ -153,7 +162,7 @@ const LoginPage: React.FC = () => {
                     ),
                     endAdornment: (
                       <InputAdornment position="end">
-                        <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
+                        <IconButton aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword(!showPassword)} edge="end">
                           {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                         </IconButton>
                       </InputAdornment>

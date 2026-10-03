@@ -159,7 +159,7 @@ export function portalSkipMessage(reason: PortalSkipReason): string {
   if (reason === 'email_taken') {
     return 'That email address already belongs to another account, so no portal login was created. Use a different address for this member.';
   }
-  return 'No portal login was created because this member has no email address. Add one and use “Send portal invite”.';
+  return 'No portal login was created because this member has no email address. Add one and use “Manage member portal access”.';
 }
 
 /* --- Usernames -------------------------------------------------------- */

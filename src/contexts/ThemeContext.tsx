@@ -70,6 +70,19 @@ export const CustomThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
           borderRadius: 4,
         },
         components: {
+          // Keep the brand's dark-green fills, but use a readable accent for
+          // focused labels and text-only controls on dark surfaces.
+          MuiInputLabel: {
+            styleOverrides: { root: { '&.Mui-focused': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' } } },
+          },
+          MuiCheckbox: {
+            styleOverrides: { root: { '&.Mui-checked': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' } } },
+          },
+          MuiSwitch: {
+            styleOverrides: {
+              switchBase: { '&.Mui-checked': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' } },
+            },
+          },
           MuiCssBaseline: {
             styleOverrides: {
               body: {
@@ -89,6 +102,7 @@ export const CustomThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
                 fontWeight: 700,
                 boxShadow: 'none',
                 textTransform: 'none',
+                '&.MuiButton-textPrimary': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' },
                 '&:hover': {
                   boxShadow: '0 4px 12px rgba(37, 99, 235, 0.15)',
                 },
@@ -123,6 +137,7 @@ export const CustomThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
                 '& .MuiOutlinedInput-notchedOutline': {
                   borderColor: mode === 'light' ? '#e2e8f0' : '#334155',
                 },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: mode === 'dark' ? '#72bc8f' : '#1b4332' },
               },
             },
           },

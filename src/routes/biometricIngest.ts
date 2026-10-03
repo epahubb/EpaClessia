@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import db from '../lib/db';
+import { churchBlocksAccess, CHURCH_UNAVAILABLE_MESSAGE } from '../lib/accountAccess';
 import {
   hashDeviceApiKey,
   resolvePunchEvent,
@@ -41,6 +42,8 @@ async function authenticateDevice(req: Request, res: Response, next: NextFunctio
       return res.status(403).json({ error: 'This device has been deactivated' });
     }
 
+    const tenant = await db('tenants').where({ id: device.tenantId }).select('status').first();
+    if (churchBlocksAccess(tenant)) return res.status(403).json({ error: CHURCH_UNAVAILABLE_MESSAGE });
     (req as DeviceRequest).device = device;
     next();
   } catch (error) {

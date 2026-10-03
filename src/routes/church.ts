@@ -1,5 +1,7 @@
 import { Router, Response, NextFunction } from 'express';
 import db from '../lib/db';
+import { normalizeMeetingDays, groupWithMeetingDays } from '../lib/groupMeetingDays';
+import { portalActivationPreference } from '../lib/accountAccess';
 import { attendanceDateRange, defaultAttendanceRange } from '../lib/memberAttendance';
 import { decryptSensitiveFields } from '../lib/crypto';
 import { AuthRequest } from '../middleware/auth';
@@ -267,7 +269,7 @@ router.get('/groups', async (req: AuthRequest, res) => {
       (counts as any[]).map((r) => [String(r.groupId), Number(r.total) || 0]),
     );
 
-    res.json({ data: (data as any[]).map((g) => ({ ...g, memberCount: byGroup.get(g.id) || 0 })) });
+    res.json({ data: (data as any[]).map((g) => ({ ...groupWithMeetingDays(g), memberCount: byGroup.get(g.id) || 0 })) });
   } catch (error) {
     console.error('List groups error:', error);
     res.status(500).json({ error: 'Failed to fetch groups' });
@@ -326,6 +328,9 @@ router.get('/groups/options', async (req: AuthRequest, res) => {
 });
 
 router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  let meetingDays: string[];
+  try { meetingDays = normalizeMeetingDays(req.body?.meetingDays ?? req.body?.meetingDay); }
+  catch (error) { return res.status(400).json({ error: (error as Error).message }); }
   try {
     const name = String(req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Please enter a name for the group.' });
@@ -348,7 +353,7 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
       description: req.body?.description || null,
       leaderId: req.body?.leaderId || null,
       leaderName: req.body?.leaderName || null,
-      meetingDay: req.body?.meetingDay || null,
+      meetingDay: meetingDays.join(', ') || null,
       meetingTime: req.body?.meetingTime || null,
       location: req.body?.location || null,
       sortOrder: Number(req.body?.sortOrder) || 0,
@@ -358,7 +363,7 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
     await db('church_groups').insert(group);
     // `memberCount` is part of the shape the groups table renders, so a newly
     // created group comes back in the same shape as a listed one.
-    res.status(201).json({ ...group, memberCount: 0 });
+    res.status(201).json({ ...groupWithMeetingDays(group), memberCount: 0 });
   } catch (error) {
     console.error('Create group error:', error);
     res.status(500).json({ error: 'Failed to create group' });
@@ -366,6 +371,12 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
 });
 
 router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
+  let meetingDays: string[] | undefined;
+  try {
+    if ('meetingDays' in req.body || 'meetingDay' in req.body) {
+      meetingDays = normalizeMeetingDays('meetingDays' in req.body ? req.body.meetingDays : req.body.meetingDay);
+    }
+  } catch (error) { return res.status(400).json({ error: (error as Error).message }); }
   try {
     const tenantId = tid(req);
     const existing = await db('church_groups').where({ id: req.params.id, tenantId }).first();
@@ -377,9 +388,10 @@ router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: Aut
       if (!name) return res.status(400).json({ error: 'Please enter a name for the group.' });
       updates.name = name;
     }
-    for (const key of ['description', 'leaderId', 'leaderName', 'meetingDay', 'meetingTime', 'location']) {
+    for (const key of ['description', 'leaderId', 'leaderName', 'meetingTime', 'location']) {
       if (key in req.body) updates[key] = req.body[key] || null;
     }
+    if (meetingDays !== undefined) updates.meetingDay = meetingDays.join(', ') || null;
     if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
     if ('active' in req.body) updates.active = isTruthyFlag(req.body.active);
 
@@ -2668,6 +2680,8 @@ async function provisionPortalAccess(
     return { created: false, reason: 'no_email', message: portalSkipMessage('no_email') };
   }
 
+  const existing = await db('users').whereRaw('lower(email) = ?', [email]).first();
+
   // A username chosen by the admin is validated and checked for collisions
   // before anything is written, so a clash is reported rather than half-applied.
   let username: string | null = null;
@@ -2676,7 +2690,7 @@ async function provisionPortalAccess(
       return { created: false, reason: 'invalid_username', message: USERNAME_RULES };
     }
     username = normalizeUsername(opts.username);
-  } else if (!opts.reset) {
+  } else if (!opts.reset || !existing?.username) {
     // Give every new account a username so members have a short thing to type,
     // and make it unique by suffixing rather than failing the registration.
     const base = suggestUsername(member?.firstName, member?.lastName);
@@ -2684,10 +2698,10 @@ async function provisionPortalAccess(
     for (let attempt = 1; attempt <= 50; attempt += 1) {
       const clash = await db('users')
         .whereRaw('lower(username) = ?', [candidate])
-        .whereNot({ memberId: member.id })
+        .where(function () { this.whereNull('memberId').orWhereNot('memberId', member.id); })
         .first();
       if (!clash) break;
-      candidate = `${base}${attempt}`.slice(0, 32);
+      candidate = `${base.slice(0, 32 - String(attempt).length)}${attempt}`;
     }
     username = candidate;
   }
@@ -2695,7 +2709,7 @@ async function provisionPortalAccess(
   if (username) {
     const taken = await db('users')
       .whereRaw('lower(username) = ?', [username])
-      .whereNot({ memberId: member.id })
+      .where(function () { this.whereNull('memberId').orWhereNot('memberId', member.id); })
       .first();
     if (taken) {
       return {
@@ -2716,7 +2730,10 @@ async function provisionPortalAccess(
     }
   }
 
-  const existing = await db('users').whereRaw('lower(email) = ?', [email]).first();
+
+  if (existing?.tenantId && existing.tenantId !== tenantId) {
+    return { created: false, reason: 'email_taken', message: portalSkipMessage('email_taken') };
+  }
 
   // An address already used by a different person's account must not be taken
   // over: that would hand this member someone else's sign-in.
@@ -2747,6 +2764,8 @@ async function provisionPortalAccess(
     };
   }
 
+  username = username || existing?.username || null;
+
   // The admin's password is used as typed; otherwise one is generated. Either
   // way only the hash is stored, so nobody -- including the church -- can read
   // it back afterwards.
@@ -2759,9 +2778,9 @@ async function provisionPortalAccess(
   const name = [member.firstName, member.lastName].filter(Boolean).join(' ') || 'Member';
   const now = new Date();
 
-  // A new account starts pending: it exists, but cannot sign in until the email
-  // address is confirmed, or until the church vouches for the member directly.
-  const activateNow = Boolean(opts.activate);
+  // Admin-provisioned access is active by default. An explicit false keeps
+  // email verification available when the church prefers it.
+  const activateNow = portalActivationPreference(opts.activate);
   const status = activateNow ? 'active' : 'pending';
   const token = activateNow ? null : generateVerificationToken();
 
@@ -3458,14 +3477,14 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
         password: req.body?.password,
         // An admin registering someone in person can vouch for them straight
         // away instead of waiting on an email round-trip.
-        activate: req.body?.activateNow === true || req.body?.activateNow === 'true',
+        activate: portalActivationPreference(req.body?.activateNow),
       });
     } catch (error) {
       console.error('Portal provisioning failed:', error);
       portalAccess = {
         created: false,
         reason: 'no_email',
-        message: 'The member was saved, but their portal login could not be created. Use “Send portal invite” to try again.',
+        message: 'The member was saved, but their portal login could not be created. Use “Manage member portal access” to try again.',
       };
     }
 
@@ -3482,7 +3501,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
         ...expandMemberProfile(saved, ministryIds),
         hasPhoto: Boolean(member.photo),
         portalAccess,
-        warning: `${portalAccess.message} The member was still registered — use “Send portal invite” to set up their login.`,
+        warning: `${portalAccess.message} The member was still registered — use “Manage member portal access” to set up their login.`,
       });
     }
 
@@ -3525,7 +3544,7 @@ router.post('/members/:id/portal-access', requireRole('CHURCH_ADMIN', 'PASTOR', 
       reset: true,
       username: req.body?.username,
       password: req.body?.password,
-      activate: req.body?.activateNow === true,
+      activate: portalActivationPreference(req.body?.activateNow),
     });
 
     if (!result.created) {
@@ -3576,7 +3595,7 @@ router.post('/members/:id/portal-activate', requireRole('CHURCH_ADMIN', 'PASTOR'
 
     if (!account) {
       return res.status(400).json({
-        error: 'This member has no portal login yet. Use “Send portal invite” first.',
+        error: 'This member has no portal login yet. Use “Manage member portal access” first.',
       });
     }
 

@@ -10,7 +10,7 @@ import AuthedImageField from '../common/AuthedImageField';
 
 export type CrudField = {
   name: string; label: string;
-  type?: 'text' | 'number' | 'select' | 'date' | 'datetime' | 'textarea' | 'checkbox' | 'image' | 'autocomplete' | 'section'
+  type?: 'text' | 'password' | 'number' | 'select' | 'date' | 'datetime' | 'textarea' | 'checkbox' | 'image' | 'autocomplete' | 'section'
     | 'multiselect' | 'list';
   options?: { value: string; label: string }[];
   /**
@@ -171,7 +171,7 @@ const ListField: React.FC<{
                 ) : (
                   <TextField
                     key={f.name} size="small" fullWidth label={f.label}
-                    type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                    type={f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
                     value={row[f.name] ?? ''} helperText={f.helperText}
                     multiline={f.type === 'textarea'} minRows={f.type === 'textarea' ? 2 : undefined}
                     onChange={(e) => setRow(index, f.name, e.target.value)}
@@ -415,7 +415,7 @@ export const CrudTable: React.FC<Props> = ({
               </TextField>
             ) : (
               <TextField key={f.name} label={f.label}
-                type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'datetime' ? 'datetime-local' : 'text'}
+                type={f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'datetime' ? 'datetime-local' : 'text'}
                 value={getField(form, f.name) ?? ''} required={f.required} helperText={f.helperText}
                 multiline={f.type === 'textarea'} minRows={f.type === 'textarea' ? 3 : undefined}
                 onChange={e => setForm(setField(form, f.name, e.target.value))} fullWidth
