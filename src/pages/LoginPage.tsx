@@ -10,6 +10,7 @@ import { useColorMode } from '../contexts/ThemeContext';
 import { useBranding } from '../contexts/BrandingContext';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { pathForRole } from '../components/RoleLanding';
+import api from '../services/api';
 
 const FALLBACK_BG = 'https://images.unsplash.com/photo-1544427928-c49cdfebf49c?auto=format&fit=crop&q=80&w=1920';
 
@@ -43,31 +44,25 @@ const LoginPage: React.FC = () => {
     setError('');
 
     try {
-      const response = await fetch('/api/v1/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: email.trim(), password, twoFactorCode: twoFactorCode || undefined }),
+      // Use the same configured API instance as member registration.
+      const response = await api.post('/auth/login', {
+        identifier: email.trim(), password, twoFactorCode: twoFactorCode || undefined,
       });
-
-      const data = await response.json();
+      const data = response.data;
 
       // Server asks for a 2FA code before issuing a token.
-      if (response.ok && data.requires2FA) {
+      if (data.requires2FA) {
         setRequires2FA(true);
         setLoading(false);
         setError('');
         return;
       }
 
-      if (!response.ok) {
-        throw new Error(data.error || data.details || 'Login failed');
-      }
-
       await login(data.token, data.user, data.refreshToken);
       navigate(homeFor(data.user.role), { replace: true });
     } catch (err: any) {
       console.error("Login error:", err);
-      setError(err.message || 'Failed to sign in. Please check your credentials.');
+      setError(err?.friendlyMessage || err?.response?.data?.error || err.message || 'Failed to sign in. Please check your credentials.');
     } finally {
       setLoading(false);
     }

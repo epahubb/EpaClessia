@@ -77,7 +77,7 @@ export async function initializeDatabase() {
     if (!(await db.schema.hasTable('users'))) {
       await db.schema.createTable('users', (table) => {
         table.string('uid').primary();
-        table.string('email').unique().notNullable();
+        table.string('email').unique().nullable();
         table.string('name').notNullable();
         table.string('phone');
         table.string('role').notNullable();

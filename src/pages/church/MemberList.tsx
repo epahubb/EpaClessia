@@ -81,10 +81,9 @@ const engagementColor = (status: string): any => ({
  */
 const PortalInviteButton: React.FC<{ row: any; onDone: (message: string) => void; reload: () => void }> = ({ row, onDone, reload }) => {
   const [open, setOpen] = useState(false);
-  const hasEmail = Boolean(row?.email);
   return <>
-    <Tooltip title={hasEmail ? 'Create or reset portal username and password' : 'Add an email address to this member first'}>
-      <span><IconButton aria-label="Manage member portal access" size="small" onClick={() => setOpen(true)} disabled={!hasEmail}><KeyIcon fontSize="small" /></IconButton></span>
+    <Tooltip title="Create or reset portal username and password">
+      <span><IconButton aria-label="Manage member portal access" size="small" onClick={() => setOpen(true)}><KeyIcon fontSize="small" /></IconButton></span>
     </Tooltip>
     <MemberPortalAccessDialog open={open} row={row} onClose={() => setOpen(false)} onSaved={message => { onDone(message); reload(); }} />
   </>;
@@ -481,20 +480,19 @@ export const MemberList: React.FC = () => {
     ...(wants('family') ? [] : [{ name: 'maritalStatus', label: 'Marital status', type: 'select' as const, options: MARITAL_STATUSES }]),
     { name: 'notes', label: 'Notes', type: 'textarea' },
 
-    // Portal sign-in details. Optional: left blank, the member still gets an
-    // account -- a username is derived from their name and a password is
-    // generated -- so nobody has to invent credentials for every registration.
+    // Portal sign-in details. With email, blank credentials can be generated.
+    // Without email, both chosen credentials are needed for immediate access.
     { name: 'sec_portal', label: 'Portal access', type: 'section' },
     {
       name: 'username',
       label: 'Username',
-      helperText: 'Letters, numbers, dots, dashes and underscores; 3\u201332 characters. Leave blank to have one created from the member\u2019s name.',
+      helperText: 'Letters, numbers, dots, dashes and underscores; 3\u201332 characters. Required without email. With email, leave blank to generate one.',
     },
     {
       name: 'password',
       label: 'Password',
       type: 'password',
-      helperText: 'At least 8 characters. Leave blank to have one generated and emailed to the member.',
+      helperText: 'At least 8 characters. Required without email; with email, leave blank to generate and send one.',
     },
     {
       name: 'activateNow',
@@ -585,8 +583,8 @@ export const MemberList: React.FC = () => {
       <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>Member Management</Typography>
       <Typography color="text.secondary" sx={{ mb: 2 }}>
         Register members, manage profiles, family grouping and membership IDs — all stored in your church database.
-        Each member with an email address is given a member portal login as soon as they are registered.
-        You can set their username and password yourself, or leave those blank to have them created
+        Enter a username and password during registration to create a member login. Email is optional when both credentials are supplied.
+        With an email address, you can leave credentials blank to have them created and sent
         automatically. New accounts can sign in immediately by default. You can require email
         verification instead by turning off immediate sign-in.
       </Typography>
@@ -606,6 +604,12 @@ export const MemberList: React.FC = () => {
         fields={[...coreFields, ...extendedFields, ...trailingFields]}
         fetchRows={() => churchApi.getMembers()}
         createRow={churchApi.createMember}
+        onCreated={result => {
+          const access = result?.portalAccess;
+          setNotice(access?.created
+            ? `Member registered. ${access.username || 'Their account'} ${access.status === 'active' ? 'can sign in with the password set during registration.' : 'must activate using the invitation before signing in.'}`
+            : `Member registered without login access. ${access?.message || 'Set up portal credentials using the key icon.'}`);
+        }}
         updateRow={churchApi.updateMember}
         deleteRow={churchApi.deleteMember}
         addLabel="Add Member"

@@ -34,14 +34,14 @@ const MemberPortalAccessDialog: React.FC<{ open: boolean; row: any; onClose: () 
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             {error && <Alert severity="error">{error}</Alert>}
-            <Typography sx={{ overflowWrap: 'anywhere' }}>{[row?.firstName, row?.lastName].filter(Boolean).join(' ')} · {row?.email}</Typography>
+            <Typography sx={{ overflowWrap: 'anywhere' }}>{[row?.firstName, row?.lastName].filter(Boolean).join(' ')} · {row?.email || 'No email required for username sign-in'}</Typography>
             {row?.portalUserUid && <Alert severity="warning">Saving replaces this member’s current password. Share the new credentials with the member securely.</Alert>}
             <TextField label="Username" required fullWidth value={username} onChange={e => setUsername(e.target.value)} disabled={busy} autoComplete="off"
               helperText="The member signs in with this username or their email address." />
             <TextField label="New password" type="password" required fullWidth value={password} onChange={e => setPassword(e.target.value)} disabled={busy} autoComplete="new-password"
               helperText="At least 8 characters. Only a password hash is stored; the password cannot be read back." />
             <FormControlLabel control={<Switch checked={active} onChange={e => setActive(e.target.checked)} disabled={busy} />} label="Allow sign-in immediately" />
-            <Alert severity="info">{active ? 'After saving, the member can sign in immediately using this username and password. An invitation will also be sent.' : 'The member must use the emailed activation link before signing in.'}</Alert>
+            <Alert severity="info">{active ? 'After saving, the member can sign in immediately using this username and password. An invitation will be sent if email or SMS delivery is available.' : 'The member must use the emailed activation link before signing in.'}</Alert>
           </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 3 }}>

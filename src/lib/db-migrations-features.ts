@@ -61,6 +61,14 @@ async function addChargeColumns(db: Knex, table: string): Promise<void> {
  * match is kept only as a fallback for accounts created before this existed.
  */
 async function addMemberPortalColumns(db: Knex): Promise<void> {
+  // Username/password member accounts do not require a contact email.
+  // Existing email uniqueness is retained; PostgreSQL/MySQL allow multiple NULLs.
+  if (await db.schema.hasTable('users')) {
+    const info = await db('users').columnInfo();
+    if (info.email && !info.email.nullable) {
+      await db.schema.alterTable('users', t => { t.string('email').nullable().alter(); });
+    }
+  }
   await addColumn(db, 'users', 'memberId', (t) => t.string('memberId'));
   await addColumn(db, 'members', 'portalUserUid', (t) => t.string('portalUserUid'));
   await addColumn(db, 'members', 'portalInvitedAt', (t) => t.timestamp('portalInvitedAt'));

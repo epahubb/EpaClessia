@@ -1,4 +1,5 @@
 import { Router, Response, NextFunction } from 'express';
+import type { Knex } from 'knex';
 import db from '../lib/db';
 import { normalizeMeetingDays, groupWithMeetingDays } from '../lib/groupMeetingDays';
 import { portalActivationPreference } from '../lib/accountAccess';
@@ -2619,7 +2620,7 @@ async function applyMemberGroup(tenantId: string, body: any, target: any): Promi
 /* --- Member portal access ----------------------------------------------- */
 
 /** Why a portal login could not be created, beyond the two generic cases. */
-export type PortalFailureReason = PortalSkipReason | 'username_taken' | 'invalid_username' | 'weak_password';
+export type PortalFailureReason = PortalSkipReason | 'username_taken' | 'invalid_username' | 'weak_password' | 'invalid_email' | 'activation_required' | 'credentials_required';
 
 /**
  * The `reason?: undefined` / `message?: undefined` members on the success
@@ -2631,7 +2632,7 @@ export type PortalFailureReason = PortalSkipReason | 'username_taken' | 'invalid
 export type PortalAccessResult =
   | {
       created: true;
-      email: string;
+      email: string | null;
       username: string | null;
       /** 'pending' until the member (or the church) activates the account. */
       status: 'pending' | 'active';
@@ -2657,11 +2658,12 @@ export type PortalAccessResult =
  * admin is told the message did not go out, which is more useful than rolling
  * back an account the member could otherwise have used.
  */
-async function provisionPortalAccess(
+export async function provisionPortalAccess(
   tenantId: string,
   member: any,
   opts: {
     baseUrl: string;
+    connection?: Knex.Transaction;
     reset?: boolean;
     /** Username the church admin typed. Falls back to one derived from the name. */
     username?: string;
@@ -2675,12 +2677,20 @@ async function provisionPortalAccess(
     activate?: boolean;
   } = { baseUrl: '' },
 ): Promise<PortalAccessResult> {
-  const email = normalizeLoginEmail(member?.email);
-  if (!isUsableLoginEmail(email)) {
-    return { created: false, reason: 'no_email', message: portalSkipMessage('no_email') };
+  const database = opts.connection || db;
+  const email = normalizeLoginEmail(member?.email) || null;
+  if (email && !isUsableLoginEmail(email)) {
+    return { created: false, reason: 'invalid_email', message: 'Enter a valid email address, or leave email blank and supply a username and password.' };
   }
-
-  const existing = await db('users').whereRaw('lower(email) = ?', [email]).first();
+  if (!email && (!String(opts.username || '').trim() || !opts.password)) {
+    return { created: false, reason: 'credentials_required', message: 'Without an email address, enter both a username and a password to create member login access.' };
+  }
+  if (!email && !portalActivationPreference(opts.activate)) {
+    return { created: false, reason: 'activation_required', message: 'Enable immediate sign-in for a member without an email address.' };
+  }
+  // The explicit member link is authoritative; email is only a fallback.
+  const linked = await database('users').where({ memberId: member.id, tenantId }).first();
+  const existing = linked || (email ? await database('users').whereRaw('lower(email) = ?', [email]).first() : null);
 
   // A username chosen by the admin is validated and checked for collisions
   // before anything is written, so a clash is reported rather than half-applied.
@@ -2696,7 +2706,7 @@ async function provisionPortalAccess(
     const base = suggestUsername(member?.firstName, member?.lastName);
     let candidate = base;
     for (let attempt = 1; attempt <= 50; attempt += 1) {
-      const clash = await db('users')
+      const clash = await database('users')
         .whereRaw('lower(username) = ?', [candidate])
         .where(function () { this.whereNull('memberId').orWhereNot('memberId', member.id); })
         .first();
@@ -2707,7 +2717,7 @@ async function provisionPortalAccess(
   }
 
   if (username) {
-    const taken = await db('users')
+    const taken = await database('users')
       .whereRaw('lower(username) = ?', [username])
       .where(function () { this.whereNull('memberId').orWhereNot('memberId', member.id); })
       .first();
@@ -2740,12 +2750,13 @@ async function provisionPortalAccess(
   if (existing && existing.memberId && existing.memberId !== member.id) {
     return { created: false, reason: 'email_taken', message: portalSkipMessage('email_taken') };
   }
-  if (existing && !existing.memberId && existing.role && existing.role !== MEMBER_PORTAL_ROLE) {
+  if (existing && existing.role && existing.role !== MEMBER_PORTAL_ROLE) {
+    if (opts.username || opts.password) return { created: false, reason: 'email_taken', message: 'This email belongs to a staff account. Use a different email or leave email blank for a separate username-based member login. Staff passwords are not replaced.' };
     // A staff account (pastor, secretary) already owns this address. Link the
     // member record to it rather than creating a second login for one person,
     // and leave their existing password alone.
-    await db('users').where({ uid: existing.uid }).update({ memberId: member.id });
-    await db('members')
+    await database('users').where({ uid: existing.uid }).update({ memberId: member.id });
+    await database('members')
       .where({ id: member.id, tenantId })
       .update({
         portalUserUid: existing.uid,
@@ -2787,7 +2798,8 @@ async function provisionPortalAccess(
   let uid: string;
   if (existing) {
     uid = existing.uid;
-    await db('users').where({ uid }).update({
+    await database('users').where({ uid }).update({
+      email,
       password: hash,
       // An admin-chosen password is the credential the member was given, so we
       // do not nag them to change it. A generated one is a stopgap.
@@ -2805,7 +2817,7 @@ async function provisionPortalAccess(
     });
   } else {
     uid = generatePortalUid();
-    await db('users').insert({
+    await database('users').insert({
       uid,
       email,
       username,
@@ -2825,7 +2837,7 @@ async function provisionPortalAccess(
     });
   }
 
-  await db('members')
+  await database('members')
     .where({ id: member.id, tenantId })
     .update({
       portalUserUid: uid,
@@ -2835,13 +2847,13 @@ async function provisionPortalAccess(
       portalStatus: status,
     });
 
-  const tenant = await db('tenants').where({ id: tenantId }).first();
+  const tenant = await database('tenants').where({ id: tenantId }).first();
   const churchName = tenant?.name || 'Your church';
   const loginUrl = `${opts.baseUrl || ''}/login`;
   const invite = {
     memberName: name,
     churchName,
-    email,
+    email: email || '',
     password,
     loginUrl,
     username: username || undefined,
@@ -2851,7 +2863,7 @@ async function provisionPortalAccess(
   // Email first: it carries the full explanation.
   let emailSent = false;
   try {
-    const result = await sendEmail({
+    const result = email ? await sendEmail({
       to: email,
       subject: portalInviteSubject(churchName),
       html: emailTemplate({
@@ -2863,7 +2875,7 @@ async function provisionPortalAccess(
         ctaUrl: invite.activationUrl || loginUrl,
         footer: `Sent by ${churchName} via Ecclesia.`,
       }),
-    });
+    }) : null;
     emailSent = Boolean(result?.success);
   } catch (error) {
     console.error('Portal invite email failed:', error);
@@ -2885,11 +2897,11 @@ async function provisionPortalAccess(
     }
   }
 
-  await db('communications_log')
+  await database('communications_log')
     .insert({
       tenantId,
       type: emailSent ? 'email' : 'sms',
-      recipient: email,
+      recipient: email || member.phone || username,
       subject: portalInviteSubject(churchName),
       message: 'Member portal invitation',
       status: emailSent || smsSent ? 'sent' : 'failed',
@@ -3016,23 +3028,24 @@ async function syncMemberMinistries(
   member: { id: string; firstName?: string; lastName?: string; phone?: string | null; email?: string | null },
   ministryIds: string[],
   createdBy?: string,
+  database: Knex = db,
 ): Promise<void> {
   // Only ministries belonging to this church, so a crafted request cannot
   // attach a member to another church's ministry.
   const valid = ministryIds.length
-    ? (await db('ministries').where({ tenantId }).whereIn('id', ministryIds).select('id')).map(
+    ? (await database('ministries').where({ tenantId }).whereIn('id', ministryIds).select('id')).map(
         (m: any) => m.id,
       )
     : [];
 
-  const existing = await db('ministry_members')
+  const existing = await database('ministry_members')
     .where({ tenantId, memberId: member.id })
     .select('id', 'ministryId');
   const existingIds = existing.map((r: any) => r.ministryId);
 
   const toRemove = existing.filter((r: any) => !valid.includes(r.ministryId));
   if (toRemove.length) {
-    await db('ministry_members')
+    await database('ministry_members')
       .whereIn('id', toRemove.map((r: any) => r.id))
       .delete();
   }
@@ -3040,7 +3053,7 @@ async function syncMemberMinistries(
   const toAdd = valid.filter((id: string) => !existingIds.includes(id));
   if (toAdd.length) {
     const name = `${member.firstName || ''} ${member.lastName || ''}`.trim() || 'Member';
-    await db('ministry_members').insert(
+    await database('ministry_members').insert(
       toAdd.map((ministryId: string) => ({
         id: genId('minmem'),
         tenantId,
@@ -3091,13 +3104,13 @@ function expandMemberProfile(member: any, ministryIds: string[] = []): any {
  * link would only exist on whichever profile happened to be edited, and the
  * spouse's own page would show nothing.
  */
-async function linkSpouse(tenantId: string, member: any): Promise<void> {
+async function linkSpouse(tenantId: string, member: any, database: Knex = db): Promise<void> {
   const spouseId = member.spouseMemberId;
   if (!spouseId || spouseId === member.id) return;
-  const spouse = await db('members').where({ id: spouseId, tenantId }).first();
+  const spouse = await database('members').where({ id: spouseId, tenantId }).first();
   if (!spouse) return;
   const memberName = `${member.firstName || ''} ${member.lastName || ''}`.trim();
-  await db('members').where({ id: spouseId, tenantId }).update({
+  await database('members').where({ id: spouseId, tenantId }).update({
     spouseMemberId: member.id,
     spouseName: spouse.spouseName || memberName || null,
     maritalStatus: spouse.maritalStatus || member.maritalStatus || 'married',
@@ -3108,17 +3121,17 @@ async function linkSpouse(tenantId: string, member: any): Promise<void> {
  * Children who are members of the church are connected back to their parent,
  * so the child's own record shows who they belong to.
  */
-async function linkChildren(tenantId: string, parentId: string, children: any[]): Promise<void> {
+async function linkChildren(tenantId: string, parentId: string, children: any[], database: Knex = db): Promise<void> {
   const childIds = (children || []).map((c: any) => c?.memberId).filter(Boolean);
 
   // Drop links to children removed from the list, so a correction does not
   // leave a stale parent on someone else's record.
-  const stale = db('members').where({ tenantId, parentMemberId: parentId });
+  const stale = database('members').where({ tenantId, parentMemberId: parentId });
   if (childIds.length) stale.whereNotIn('id', childIds);
   await stale.update({ parentMemberId: null });
 
   if (childIds.length) {
-    await db('members')
+    await database('members')
       .where({ tenantId })
       .whereIn('id', childIds)
       .whereNot({ id: parentId })
@@ -3456,54 +3469,37 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       member.photoUpdatedAt = new Date();
     }
 
-    await db('members').insert(member);
-
-    const ministryIds = normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries);
-    await syncMemberMinistries(tid(req)!, member, ministryIds, req.user?.uid);
-    await linkSpouse(tid(req)!, member);
-    await linkChildren(tid(req)!, member.id, normalizeChildren(req.body.children));
-
-    // The moment a member is registered they get portal access. This runs
-    // after the member row exists so the two records can point at each other.
-    // A failure here must not fail the registration: the member is saved, and
-    // the admin can re-send the invite from the member list.
+    const explicitCredentials = Boolean(String(req.body?.username || '').trim() || req.body?.password);
+    // Catch malformed explicit credentials before inserting any member row.
+    if (explicitCredentials) {
+      if (req.body?.username && !isUsableUsername(req.body.username)) return res.status(400).json({ error: USERNAME_RULES });
+      if (req.body?.password) {
+        const check = validatePortalPassword(req.body.password);
+        if (!check.ok) return res.status(400).json({ error: check.error });
+      }
+    }
     let portalAccess: PortalAccessResult;
-    try {
+    const ministryIds = normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries);
+    // Save the member and login together. A rejected or failed account creation
+    // rolls back the profile too, so a 201 response cannot conceal broken credentials.
+    await db.transaction(async trx => {
+      await trx('members').insert(member);
+      await syncMemberMinistries(tid(req)!, member, ministryIds, req.user?.uid, trx);
+      await linkSpouse(tid(req)!, member, trx);
+      await linkChildren(tid(req)!, member.id, normalizeChildren(req.body.children), trx);
       portalAccess = await provisionPortalAccess(tid(req)!, member, {
+        connection: trx,
         baseUrl: publicBaseUrl(req),
-        // Credentials the church admin typed on the registration form. Left
-        // blank, a username is derived from the name and a password generated.
         username: req.body?.username,
         password: req.body?.password,
-        // An admin registering someone in person can vouch for them straight
-        // away instead of waiting on an email round-trip.
         activate: portalActivationPreference(req.body?.activateNow),
       });
-    } catch (error) {
-      console.error('Portal provisioning failed:', error);
-      portalAccess = {
-        created: false,
-        reason: 'no_email',
-        message: 'The member was saved, but their portal login could not be created. Use “Manage member portal access” to try again.',
-      };
-    }
-
-    // A credential the admin typed but which could not be used is an error
-    // worth surfacing: silently substituting a generated password would leave
-    // them handing out one that does not work.
-    if (
-      !portalAccess.created &&
-      (req.body?.username || req.body?.password) &&
-      portalAccess.reason !== 'no_email'
-    ) {
-      const { photo: _p, ...saved } = member;
-      return res.status(201).json({
-        ...expandMemberProfile(saved, ministryIds),
-        hasPhoto: Boolean(member.photo),
-        portalAccess,
-        warning: `${portalAccess.message} The member was still registered — use “Manage member portal access” to set up their login.`,
-      });
-    }
+      if (explicitCredentials && !portalAccess.created) {
+        const failure = new Error(portalAccess.message) as Error & { portalFailure?: PortalAccessResult };
+        failure.portalFailure = portalAccess;
+        throw failure;
+      }
+    });
 
     // Never echo the raw image bytes back in the JSON response.
     const { photo: _omitPhoto, ...safeMember } = member;
@@ -3513,6 +3509,10 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       portalAccess,
     });
   } catch (error) {
+    if ((error as any)?.portalFailure) {
+      const failure = (error as any).portalFailure;
+      return res.status(400).json({ error: failure.message, reason: failure.reason });
+    }
     handleImageError(error, res, 'Failed to create member');
   }
 });
@@ -3566,7 +3566,7 @@ router.post('/members/:id/portal-access', requireRole('CHURCH_ADMIN', 'PASTOR', 
           ? pending
             ? `Sent to ${result.email}. The member must click the activation link before signing in — or you can activate the account here.`
             : `A new portal login was sent to ${result.email}.`
-          : `The portal login was created for ${result.email}, but the invitation could not be delivered. Check the email and SMS settings.`,
+          : result.email ? `The portal login was created for ${result.username || result.email}, but the invitation could not be delivered. Share the chosen credentials securely or check email/SMS settings.` : `Portal access is ready for ${result.username}. The member can sign in with the username and password you entered. Share them securely.`,
     });
   } catch (error) {
     console.error('POST /members/:id/portal-access error:', error);

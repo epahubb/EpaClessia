@@ -50,6 +50,7 @@ type Props = {
   fields: CrudField[];
   fetchRows: () => Promise<any[]>;
   createRow?: (data: any) => Promise<any>;
+  onCreated?: (result: any) => void;
   updateRow?: (id: string, data: any) => Promise<any>;
   deleteRow?: (id: string) => Promise<any>;
   idKey?: string;
@@ -198,7 +199,7 @@ const ListField: React.FC<{
 export const CrudTable: React.FC<Props> = ({
   columns, fields, fetchRows, createRow, updateRow, deleteRow,
   idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.',
-  onDialogOpen,
+  onDialogOpen, onCreated,
 }) => {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -286,7 +287,8 @@ export const CrudTable: React.FC<Props> = ({
         // error saying that no updatable fields were supplied.
         if (Object.keys(payload).length > 0) await updateRow(editing[idKey], payload);
       } else if (createRow) {
-        await createRow(payload);
+        const result = await createRow(payload);
+        onCreated?.(result);
       }
       setOpen(false); await reload();
     } catch (e: any) {
