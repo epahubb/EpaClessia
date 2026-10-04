@@ -20,6 +20,7 @@ export default defineConfig(() => {
      * process.env is genuinely private) and expose a normal API route to the UI.
      * Never reintroduce a secret here.
      */
+    worker: { format: 'es' as const },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

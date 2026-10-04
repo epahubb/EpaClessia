@@ -68,7 +68,7 @@ export function sniffMimeType(buffer: Buffer): AllowedImageMime | null {
  * @param dataUrl e.g. "data:image/jpeg;base64,/9j/4AAQ..."
  * @throws ImageValidationError with a message that is safe to show the user.
  */
-export function decodeImageDataUrl(dataUrl: unknown): DecodedImage {
+export function decodeImageDataUrl(dataUrl: unknown, maxBytes = MAX_IMAGE_BYTES): DecodedImage {
   if (typeof dataUrl !== 'string' || !dataUrl) {
     throw new ImageValidationError('No image data supplied.');
   }
@@ -100,10 +100,10 @@ export function decodeImageDataUrl(dataUrl: unknown): DecodedImage {
 
   // Enforce the ceiling on DECODED bytes. base64 inflates by ~33%, so checking
   // the string length would reject valid images and accept oversized ones.
-  if (buffer.length > MAX_IMAGE_BYTES) {
+  if (buffer.length > maxBytes) {
     const kb = Math.round(buffer.length / 1024);
     throw new ImageValidationError(
-      `Image is ${kb}KB, which exceeds the 1MB limit. Please choose a smaller image.`,
+      `Image is ${kb}KB, which exceeds the ${Math.ceil(maxBytes / (1024 * 1024))}MB limit. Please choose a smaller image.`,
       413,
     );
   }

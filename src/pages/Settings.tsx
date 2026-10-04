@@ -9,6 +9,8 @@ import {
   Eye, EyeOff, SendHorizonal, Upload, KeyRound,
 } from 'lucide-react';
 import { settingsService } from '../services/settingsService';
+import { compressImage, CHURCH_LOGO_OPTIONS } from '../lib/imageCompress';
+import { useBranding } from '../contexts/BrandingContext';
 import TwoFactorSetup from '../components/TwoFactorSetup';
 
 type FieldType = 'text' | 'password' | 'number' | 'bool' | 'select' | 'image';
@@ -76,6 +78,8 @@ const SECTIONS: Section[] = [
 ];
 
 const Settings: React.FC = () => {
+  const { refresh: refreshBranding } = useBranding();
+  const [uploading, setUploading] = useState(false);
   const [active, setActive] = useState(0);
   const [values, setValues] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
@@ -104,6 +108,7 @@ const Settings: React.FC = () => {
     setSaving(true); setMsg(null);
     try {
       await settingsService.updateSettings(section.key, values);
+      if (section.key === 'branding') await refreshBranding();
       setMsg({ type: 'success', text: `${section.label} saved.` });
     } catch {
       setMsg({ type: 'error', text: 'Failed to save settings.' });
@@ -123,17 +128,20 @@ const Settings: React.FC = () => {
 
   const setField = (k: string, v: any) => setValues((prev) => ({ ...prev, [k]: v }));
 
-  const handleImageUpload = (key: string, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleImageUpload = async (key: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
-    const maxMb = Number(values.maxUploadMb) || 5;
-    if (file.size > maxMb * 1024 * 1024) {
-      setMsg({ type: 'error', text: `File exceeds the ${maxMb}MB limit.` });
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => setField(key, reader.result as string);
-    reader.readAsDataURL(file);
+    setUploading(true); setMsg(null);
+    try {
+      if (file.size > 25 * 1024 * 1024) throw new Error('Choose an image smaller than 25 MB.');
+      const result = await compressImage(file, key === 'loginBackground'
+        ? { maxDimension: 1920, maxBytes: 999999, mimeType: 'image/jpeg', quality: 0.86 }
+        : CHURCH_LOGO_OPTIONS);
+      setField(key, result.dataUrl);
+      setMsg({ type: 'success', text: `Image prepared (${Math.ceil(result.bytes / 1024)} KB). Click Save Settings to publish it.` });
+    } catch (error: any) { setMsg({ type: 'error', text: error?.message || 'Image could not be processed.' }); }
+    finally { setUploading(false); input.value = ''; }
   };
 
   const renderField = (f: Field) => {
@@ -146,9 +154,9 @@ const Settings: React.FC = () => {
             ? <Box component="img" src={val} alt={f.label} sx={{ maxHeight: 90, maxWidth: '100%', borderRadius: 1, mb: 1, display: 'block', bgcolor: 'action.hover' }} />
             : <Typography variant="caption" color="text.secondary">No image uploaded yet.</Typography>}
           <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
-            <Button component="label" variant="outlined" size="small" startIcon={<Upload size={16} />} sx={{ borderRadius: 2 }}>
+            <Button component="label" disabled={uploading || saving} variant="outlined" size="small" startIcon={<Upload size={16} />} sx={{ borderRadius: 2 }}>
               Upload
-              <input hidden type="file" accept="image/*" onChange={(e) => handleImageUpload(f.key, e)} />
+              <input hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => handleImageUpload(f.key, e)} />
             </Button>
             {val && <Button size="small" color="error" onClick={() => setField(f.key, '')}>Remove</Button>}
           </Box>
@@ -234,7 +242,7 @@ const Settings: React.FC = () => {
 
             {section.custom !== 'twofa' && (
             <Box sx={{ display: 'flex', gap: 1.5, mt: 4 }}>
-              <Button variant="contained" startIcon={<Save size={18} />} onClick={save} disabled={saving} sx={{ borderRadius: 2, fontWeight: 700 }}>
+              <Button variant="contained" startIcon={<Save size={18} />} onClick={save} disabled={saving || uploading} sx={{ borderRadius: 2, fontWeight: 700 }}>
                 {saving ? 'Saving…' : 'Save changes'}
               </Button>
               {section.test && (

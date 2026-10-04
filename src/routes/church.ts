@@ -1,6 +1,9 @@
+import { allocateMemberId, normalizeMemberId, SIX_DIGIT_MEMBER_ID } from '../lib/memberIds';
+import { decodeProfileImageDataUrl } from '../lib/profileImages';
 import { Router, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
 import db from '../lib/db';
+import { canonicalRole, isChurchRole } from '../lib/accountRoles';
 import { normalizeMeetingDays, groupWithMeetingDays } from '../lib/groupMeetingDays';
 import { portalActivationPreference } from '../lib/accountAccess';
 import { attendanceDateRange, defaultAttendanceRange } from '../lib/memberAttendance';
@@ -3383,7 +3386,7 @@ router.post(
         .first();
       if (!exists) return res.status(404).json({ error: 'Member not found' });
 
-      const img = decodeImageDataUrl(req.body?.photo);
+      const img = await decodeProfileImageDataUrl(req.body?.photo);
       await db('members')
         .where({ id: req.params.id, tenantId: tid(req) })
         .update({
@@ -3437,7 +3440,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       gender: gender || null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       membershipStatus: membershipStatus || 'active',
-      membershipId: membershipId || `MEM-${String(Date.now()).slice(-6)}`,
+      membershipId: null,
       anniversaryDate: anniversaryDate ? new Date(anniversaryDate) : null,
       maritalStatus: maritalStatus || null,
       occupation: occupation || null,
@@ -3463,7 +3466,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
     // Optional profile picture supplied at creation time, so an admin can add
     // a member and their photo in one step.
     if (photo) {
-      const img = decodeImageDataUrl(photo);
+      const img = await decodeProfileImageDataUrl(photo);
       member.photo = img.buffer;
       member.photoMimeType = img.mimeType;
       member.photoUpdatedAt = new Date();
@@ -3483,6 +3486,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
     // Save the member and login together. A rejected or failed account creation
     // rolls back the profile too, so a 201 response cannot conceal broken credentials.
     await db.transaction(async trx => {
+      member.membershipId = await allocateMemberId(trx, tid(req)!, membershipId);
       await trx('members').insert(member);
       await syncMemberMinistries(tid(req)!, member, ministryIds, req.user?.uid, trx);
       await linkSpouse(tid(req)!, member, trx);
@@ -3513,6 +3517,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       const failure = (error as any).portalFailure;
       return res.status(400).json({ error: failure.message, reason: failure.reason });
     }
+    if ((error as any)?.status) return res.status((error as any).status).json({ error: (error as Error).message });
     handleImageError(error, res, 'Failed to create member');
   }
 });
@@ -3705,11 +3710,6 @@ router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'
     const skipped: Array<{ rowNumber: number; reason: string }> = [];
     const toInsert: any[] = [];
 
-    // One timestamp base for the whole batch. The single-member route derives
-    // membershipId from Date.now(), which would hand every row in a bulk insert
-    // the SAME id, so the batch index is appended to keep them distinct.
-    const stamp = String(Date.now()).slice(-6);
-
     validation.validRows.forEach((result, index) => {
       const member = result.member as NormalizedMember;
       const email = member.email?.toLowerCase();
@@ -3730,7 +3730,7 @@ router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'
         gender: member.gender,
         dateOfBirth: member.dateOfBirth ? new Date(member.dateOfBirth) : null,
         membershipStatus: member.membershipStatus,
-        membershipId: member.membershipId || `MEM-${stamp}-${index + 1}`,
+        membershipId: member.membershipId || null,
         anniversaryDate: member.anniversaryDate ? new Date(member.anniversaryDate) : null,
         maritalStatus: member.maritalStatus,
         occupation: member.occupation,
@@ -3770,10 +3770,11 @@ router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'
 
     if (toInsert.length > 0) {
       await db.transaction(async (trx) => {
-        // Chunked so a large register does not build one enormous statement.
-        for (let i = 0; i < toInsert.length; i += 200) {
-          await trx('members').insert(toInsert.slice(i, i + 200));
+        for (const member of toInsert) {
+          member.membershipId = await allocateMemberId(trx, tenantId!, member.membershipId);
+          await trx('members').insert(member);
         }
+
       });
     }
 
@@ -3788,6 +3789,7 @@ router.post('/members/import', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'
     res.status(201).json({ success: true, ...summary });
   } catch (error) {
     console.error('POST /members/import error:', error);
+    if ((error as any)?.status) return res.status((error as any).status).json({ error: (error as Error).message });
     res.status(500).json({ error: 'Failed to import members' });
   }
 });
@@ -3803,6 +3805,12 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
     const updates: any = {};
     for (const key of allowed) {
       if (key in req.body) updates[key] = req.body[key];
+    }
+    if ('membershipId' in updates) {
+      const id = normalizeMemberId(updates.membershipId);
+      if (!id) return res.status(400).json({ error: 'Member ID must contain exactly six digits.' });
+      if (await db('members').where({ tenantId: tid(req), membershipId: id }).whereNot({ id: req.params.id }).first()) return res.status(409).json({ error: 'This member ID is already in use.' });
+      updates.membershipId = id;
     }
     // HTML date inputs represent an unset date as an empty string. Writing that
     // string into a Postgres timestamp aborts the entire UPDATE, which made an
@@ -3838,7 +3846,7 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
         updates.photoMimeType = null;
         updates.photoUpdatedAt = null;
       } else {
-        const img = decodeImageDataUrl(req.body.photo);
+        const img = await decodeProfileImageDataUrl(req.body.photo);
         updates.photo = img.buffer;
         updates.photoMimeType = img.mimeType;
         updates.photoUpdatedAt = new Date();
@@ -5322,8 +5330,10 @@ router.post('/visitors/:id/convert', requireRole('CHURCH_ADMIN', 'PASTOR'), asyn
     if (!v) return res.status(404).json({ error: 'Visitor not found' });
     if (v.convertedMemberId) return res.status(400).json({ error: 'Visitor already converted' });
     const memberId = genId('member');
-    const membershipId = `MEM-${Date.now().toString().slice(-6)}`;
-    await db('members').insert({
+    let membershipId = '';
+    await db.transaction(async trx => {
+    membershipId = await allocateMemberId(trx, tid(req)!);
+    await trx('members').insert({
       id: memberId,
       tenantId: tid(req),
       membershipId,
@@ -5337,7 +5347,8 @@ router.post('/visitors/:id/convert', requireRole('CHURCH_ADMIN', 'PASTOR'), asyn
       joinDate: new Date(),
       createdAt: new Date(),
     });
-    await db('visitors').where({ id: v.id, tenantId: tid(req) }).update({ followUpStatus: 'converted', convertedMemberId: memberId });
+    await trx('visitors').where({ id: v.id, tenantId: tid(req) }).update({ followUpStatus: 'converted', convertedMemberId: memberId });
+    });
     await logActivity(req, 'convert', 'visitors', v.id, `Converted to member ${membershipId}`);
     res.json({ success: true, memberId, membershipId });
   } catch (e) {
@@ -5512,10 +5523,19 @@ router.put('/users/:uid', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, 
   try {
     const existing = await db('users').where({ uid: req.params.uid, tenantId: tid(req) }).first();
     if (!existing) return res.status(404).json({ error: 'User not found' });
+    if (existing.role === 'SUPER_ADMIN') return res.status(403).json({ error: 'Platform administrator accounts cannot be edited by a church.' });
     const allowed = ['name', 'phone', 'role', 'status'];
     const updates: any = {};
     for (const k of allowed) if (k in req.body) updates[k] = req.body[k];
-    await db('users').where({ uid: req.params.uid, tenantId: tid(req) }).update(updates);
+    if ('role' in updates) {
+      if (!isChurchRole(updates.role)) return res.status(400).json({ error: 'Choose a supported church role.' });
+      updates.role = canonicalRole(updates.role);
+    }
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'No account fields were supplied.' });
+    await db.transaction(async trx => {
+      await trx('users').where({ uid: req.params.uid, tenantId: tid(req) }).update(updates);
+      if (updates.role && await trx.schema.hasTable('user_tenant_roles')) await trx('user_tenant_roles').where({ userId: req.params.uid, tenantId: tid(req) }).update({ role: updates.role });
+    });
     await logActivity(req, 'update', 'users', req.params.uid);
     res.json({ success: true });
   } catch (e) {

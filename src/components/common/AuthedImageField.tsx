@@ -20,6 +20,7 @@ interface AuthedImageFieldProps {
   variant?: ImageUploadVariant;
   label?: string;
   disabled?: boolean;
+  onProcessingChange?: (busy: boolean) => void;
 }
 
 const AuthedImageField: React.FC<AuthedImageFieldProps> = ({
@@ -29,6 +30,7 @@ const AuthedImageField: React.FC<AuthedImageFieldProps> = ({
   variant = 'avatar',
   label,
   disabled,
+  onProcessingChange,
 }) => {
   const { url: storedUrl, loading } = useAuthedImage(existingPath);
 
@@ -44,6 +46,7 @@ const AuthedImageField: React.FC<AuthedImageFieldProps> = ({
         onChange={onChange}
         variant={variant}
         disabled={disabled || loading}
+        onProcessingChange={onProcessingChange}
       />
       {loading && <p className="text-xs text-gray-500 mt-1">Loading current image...</p>}
     </div>

@@ -103,6 +103,7 @@ export const CustomThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
                 boxShadow: 'none',
                 textTransform: 'none',
                 '&.MuiButton-textPrimary': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' },
+                '&.MuiButton-outlinedPrimary': { color: mode === 'dark' ? '#72bc8f' : '#1b4332', borderColor: mode === 'dark' ? '#72bc8f' : 'rgba(27,67,50,0.5)' },
                 '&:hover': {
                   boxShadow: '0 4px 12px rgba(37, 99, 235, 0.15)',
                 },

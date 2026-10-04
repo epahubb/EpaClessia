@@ -23,6 +23,8 @@ export interface MemberProfileData {
   address: string | null;
   occupation: string | null;
   photoUrl: string | null;
+  hasPhoto?: boolean;
+  photoUpdatedAt?: string | null;
   membershipId: string | null;
   membershipStatus: string | null;
   approvalStatus: string | null;
@@ -61,6 +63,7 @@ export interface ProfileUpdatePayload {
   address?: string | null;
   occupation?: string | null;
   photoUrl?: string | null;
+  photo?: string | null;
   commPreferences?: CommPreferences;
 }
 

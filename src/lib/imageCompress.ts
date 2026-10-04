@@ -34,6 +34,7 @@ const DEFAULTS: Required<CompressOptions> = {
 
 /** Presets so callers do not have to think about dimensions. */
 export const PROFILE_PHOTO_OPTIONS: CompressOptions = {
+  maxBytes: 999999,
   maxDimension: 512,
   mimeType: 'image/jpeg',
   quality: 0.85,

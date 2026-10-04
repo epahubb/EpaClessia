@@ -1,3 +1,4 @@
+import { migrateMemberIds } from './memberIds';
 import type { Knex } from 'knex';
 
 /**
@@ -655,4 +656,5 @@ export async function applyFeatureMigrations(db: Knex): Promise<void> {
     });
     console.log('Table "absence_surveys" created.');
   }
+  await migrateMemberIds(db);
 }

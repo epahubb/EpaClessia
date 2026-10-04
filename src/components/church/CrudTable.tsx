@@ -22,6 +22,8 @@ export type CrudField = {
   /** For `list` fields: wording of the add button, e.g. "Add child". */
   itemLabel?: string;
   required?: boolean; defaultValue?: any;
+  /** Registration-only controls are not submitted to profile update endpoints. */
+  createOnly?: boolean;
   /** For `image` fields: whether to preview as a round avatar or a wide logo. */
   imageVariant?: 'avatar' | 'logo';
   /**
@@ -94,7 +96,7 @@ const setField = (obj: any, name: string, value: any): any => {
 /** Blank values for one entry of a `list` field. */
 const emptyItem = (fields: CrudField[]): any => {
   const item: any = {};
-  fields.forEach((f) => { item[f.name] = f.defaultValue ?? (f.type === 'checkbox' ? false : ''); });
+  fields.forEach((f) => { item[f.name] = f.defaultValue ?? (f.type === 'image' ? undefined : f.type === 'checkbox' ? false : ''); });
   return item;
 };
 
@@ -211,6 +213,7 @@ export const CrudTable: React.FC<Props> = ({
   // Postgres rejects for timestamp columns and caused otherwise valid edits to
   // be rolled back. It also overwrote unrelated values.
   const [initialForm, setInitialForm] = useState<any>({});
+  const [imageProcessing, setImageProcessing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -223,7 +226,7 @@ export const CrudTable: React.FC<Props> = ({
 
   /** The blank value a field starts from, which differs by field type. */
   const blankFor = (f: CrudField) =>
-    f.defaultValue ?? (f.type === 'checkbox' ? false : f.type === 'multiselect' || f.type === 'list' ? [] : '');
+    f.defaultValue ?? (f.type === 'image' ? undefined : f.type === 'checkbox' ? false : f.type === 'multiselect' || f.type === 'list' ? [] : '');
 
   const openCreate = () => {
     let init: any = {};
@@ -254,7 +257,7 @@ export const CrudTable: React.FC<Props> = ({
     onDialogOpen?.(row);
   };
   /** Fields currently applicable, given what the user has chosen so far. */
-  const visibleFields = fields.filter(f => !f.showIf || f.showIf(form));
+  const visibleFields = fields.filter(f => (!editing || !f.createOnly) && (!f.showIf || f.showIf(form)));
 
   const save = async () => {
     setSaving(true);
@@ -345,7 +348,7 @@ export const CrudTable: React.FC<Props> = ({
         </Table>
       </TableContainer>
 
-      <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={open} onClose={() => { if (!imageProcessing && !saving) setOpen(false); }} fullWidth maxWidth="sm">
         <DialogTitle>{editing ? 'Edit Record' : addLabel}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -402,10 +405,11 @@ export const CrudTable: React.FC<Props> = ({
               <AuthedImageField
                 key={f.name}
                 label={f.label}
+                onProcessingChange={setImageProcessing}
                 variant={f.imageVariant || 'avatar'}
                 existingPath={editing && f.imagePath ? f.imagePath(editing) : null}
                 value={getField(form, f.name)}
-                onChange={dataUrl => setForm(setField(form, f.name, dataUrl))}
+                onChange={dataUrl => setForm(current => setField(current, f.name, dataUrl))}
               />
             ) : f.type === 'checkbox' ? (
               <FormControlLabel key={f.name} control={<Checkbox checked={!!getField(form, f.name)} onChange={e => setForm(setField(form, f.name, e.target.checked))} />} label={f.label} />
@@ -426,8 +430,8 @@ export const CrudTable: React.FC<Props> = ({
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+          <Button disabled={imageProcessing || saving} onClick={() => setOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={save} disabled={saving || imageProcessing}>{saving ? 'Saving…' : 'Save'}</Button>
         </DialogActions>
       </Dialog>
     </Box>

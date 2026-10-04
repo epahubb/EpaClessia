@@ -1,3 +1,6 @@
+import { currentAccount } from './src/routes/account';
+import { sessionUser } from './src/lib/sessionUser';
+import { canonicalRole, isChurchRole } from './src/lib/accountRoles';
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -231,6 +234,7 @@ async function startServer() {
 
   // Authentication Routes
   app.post("/api/v1/auth/login", loginRateLimiter, loginHandler);
+  app.get("/api/v1/auth/me", authenticate, currentAccount);
 
   // Issue a fresh access token from a valid refresh token. This keeps users
   // signed in without a re-login when the short-lived access token expires
@@ -270,7 +274,7 @@ async function startServer() {
       });
       return res.json({
         token,
-        user: { id: user.uid, email: user.email, role: user.role, name: user.name },
+        user: await sessionUser(user),
       });
     } catch (err) {
       return res.status(401).json({ error: 'Invalid or expired refresh token' });
@@ -1451,7 +1455,16 @@ async function startServer() {
       } else {
         delete updates.password;
       }
-      await db('users').where({ uid: req.params.id }).update(updates);
+      const existing = await db('users').where({ uid: req.params.id }).first();
+      if (!existing) return res.status(404).json({ error: 'User not found' });
+      if (updates.role !== undefined) {
+        if (updates.role !== 'SUPER_ADMIN' && !isChurchRole(updates.role)) return res.status(400).json({ error: 'Choose a supported role.' });
+        updates.role = canonicalRole(updates.role);
+      }
+      await db.transaction(async trx => {
+        await trx('users').where({ uid: req.params.id }).update(updates);
+        if (updates.role && existing.tenantId) await trx('user_tenant_roles').where({ userId: existing.uid, tenantId: updates.tenantId || existing.tenantId }).update({ role: updates.role });
+      });
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Failed to update user' });

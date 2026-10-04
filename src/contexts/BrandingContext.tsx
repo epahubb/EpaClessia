@@ -27,7 +27,7 @@ export const useBranding = () => useContext(BrandingContext);
 const APP_NAME = 'EpaChurch';
 
 function setFavicon(href: string) {
-  if (!href) return;
+  const icon = href || '/favicon.svg';
   let link = document.getElementById('app-favicon') as HTMLLinkElement | null;
   if (!link) {
     link = document.createElement('link');
@@ -35,7 +35,8 @@ function setFavicon(href: string) {
     link.rel = 'icon';
     document.head.appendChild(link);
   }
-  link.href = href;
+  link.removeAttribute('type');
+  link.href = icon;
 }
 
 export const BrandingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -65,16 +66,16 @@ export const BrandingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // 1. Application title: "EpaChurch | <church name>" once a church portal is active.
+  // Church identity in church portals; application identity otherwise.
   useEffect(() => {
-    document.title = churchName ? `${APP_NAME} | ${churchName}` : APP_NAME;
-  }, [churchName]);
+    document.title = churchName || branding.platformName || APP_NAME;
+  }, [churchName, branding.platformName]);
 
   // 2. Favicon: church logo when inside a church portal, else the super admin
   //    default favicon uploaded in system settings.
   useEffect(() => {
-    const icon = churchLogo || branding.faviconUrl || branding.logoUrl;
-    if (icon) setFavicon(icon);
+    const icon = churchLogo || branding.faviconUrl || branding.logoUrl || '/favicon.svg';
+    setFavicon(icon);
   }, [churchLogo, branding.faviconUrl, branding.logoUrl]);
 
   return (

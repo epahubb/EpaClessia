@@ -32,6 +32,7 @@ export interface TenantRole {
   userName: string;
   tenantId: string;
   tenantName: string;
+  logo?: string | null;
   role: UserRole;
 }
 

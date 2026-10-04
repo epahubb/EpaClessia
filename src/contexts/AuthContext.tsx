@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import api from '../services/api';
 import { User, TenantRole, UserRole } from '../types';
 
 export type { UserRole, TenantRole };
@@ -35,33 +36,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentContext, setCurrentContext] = useState<TenantRole | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    // Restore an existing session from localStorage only. No auto-login.
-    const localUser = localStorage.getItem('user');
-    const localToken = localStorage.getItem('token');
+  const applyAccount = (account: User) => {
+    const context = buildDefaultContext(account);
+    localStorage.setItem('user', JSON.stringify(account));
+    if (context) localStorage.setItem('currentContext', JSON.stringify(context));
+    else localStorage.removeItem('currentContext');
+    setUser(account); setCurrentContext(context);
+  };
 
-    if (localUser && localToken) {
-      try {
-        const parsedUser = JSON.parse(localUser);
-        setUser(parsedUser);
-        setCurrentContext(buildDefaultContext(parsedUser));
-      } catch (e) {
-        console.error('Local user parse failed', e);
-        localStorage.removeItem('user');
-        localStorage.removeItem('token');
+  useEffect(() => {
+    let stopped = false;
+    const restore = async () => {
+      const stored = localStorage.getItem('user');
+      const storedToken = localStorage.getItem('token');
+      if (stored && storedToken) {
+        try {
+          const cached = JSON.parse(stored);
+          if (localStorage.getItem('original_sa_token')) {
+            if (!stopped) applyAccount(cached);
+          } else {
+            try {
+              const { data } = await api.get('/auth/me');
+              if (!stopped && localStorage.getItem('token') === storedToken) applyAccount(data.user);
+            } catch (error: any) {
+              if (!stopped && ![401, 403].includes(error?.response?.status)) applyAccount(cached);
+              else if (!stopped) { localStorage.removeItem('user'); localStorage.removeItem('token'); localStorage.removeItem('currentContext'); }
+            }
+          }
+        } catch { localStorage.removeItem('user'); localStorage.removeItem('token'); }
       }
-    }
-    setIsLoading(false);
+      if (!stopped) setIsLoading(false);
+    };
+    void restore();
+    return () => { stopped = true; };
   }, []);
+
+  // A role changed by an admin is reflected without making the user sign out.
+  // Backend permissions use persisted state on every request; this refreshes UI.
+  useEffect(() => {
+    if (!user?.id || localStorage.getItem('original_sa_token')) return;
+    let stopped = false, running = false;
+    const refresh = async () => {
+      if (stopped || running || document.visibilityState === 'hidden') return;
+      running = true;
+      try {
+        const { data } = await api.get('/auth/me');
+        if (!stopped && localStorage.getItem('token')) applyAccount(data.user);
+      } catch (error: any) {
+        if (!stopped && [401, 403].includes(error?.response?.status)) {
+          localStorage.removeItem('user'); localStorage.removeItem('token'); localStorage.removeItem('currentContext'); localStorage.removeItem('refresh_token');
+          setUser(null); setCurrentContext(null);
+        }
+      } finally { running = false; }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
+    const interval = window.setInterval(refresh, 30000);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('epaclessia:account-changed', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { stopped = true; window.clearInterval(interval); window.removeEventListener('focus', refresh); window.removeEventListener('epaclessia:account-changed', refresh); document.removeEventListener('visibilitychange', onVisible); };
+  }, [user?.id]);
 
   const login = async (accessToken: string, user: User, refreshToken?: string) => {
     localStorage.setItem('token', accessToken);
     if (refreshToken) {
       localStorage.setItem('refresh_token', refreshToken);
     }
-    localStorage.setItem('user', JSON.stringify(user));
-    setUser(user);
-    setCurrentContext(buildDefaultContext(user));
+    applyAccount(user);
   };
 
   const logout = () => {

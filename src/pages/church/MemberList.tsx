@@ -482,20 +482,23 @@ export const MemberList: React.FC = () => {
 
     // Portal sign-in details. With email, blank credentials can be generated.
     // Without email, both chosen credentials are needed for immediate access.
-    { name: 'sec_portal', label: 'Portal access', type: 'section' },
+    { name: 'sec_portal', label: 'Portal access', type: 'section', createOnly: true },
     {
       name: 'username',
+      createOnly: true,
       label: 'Username',
       helperText: 'Letters, numbers, dots, dashes and underscores; 3\u201332 characters. Required without email. With email, leave blank to generate one.',
     },
     {
       name: 'password',
+      createOnly: true,
       label: 'Password',
       type: 'password',
       helperText: 'At least 8 characters. Required without email; with email, leave blank to generate and send one.',
     },
     {
       name: 'activateNow',
+      createOnly: true,
       label: 'Allow sign-in immediately',
       type: 'checkbox',
       defaultValue: true,

@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import bcrypt from 'bcryptjs';
+import { sessionUser } from '../lib/sessionUser';
 import db from '../lib/db';
 import { loginSchema, signAccessToken, signRefreshToken } from '../lib/security';
 import { getLockoutState, securityEvent } from '../middleware/security';
@@ -137,7 +138,7 @@ export const loginHandler: RequestHandler = async (req, res) => {
       res.json({
         token,
         refreshToken,
-        user: { id: user.uid, email: user.email, role: user.role, name: user.name },
+        user: await sessionUser(user),
       });
     } catch (error) {
       console.error('Login route error:', error);

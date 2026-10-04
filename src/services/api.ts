@@ -177,3 +177,10 @@ api.interceptors.response.use(
 );
 
 export default api;
+
+api.interceptors.response.use(response => {
+  if (['put', 'post', 'delete'].includes(response.config.method || '') && /users|user-tenant-roles|branding|settings/.test(response.config.url || '')) {
+    window.dispatchEvent(new Event('epaclessia:account-changed'));
+  }
+  return response;
+});

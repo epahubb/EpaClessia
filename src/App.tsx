@@ -6,6 +6,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import SuperAdminLayout from './layouts/SuperAdminLayout';
 import { ChurchAdminLayout } from './layouts/ChurchAdminLayout';
 import LoginPage from './pages/LoginPage';
+import RoleSyncRedirect from './components/RoleSyncRedirect';
 import RoleLanding from './components/RoleLanding';
 import Dashboard from './pages/Dashboard';
 
@@ -77,6 +78,7 @@ const App: React.FC = () => {
     <AuthProvider>
       <BrandingProvider>
       <Router>
+        <RoleSyncRedirect />
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 

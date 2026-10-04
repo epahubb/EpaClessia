@@ -1,3 +1,4 @@
+import { normalizeMemberId } from './memberIds';
 /**
  * Shared member-import rules.
  *
@@ -256,6 +257,9 @@ export function normalizeImportRow(
     warnings.push('Phone number could not be read (it may have been stored as a number by Excel)');
   }
 
+  const rawMemberId = cleanText(get('membershipId'));
+  const memberId = rawMemberId ? normalizeMemberId(rawMemberId) : null;
+  if (rawMemberId && !memberId) errors.push('Member ID must contain exactly six digits, or be left blank to generate one.');
   if (errors.length > 0) return { rowNumber, errors, warnings };
 
   return {
@@ -273,7 +277,7 @@ export function normalizeImportRow(
       maritalStatus: cleanText(get('maritalStatus')),
       occupation: cleanText(get('occupation')),
       address: cleanText(get('address')),
-      membershipId: cleanText(get('membershipId')),
+      membershipId: memberId,
       membershipStatus: normalizeMembershipStatus(get('membershipStatus')),
       notes: cleanText(get('notes')),
     },

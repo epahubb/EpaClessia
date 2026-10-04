@@ -1,3 +1,5 @@
+import AuthedImageField from '../../components/common/AuthedImageField';
+import useAuthedImage from '../../hooks/useAuthedImage';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Box,
@@ -59,11 +61,16 @@ export default function MemberProfile() {
   const { user } = useAuth();
   const [data, setData] = useState<ProfileResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [processingPhoto, setProcessingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<Toast>({ open: false, message: '', severity: 'success' });
 
   const [form, setForm] = useState<ProfileUpdatePayload>({});
   const [prefs, setPrefs] = useState<CommPreferences>({});
+
+  const photoPath = data?.profile?.hasPhoto ? `/member/photo?v=${encodeURIComponent(data.profile.photoUpdatedAt || '')}` : null;
+  const { url: storedPhoto } = useAuthedImage(photoPath);
+  const portraitPreview = form.photo !== undefined ? form.photo || undefined : storedPhoto || form.photoUrl || undefined;
 
   const notify = (message: string, severity: Toast['severity'] = 'success') =>
     setToast({ open: true, message, severity });
@@ -161,20 +168,12 @@ export default function MemberProfile() {
               </Typography>
             </Stack>
 
-            <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
-              <Avatar src={form.photoUrl || undefined} sx={{ width: 72, height: 72 }}>
-                {(form.firstName || 'M').charAt(0)}
-              </Avatar>
-              <TextField
-                label="Photo URL"
-                fullWidth
-                size="small"
-                value={form.photoUrl || ''}
-                onChange={(e) => setField('photoUrl', e.target.value)}
-                placeholder="https://…"
-                helperText="Paste a link to your photo"
-              />
-            </Stack>
+            <Box sx={{ mb: 3 }}>
+              <AuthedImageField label="Profile picture" variant="avatar" existingPath={photoPath}
+                value={form.photo === undefined ? (data?.profile?.hasPhoto ? undefined : form.photoUrl) : form.photo}
+                onChange={photo => setForm(current => ({ ...current, photo }))}
+                onProcessingChange={setProcessingPhoto} disabled={saving || processingPhoto} />
+            </Box>
 
             <Grid container spacing={2}>
               <Grid size={{ xs: 12, sm: 6 }}>
@@ -272,7 +271,7 @@ export default function MemberProfile() {
             </Grid>
 
             <Box sx={{ mt: 3, textAlign: 'right' }}>
-              <Button variant="contained" size="large" startIcon={<Save size={18} />} disabled={saving} onClick={handleSave}>
+              <Button variant="contained" size="large" startIcon={<Save size={18} />} disabled={saving || processingPhoto} onClick={handleSave}>
                 {saving ? 'Saving…' : 'Save changes'}
               </Button>
             </Box>
@@ -303,7 +302,7 @@ export default function MemberProfile() {
                 )}
               </Stack>
               <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 2 }}>
-                <Avatar src={form.photoUrl || undefined} sx={{ width: 56, height: 56, border: '2px solid rgba(255,255,255,0.6)' }}>
+                <Avatar src={portraitPreview} sx={{ width: 56, height: 56, border: '2px solid rgba(255,255,255,0.6)' }}>
                   {(form.firstName || 'M').charAt(0)}
                 </Avatar>
                 <Box>

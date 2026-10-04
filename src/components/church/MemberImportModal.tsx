@@ -157,7 +157,7 @@ const MemberImportModal: React.FC<MemberImportModalProps> = ({ open, onClose, on
     const labels = MEMBER_IMPORT_FIELDS.map((f) => f.label);
     const example = [
       'Ama', 'Mensah', 'ama.mensah@example.com', '0244123456', 'Female',
-      '1990-04-03', 'Married', '2015-06-20', 'Teacher', 'Accra', 'MEM-000123', 'Active', '',
+      '1990-04-03', 'Married', '2015-06-20', 'Teacher', 'Accra', '000123', 'Active', '',
     ];
     const sheet = XLSX.utils.aoa_to_sheet([labels, example]);
     const book = XLSX.utils.book_new();

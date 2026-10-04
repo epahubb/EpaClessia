@@ -53,8 +53,8 @@ export const securityHeaders: RequestHandler = helmet({
       // stylesheet hosts.
       styleSrc: ["'self'", "'unsafe-inline'"],
       // Only our own bundle and the Paystack checkout script may execute. No
-      // 'unsafe-inline' and no 'unsafe-eval', so an injected <script> cannot
-      // run.
+      // JavaScript eval and inline handlers remain forbidden in application pages.
+      // The isolated portrait worker has its own narrowly scoped policy below.
       scriptSrc: ["'self'", PAYSTACK_SCRIPT, PAYSTACK_CHECKOUT],
       scriptSrcAttr: ["'none'"],
       // Member photos and church logos are served from our own API as data /
@@ -95,9 +95,16 @@ export const securityHeaders: RequestHandler = helmet({
  * added by hand.
  */
 export const additionalSecurityHeaders: RequestHandler = (_req, res, next) => {
+  if (/^\/assets\/portraitWorker-[A-Za-z0-9_-]+\.js$/.test(_req.path)) {
+    // ndarray generates trusted tensor accessor code at runtime. Permit that
+    // ONLY in this standalone worker; the application document remains strict.
+    // Worker cannot access the DOM, cookies or localStorage. No remote hosts.
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self' blob: 'unsafe-eval' 'wasm-unsafe-eval'; connect-src 'self' blob:; img-src blob: data:; worker-src 'self' blob:; object-src 'none';");
+  }
+
   res.setHeader(
     'Permissions-Policy',
-    'geolocation=(), microphone=(), payment=(self), usb=(), magnetometer=(), accelerometer=()',
+    'camera=(self), geolocation=(), microphone=(), payment=(self), usb=(), magnetometer=(), accelerometer=()',
   );
   // Never let a browser or proxy cache an authenticated API response.
   if (_req.path.startsWith('/api') && !res.getHeader('Cache-Control')) {

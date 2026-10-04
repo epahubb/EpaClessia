@@ -1,3 +1,6 @@
+import { allocateMemberId } from '../lib/memberIds';
+import { decodeProfileImageDataUrl } from '../lib/profileImages';
+import { ImageValidationError, toDataUrl } from '../lib/images';
 import { Router, Response, NextFunction } from 'express';
 import db from '../lib/db';
 import { decryptSensitiveFields } from '../lib/crypto';
@@ -712,6 +715,20 @@ const SELF_EDITABLE = [
   'photoUrl',
 ];
 
+function safeProfile(member: any, commPreferences: any) {
+  if (!member) return null;
+  const { photo, ...rest } = member;
+  return { ...rest, hasPhoto: Boolean(photo), commPreferences };
+}
+
+router.get('/photo', async (req: AuthRequest, res) => {
+  const { member } = ctx(req);
+  if (!member?.photo) return res.status(404).json({ error: 'No profile picture has been uploaded.' });
+  res.setHeader('Content-Type', member.photoMimeType || 'image/jpeg');
+  res.setHeader('Cache-Control', 'private, no-cache');
+  return res.send(Buffer.isBuffer(member.photo) ? member.photo : Buffer.from(member.photo));
+});
+
 router.get('/profile', async (req: AuthRequest, res) => {
   try {
     const { tenantId, user, member } = ctx(req);
@@ -738,9 +755,9 @@ router.get('/profile', async (req: AuthRequest, res) => {
     const tenant = await db('tenants').where({ id: tenantId }).first();
 
     res.json({
-      profile: member ? { ...member, commPreferences } : null,
+      profile: safeProfile(member, commPreferences),
       account: { uid: user?.uid, name: user?.name, email: user?.email, role: user?.role },
-      church: tenant ? { id: tenant.id, name: tenant.name, logo: tenant.logo || null } : null,
+      church: tenant ? { id: tenant.id, name: tenant.name, logo: toDataUrl(tenant.logoImage, tenant.logoMimeType) || tenant.logo || null } : null,
       family,
       familyMembers,
       hasMemberRecord: !!member,
@@ -757,8 +774,16 @@ router.put('/profile', async (req: AuthRequest, res) => {
 
     const updates: any = {};
     for (const k of SELF_EDITABLE) if (k in req.body) updates[k] = req.body[k];
-    if (updates.dateOfBirth) updates.dateOfBirth = new Date(updates.dateOfBirth);
-    if (updates.anniversaryDate) updates.anniversaryDate = new Date(updates.anniversaryDate);
+    for (const key of ['dateOfBirth', 'anniversaryDate']) {
+      if (!(key in updates)) continue;
+      if (!updates[key]) updates[key] = null;
+      else { const date = new Date(updates[key]); if (Number.isNaN(date.getTime())) return res.status(400).json({ error: 'Enter a valid date.' }); updates[key] = date; }
+    }
+    if ('photo' in req.body) {
+      if (req.body.photo === null || req.body.photo === '') { updates.photo = null; updates.photoMimeType = null; updates.photoUrl = null; }
+      else { const image = await decodeProfileImageDataUrl(req.body.photo); updates.photo = image.buffer; updates.photoMimeType = image.mimeType; updates.photoUrl = null; }
+      updates.photoUpdatedAt = new Date();
+    }
     if ('commPreferences' in req.body) {
       updates.commPreferences = JSON.stringify(req.body.commPreferences || {});
     }
@@ -774,7 +799,7 @@ router.put('/profile', async (req: AuthRequest, res) => {
           commPreferences = {};
         }
       }
-      return res.json({ success: true, profile: { ...fresh, commPreferences } });
+      return res.json({ success: true, profile: safeProfile(fresh, commPreferences) });
     }
 
     // No member record yet: create one for this user (pending admin approval).
@@ -790,7 +815,11 @@ router.put('/profile', async (req: AuthRequest, res) => {
     };
     if (!record.firstName) record.firstName = (user?.name || '').split(' ')[0] || 'Member';
     if (!record.lastName) record.lastName = (user?.name || '').split(' ').slice(1).join(' ') || '';
-    await db('members').insert(record);
+    await db.transaction(async trx => {
+      record.membershipId = await allocateMemberId(trx, tenantId);
+      await trx('members').insert(record);
+      await trx('users').where({ uid: user.uid }).update({ memberId: record.id });
+    });
     let commPreferences: any = {};
     if (record.commPreferences) {
       try {
@@ -799,8 +828,9 @@ router.put('/profile', async (req: AuthRequest, res) => {
         commPreferences = {};
       }
     }
-    res.status(201).json({ success: true, created: true, profile: { ...record, commPreferences } });
+    res.status(201).json({ success: true, created: true, profile: safeProfile(record, commPreferences) });
   } catch (error) {
+    if (error instanceof ImageValidationError) return res.status(error.status).json({ error: error.message });
     console.error('Member profile update error:', error);
     res.status(500).json({ error: 'Failed to update your profile' });
   }

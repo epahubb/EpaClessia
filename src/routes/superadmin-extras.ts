@@ -1,3 +1,4 @@
+import { canonicalRole, isChurchRole } from '../lib/accountRoles';
 import { Router } from 'express';
 import db from '../lib/db';
 import {
@@ -399,9 +400,17 @@ router.put('/user-tenant-roles/:id/permissions', async (req, res) => {
   try {
     const { role, permissions } = req.body || {};
     const update: any = {};
-    if (role !== undefined) update.role = role;
+    if (role !== undefined) {
+      if (!isChurchRole(role)) return res.status(400).json({ error: 'Choose a supported church role.' });
+      update.role = canonicalRole(role);
+    }
     if (permissions !== undefined) update.permissions = JSON.stringify(permissions);
-    await db('user_tenant_roles').where({ id: req.params.id }).update(update);
+    const existing = await db('user_tenant_roles').where({ id: req.params.id }).first();
+    if (!existing) return res.status(404).json({ error: 'User role not found' });
+    await db.transaction(async trx => {
+      await trx('user_tenant_roles').where({ id: req.params.id }).update(update);
+      if (update.role) await trx('users').where({ uid: existing.userId, tenantId: existing.tenantId }).whereNot({ role: 'SUPER_ADMIN' }).update({ role: update.role });
+    });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Failed to update user permissions' }); }
 });
