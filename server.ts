@@ -1,6 +1,9 @@
+import { sessionClaims, sessionIsCurrent } from './src/lib/sessionSecurity';
 import { currentAccount } from './src/routes/account';
 import { sessionUser } from './src/lib/sessionUser';
 import { canonicalRole, isChurchRole } from './src/lib/accountRoles';
+import { churchesWithMemberCounts } from './src/lib/churchCounts';
+import { randomUUID } from 'node:crypto';
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -54,6 +57,8 @@ import churchRouter from './src/routes/church';
 import { loginHandler } from './src/routes/login';
 import memberRouter from './src/routes/member';
 import pastorRouter from './src/routes/pastor';
+import groupLeaderRouter from './src/routes/groupLeader';
+import financeReportsRouter from './src/routes/financeReports';
 import ministryLeaderRouter from './src/routes/ministryLeader';
 import superadminExtrasRouter from './src/routes/superadmin-extras';
 import biometricIngestRouter from './src/routes/biometricIngest';
@@ -108,19 +113,21 @@ async function startServer() {
   // 2. Strict CORS allow-listing.
   app.use(corsMiddleware);
 
+  // Reject excessive request rates before decoding large uploads.
+  app.use('/api', globalApiLimiter);
+
   // Allow large JSON/form bodies so base64 image uploads (logo, favicon,
   // login-screen background) are not rejected by the default 100kb limit.
   app.use(express.json({
     limit: '25mb',
     verify: (req: any, _res, buf) => { req.rawBody = Buffer.from(buf); },
   }));
-  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '25mb', parameterLimit: 100 }));
   app.use(cookieParser());
 
   // 3. Sanitise all incoming payloads (prototype pollution / operator injection).
   app.use(sanitizeRequest);
-  // 4. Broad rate limiting across the whole API surface.
-  app.use('/api', globalApiLimiter);
+  // API rate limiting runs before body parsing above.
 
   // Rate limiting for superadmin API
   const superadminLimiter = rateLimit({
@@ -247,8 +254,8 @@ async function startServer() {
     try {
       const decoded = verifyRefreshToken(refreshToken);
       const user = await db('users').where({ uid: decoded.uid }).first();
-      if (!user) {
-        return res.status(401).json({ error: 'Account no longer exists' });
+      if (!user || !sessionIsCurrent(decoded, user)) {
+        return res.status(401).json({ error: 'Session revoked. Please sign in again.' });
       }
       if (user.status && user.status !== 'active') {
         return res
@@ -260,6 +267,7 @@ async function startServer() {
         if (churchBlocksAccess(tenant)) return res.status(403).json({ error: CHURCH_UNAVAILABLE_MESSAGE });
       }
       const token = signAccessToken({
+        ...sessionClaims(user),
         uid: user.uid,
         email: user.email,
         role: user.role,
@@ -290,7 +298,17 @@ async function startServer() {
   // could mint fresh access tokens from POST /auth/refresh, which reads
   // req.cookies.refreshToken. Clearing them here is what actually ends the
   // session rather than just hiding it from the UI.
-  app.post("/api/v1/auth/logout", (req, res) => {
+  app.post("/api/v1/auth/logout", async (req, res) => {
+    try {
+      const refresh = req.body?.refreshToken || req.cookies?.refreshToken;
+      const bearer = req.headers.authorization?.replace(/^Bearer /, '') || req.cookies?.token;
+      const claims: any = refresh ? verifyRefreshToken(refresh) : bearer ? jwt.verify(bearer, JWT_SECRET, { algorithms: ['HS256'] }) : null;
+      if (claims?.uid) {
+        const account = await db('users').where({ uid: claims.uid }).first();
+        if (account && sessionIsCurrent(claims, account)) await db('users').where({ uid: account.uid }).increment('tokenVersion', 1);
+      }
+    } catch (error) { console.warn('Logout token revocation could not complete.'); }
+
     const clearOpts = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -317,7 +335,7 @@ async function startServer() {
     res.status(503).json({
       status: dbState,
       database: dbState === 'failed' ? 'error' : 'initializing',
-      error: dbError,
+      error: dbState === 'failed' ? 'Database initialization failed. Review operator logs.' : null,
     });
   });
 
@@ -591,6 +609,7 @@ async function startServer() {
   // Tenant-scoped church application API (members, families, events,
   // attendance/check-in, giving, and communications). Every route inside is
   // locked to the caller's own tenant; SUPER_ADMIN may target ?tenantId=.
+  app.use('/api/v1/church/finance', authenticate, financeReportsRouter);
   app.use('/api/v1/church', authenticate, churchRouter);
 
   // Member self-service API (giving, profile). Every route is scoped to the
@@ -602,6 +621,7 @@ async function startServer() {
   // per-device API key and scopes every write to that device's own tenant.
   app.use('/api/v1/biometric', biometricIngestRouter);
   app.use('/api/v1/pastor', authenticate, pastorRouter);
+  app.use('/api/v1/group-leader', authenticate, groupLeaderRouter);
   app.use('/api/v1/ministry-leader', authenticate, ministryLeaderRouter);
 
   // Additional protected super-admin endpoints (subscriptions, transactions,
@@ -621,18 +641,12 @@ async function startServer() {
         sortOrder = 'desc' 
       } = req.query;
       
-      const offset = (Number(page) - 1) * Number(limit);
+      const safePage = Number(page), safeLimit = Number(limit);
+      if (!Number.isSafeInteger(safePage) || safePage < 1 || !Number.isSafeInteger(safeLimit) || safeLimit < 1 || safeLimit > 100) return res.status(400).json({ error: 'Use a positive page and a limit between 1 and 100.' });
+      const offset = (safePage - 1) * safeLimit;
 
-      let query = db('tenants')
-        .modify(q => { if (status !== 'deleted') q.whereNot('tenants.status', 'deleted'); })
-        .leftJoin('users', function() {
-          this.on('tenants.id', '=', 'users.tenantId').andOn('users.role', '!=', db.raw('?', ['SUPER_ADMIN']));
-        })
-        .select(
-          'tenants.*',
-          db.raw('count(users.uid) as memberCount')
-        )
-        .groupBy('tenants.id');
+      let query = churchesWithMemberCounts(db)
+        .modify(q => { if (status !== 'deleted') q.whereNot('tenants.status', 'deleted'); });
 
       if (search) {
         query = query.where(function() {
@@ -664,6 +678,7 @@ async function startServer() {
       // Feature flags need to be parsed from string
       const formattedChurches = churches.map(c => ({
         ...c,
+        memberCount: Number(c.memberCount || 0),
         featureFlags: c.featureFlags ? JSON.parse(c.featureFlags) : { giving: true, childCheckin: true, sms: false, api: false }
       }));
 
@@ -702,14 +717,14 @@ async function startServer() {
         .join('user_tenant_roles', 'users.uid', 'user_tenant_roles.userId')
         .where('user_tenant_roles.tenantId', req.params.id)
         .whereIn('user_tenant_roles.role', ['ADMIN', 'PASTOR'])
-        .select('users.*', 'user_tenant_roles.role as churchRole');
+        .select('users.uid', 'users.name', 'users.email', 'users.status', 'user_tenant_roles.role as churchRole');
 
       const logs = await db('audit_logs')
         .where({ resource: 'tenants', resourceId: req.params.id })
         .orderBy('createdAt', 'desc')
         .limit(10);
 
-      const memberCount = await db('users').where({ tenantId: req.params.id }).count('uid as count').first();
+      const memberCount = await db('members').where({ tenantId: req.params.id }).count('id as count').first();
 
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -725,7 +740,7 @@ async function startServer() {
         featureFlags: church.featureFlags ? JSON.parse(church.featureFlags) : {},
         admins,
         auditLogs: logs,
-        memberCount: memberCount?.count || 0,
+        memberCount: Number(memberCount?.count || 0),
         totalDonations: Number(totalDonations?.total || 0)
       });
     } catch (error) {
@@ -911,7 +926,7 @@ async function startServer() {
 
       // Generate a JWT for this user
       const token = jwt.sign(
-        { uid: user.uid, email: user.email, role: user.role, impersonatedBy: (req as any).user?.uid },
+        { ...sessionClaims(user), uid: user.uid, email: user.email, role: user.role, impersonatedBy: (req as any).user?.uid },
         JWT_SECRET,
         { algorithm: 'HS256', expiresIn: '2h' } // Short lived for security
       );
@@ -1015,7 +1030,7 @@ async function startServer() {
       if (!church) return res.status(404).json({ error: 'Church tenant not found' });
 
       const newInvoice = {
-        id: `INV-2026-${Math.floor(100 + Math.random() * 900)}`,
+        id: `INV-${randomUUID()}`,
         tenantId: church.id,
         tenantName: church.name,
         amount: Number(amount),
@@ -1447,7 +1462,7 @@ async function startServer() {
 
   app.put("/api/v1/superadmin/users/:id", authenticate, authorizeSuperAdmin, auditLog('UPDATE_USER', 'users'), async (req, res) => {
     try {
-      const updates: any = { ...req.body };
+      const updates: any = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => ['name', 'email', 'phone', 'role', 'status', 'tenantId', 'password'].includes(key)));
       // Hash a new password if one is supplied; otherwise never overwrite the
       // existing hash with an empty value.
       if (updates.password) {
@@ -1724,6 +1739,11 @@ async function startServer() {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   });
+  server.requestTimeout = 30000;
+  server.headersTimeout = 15000;
+  server.keepAliveTimeout = 5000;
+  server.maxHeadersCount = 100;
+
 
   // ---- Graceful shutdown ----
   // Container platforms (Cloud Run, Kubernetes, ECS) send SIGTERM before

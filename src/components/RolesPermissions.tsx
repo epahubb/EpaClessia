@@ -11,7 +11,7 @@ import { userService } from '../services/userService';
 
 interface PermissionDef { id: string; name: string; code: string; description: string; }
 
-const ROLE_ORDER = ['SUPER_ADMIN', 'CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'MEMBER'];
+const ROLE_ORDER = ['SUPER_ADMIN', 'CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'GROUP_LEADER', 'FINANCE', 'SECRETARY', 'MEMBER'];
 
 const RolesPermissions: React.FC = () => {
   const [tab, setTab] = useState(0);

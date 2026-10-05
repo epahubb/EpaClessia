@@ -5,6 +5,7 @@ export type UserRole =
   | 'CHURCH_ADMIN'
   | 'PASTOR'
   | 'MINISTRY_LEADER'
+  | 'GROUP_LEADER'
   | 'FINANCE'
   | 'SECRETARY'
   | 'MEMBER';

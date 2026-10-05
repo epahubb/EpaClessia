@@ -18,7 +18,7 @@ const dayLabel = (value: string) => new Date(value).toLocaleDateString(undefined
 const monthLabel = (value: string) => new Date(`${value}-01T00:00:00Z`).toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', year: '2-digit' });
 
 /** Read-only attendance facts, separate from the larger profile request. */
-const MemberAttendanceSection: React.FC<{ memberId: string }> = ({ memberId }) => {
+const MemberAttendanceSection: React.FC<{ memberId: string; loadAttendance?: typeof churchApi.getMemberAttendance }> = ({ memberId, loadAttendance = churchApi.getMemberAttendance }) => {
   const theme = useTheme();
   const [range, setRange] = useState(defaultAttendanceRange);
   const [draft, setDraft] = useState(range);
@@ -35,14 +35,14 @@ const MemberAttendanceSection: React.FC<{ memberId: string }> = ({ memberId }) =
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError(''); setRecords([]); setPage(0);
-    churchApi.getMemberAttendance(memberId, range, controller.signal)
+    loadAttendance(memberId, range, controller.signal)
       .then(result => { if (!controller.signal.aborted) setRecords(result.records); })
       .catch(e => {
         if (!controller.signal.aborted) setError(e?.friendlyMessage || e?.response?.data?.error || 'Could not load attendance. Please try again.');
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [memberId, range, retry]);
+  }, [memberId, range, retry, loadAttendance]);
 
   const apply = () => {
     try { attendanceDateRange(draft.from, draft.to); }

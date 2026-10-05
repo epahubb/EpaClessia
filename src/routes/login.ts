@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import bcrypt from 'bcryptjs';
+import { sessionClaims } from '../lib/sessionSecurity';
 import { sessionUser } from '../lib/sessionUser';
 import db from '../lib/db';
 import { loginSchema, signAccessToken, signRefreshToken } from '../lib/security';
@@ -45,6 +46,7 @@ export const loginHandler: RequestHandler = async (req, res) => {
         user = await db('users').whereRaw('lower(username) = ?', [identifier]).first();
       }
       if (!user) {
+        await bcrypt.compare(password, '$2b$12$LQv3c1yqBWVHxkd0LHAkCOY0ZhQXgL3HsCzYHrX.rjQE.8XXVmA1G');
         // Record the failed attempt against the email even if unknown, so
         // credential-stuffing against one address is still throttled.
         await db('login_logs')
@@ -54,6 +56,11 @@ export const loginHandler: RequestHandler = async (req, res) => {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
       
+      const canonicalIdentifier = String(user.username || user.email || identifier).toLowerCase();
+      if (canonicalIdentifier !== identifier) {
+        const accountLockout = await getLockoutState(canonicalIdentifier);
+        if (accountLockout.locked) { res.setHeader('Retry-After', String(accountLockout.retryAfterSeconds)); return res.status(429).json({ error: 'Account temporarily locked. Please try again later.' }); }
+      }
       // Verify the submitted password against the stored bcrypt hash.
       // Seed accounts are provisioned with hashed passwords in db-init.ts.
       const passwordValid = user.password
@@ -61,7 +68,7 @@ export const loginHandler: RequestHandler = async (req, res) => {
         : false;
       if (!passwordValid) {
         await db('login_logs')
-          .insert({ userId: user.uid, userName: user.name, email, ipAddress: req.ip || '', success: false, createdAt: new Date() })
+          .insert({ userId: user.uid, userName: user.name, email: String(user.username || user.email || identifier).toLowerCase(), ipAddress: req.ip || '', success: false, createdAt: new Date() })
           .catch(() => {});
         await securityEvent('LOGIN_FAILED_BAD_PASSWORD', req, { email, userId: user.uid });
         return res.status(401).json({ error: 'Invalid credentials' });
@@ -90,6 +97,9 @@ export const loginHandler: RequestHandler = async (req, res) => {
         if (churchBlocksAccess(tenant)) return res.status(403).json({ error: CHURCH_UNAVAILABLE_MESSAGE });
       }
 
+      if (process.env.REQUIRE_ADMIN_2FA === 'true' && ['SUPER_ADMIN', 'CHURCH_ADMIN'].includes(user.role) && (!user.twoFactorEnabled || !user.twoFactorSecret)) {
+        return res.status(403).json({ error: 'Administrator two-factor enrollment is required. Contact the platform operator.' });
+      }
       // Two-factor authentication challenge (superadmin + church admins).
       if (user.twoFactorEnabled && user.twoFactorSecret) {
         const code = String(req.body.twoFactorCode || req.body.totp || '').trim();
@@ -102,17 +112,18 @@ export const loginHandler: RequestHandler = async (req, res) => {
       }
 
       const token = signAccessToken({
+        ...sessionClaims(user),
         uid: user.uid,
         email: user.email,
         role: user.role,
         tenantId: user.tenantId,
       });
-      const refreshToken = signRefreshToken({ uid: user.uid });
+      const refreshToken = signRefreshToken({ uid: user.uid, ...sessionClaims(user) });
 
       // Record a successful sign-in for the Login Logs view and last-login stamp.
       await db('users').where({ uid: user.uid }).update({ lastLogin: new Date() }).catch(() => {});
       await db('login_logs')
-        .insert({ userId: user.uid, userName: user.name, email, ipAddress: req.ip || '', success: true, createdAt: new Date() })
+        .insert({ userId: user.uid, userName: user.name, email: String(user.username || user.email || identifier).toLowerCase(), ipAddress: req.ip || '', success: true, createdAt: new Date() })
         .catch(() => {});
 
       // Also set the token as a hardened, httpOnly cookie so the browser can use
@@ -143,8 +154,7 @@ export const loginHandler: RequestHandler = async (req, res) => {
     } catch (error) {
       console.error('Login route error:', error);
       res.status(500).json({ 
-        error: 'Login failed', 
-        details: error instanceof Error ? error.message : String(error) 
+        error: 'Login failed. Please try again.' 
       });
     }
   

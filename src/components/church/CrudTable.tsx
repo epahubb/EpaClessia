@@ -251,6 +251,11 @@ export const CrudTable: React.FC<Props> = ({
             : []);
         return;
       }
+      if (f.type === 'datetime' && stored) {
+        const d = new Date(stored);
+        init = setField(init, f.name, Number.isFinite(d.getTime()) ? new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '');
+        return;
+      }
       init = setField(init, f.name, stored ?? blankFor(f));
     });
     setForm(init); setInitialForm(init); setEditing(row); setError(null); setOpen(true);
@@ -270,6 +275,7 @@ export const CrudTable: React.FC<Props> = ({
       visibleFields.forEach(f => {
         if (f.type === 'section') return;
         const value = getField(form, f.name);
+        const outgoing = f.type === 'datetime' && value ? new Date(value).toISOString() : value;
         // Updates are PATCH-like even though the endpoint uses PUT: submit only
         // what the user actually changed. Apart from preventing invalid blank
         // dates, this stops an edit to a phone number from clearing a photo or
@@ -282,7 +288,7 @@ export const CrudTable: React.FC<Props> = ({
           const root = f.name.split('.')[0];
           payload = setField(payload, root, getField(form, root));
         } else {
-          payload = setField(payload, f.name, value);
+          payload = setField(payload, f.name, outgoing);
         }
       });
       if (editing && updateRow) {

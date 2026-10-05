@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Box, Typography, Tabs, Tab, Grid, Card, CardContent, Chip, Button, Alert, Stack, CircularProgress } from '@mui/material';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import CrudTable from '../../components/church/CrudTable';
+import api from '../../services/api';
+import FinanceDocuments from './FinanceDocuments';
 import churchApi from '../../services/churchApi';
 
 const GHS = (n: number) => new Intl.NumberFormat('en-GH', { style: 'currency', currency: 'GHS', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
@@ -198,7 +200,7 @@ export const Finance: React.FC = () => {
   const loadLists = () => {
     churchApi.getPurposeOptions().then(p => { if (p.length) setPurposes(p); }).catch(() => {});
     churchApi.getInventoryCategories().then(c => { if (c.length) setCategories(c); }).catch(() => {});
-    churchApi.getMembers({ limit: 500 }).then(rows => setMembers((rows || [])
+    api.get('/church/finance/member-options').then(r => r.data.data).then(rows => setMembers((rows || [])
       .filter((m: any) => m.membershipStatus !== 'visitor')
       .map((m: any) => ({ value: m.id, label: `${m.firstName || ''} ${m.lastName || ''}`.trim() || m.membershipId || m.id })))).catch(() => setMembers([]));
   };
@@ -211,7 +213,7 @@ export const Finance: React.FC = () => {
    */
   const withRememberedPurpose = (save: (data: any) => Promise<any>, category = 'giving') =>
     async (data: any) => {
-      const result = await save(data);
+      const result = await save(data.receivedAt ? { ...data, receivedAt: new Date(data.receivedAt).toISOString() } : data);
       const typed = String(data?.purpose || '').trim();
       if (typed && !purposes.some(p => p.toLowerCase() === typed.toLowerCase())) {
         try { await churchApi.rememberPurpose(typed, category); setPurposes(prev => [typed, ...prev]); } catch { /* non-blocking */ }
@@ -222,7 +224,7 @@ export const Finance: React.FC = () => {
   /** Same idea for a typed inventory category. */
   const withRememberedCategory = (save: (data: any) => Promise<any>) =>
     async (data: any) => {
-      const result = await save(data);
+      const result = await save(data.receivedAt ? { ...data, receivedAt: new Date(data.receivedAt).toISOString() } : data);
       const typed = String(data?.category || '').trim();
       if (typed && !categories.some(c => c.toLowerCase() === typed.toLowerCase())) {
         try { await churchApi.rememberInventoryCategory(typed); setCategories(prev => [typed, ...prev]); } catch { /* non-blocking */ }
@@ -230,7 +232,8 @@ export const Finance: React.FC = () => {
       return result;
     };
   const givingCols: any[] = [
-    { key: 'createdAt', label: 'Date', render: (r: any) => r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—' },
+    { key: 'receivedAt', label: 'Collection date & time', render: (r: any) => (r.receivedAt || r.createdAt) ? new Date(r.receivedAt || r.createdAt).toLocaleString() : '—' },
+    { key: 'createdAt', label: 'Recorded at', render: (r: any) => r.createdAt ? new Date(r.createdAt).toLocaleString() : '—' },
     { key: 'donorName', label: 'Giver', render: (r: any) => r.memberName || r.donorName || r.name || 'Anonymous' },
     { key: 'purpose', label: 'Purpose' },
     { key: 'amount', label: 'Amount', render: (r: any) => GHS(r.amount) },
@@ -242,6 +245,7 @@ export const Finance: React.FC = () => {
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'completed'} color={r.status === 'pending' ? 'warning' : 'success'} /> },
   ];
   const givingFields: any[] = [
+    { name: 'receivedAt', label: 'Collection date & time', type: 'datetime', helperText: 'Local time; saved as a UTC instant. Leave blank to use the current time.' },
     { name: 'amount', label: 'Amount (GHS)', type: 'number', required: true },
     {
       name: 'purpose', label: 'Purpose', type: 'autocomplete', options: asOptions(purposes),
@@ -262,7 +266,7 @@ export const Finance: React.FC = () => {
     { name: 'vendor', label: 'Vendor / Payee' },
     { name: 'paymentMethod', label: 'Payment method', type: 'select', options: methodOpts, defaultValue: 'cash', required: true },
     { name: 'status', label: 'Status', type: 'select', options: [{ value: 'pending', label: 'Pending' }, { value: 'approved', label: 'Approved' }, { value: 'paid', label: 'Paid' }], defaultValue: 'paid' },
-    { name: 'date', label: 'Date', type: 'date' },
+    { name: 'date', label: 'Expense date & time', type: 'datetime' },
     ...paymentDetailFields('paymentMethod'),
   ];
   const expenseCols: any[] = [
@@ -361,7 +365,7 @@ export const Finance: React.FC = () => {
     { key: 'active', label: 'Active', render: (r: any) => <Chip size="small" label={r.active === false ? 'Hidden' : 'Active'} color={r.active === false ? 'default' : 'success'} /> },
   ];
 
-  const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Member Dues', 'Platform Charges', 'Payment History'];
+  const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Member Dues', 'Platform Charges', 'Payment History', 'Reports & Documents'];
   return (
     <Box>
       <Typography variant="h4" fontWeight={800} gutterBottom>Finance</Typography>
@@ -370,6 +374,7 @@ export const Finance: React.FC = () => {
         {tabDefs.map(t => <Tab key={t} label={t} />)}
       </Tabs>
       {tab === 0 && <Overview />}
+      {tab === 10 && <FinanceDocuments />}
       {tab === 1 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} createRow={withRememberedPurpose(churchApi.addGiving, 'giving')} addLabel="Record Giving" emptyText="No giving records yet." />}
       {tab === 2 && <CrudTable columns={pledgeCols} fields={pledgeFields} fetchRows={() => churchApi.getPledges()} createRow={withRememberedPurpose(churchApi.createPledge, 'pledge')} updateRow={churchApi.updatePledge} deleteRow={churchApi.deletePledge} addLabel="Add Pledge" />}
       {tab === 3 && <CrudTable columns={expenseCols} fields={expenseFields} fetchRows={() => churchApi.getExpenses()} createRow={churchApi.createExpense} updateRow={churchApi.updateExpense} deleteRow={churchApi.deleteExpense} addLabel="Record Expense" />}

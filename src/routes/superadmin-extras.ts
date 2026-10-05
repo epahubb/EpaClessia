@@ -361,6 +361,7 @@ const ROLE_PERMISSIONS = [
   { role: 'SUPER_ADMIN', permissions: ALL_PERMS },
   { role: 'CHURCH_ADMIN', permissions: ALL_PERMS.filter((p) => !['churches.manage', 'billing.manage', 'users.manage'].includes(p.code)) },
   { role: 'PASTOR', permissions: ALL_PERMS.filter((p) => ['members.manage', 'events.manage', 'giving.manage', 'comms.send', 'reports.view'].includes(p.code)) },
+  { role: 'GROUP_LEADER', permissions: [] },
   { role: 'MINISTRY_LEADER', permissions: ALL_PERMS.filter((p) => ['members.manage', 'events.manage', 'comms.send'].includes(p.code)) },
   { role: 'MEMBER', permissions: [] },
 ];

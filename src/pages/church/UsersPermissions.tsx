@@ -11,6 +11,7 @@ const roleOpts = [
   { value: 'CHURCH_ADMIN', label: 'Church Admin' },
   { value: 'PASTOR', label: 'Pastor' },
   { value: 'MINISTRY_LEADER', label: 'Ministry Leader' },
+  { value: 'GROUP_LEADER', label: 'Group Leader' },
   { value: 'FINANCE', label: 'Finance Officer' },
   { value: 'SECRETARY', label: 'Secretary' },
   { value: 'MEMBER', label: 'Member' },
@@ -216,7 +217,7 @@ export const UsersPermissions: React.FC = () => {
     { name: 'role', label: 'Role', type: 'select', options: roleOpts, defaultValue: 'MEMBER', required: true },
     { name: 'phone', label: 'Phone' },
     { name: 'status', label: 'Status', type: 'select', options: statusOpts, defaultValue: 'active' },
-    { name: 'password', label: 'Temporary password (new users only)' },
+    { name: 'password', label: 'Temporary password', type: 'password', createOnly: true, required: true, helperText: 'At least 8 characters. Give the user a unique password; no shared default is created.' },
   ];
   return (
     <Box>

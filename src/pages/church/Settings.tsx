@@ -42,6 +42,8 @@ const SectionForm: React.FC<{ sectionKey: string; title: string; description?: s
 
 export const ChurchSettingsPage: React.FC = () => {
   const [tab, setTab] = useState(0);
+  const [leaders, setLeaders] = useState<{ value: string; label: string }[]>([]);
+  useEffect(() => { churchApi.getUsers().then(rows => setLeaders(rows.filter((u: any) => u.role === 'GROUP_LEADER' && u.status === 'active').map((u: any) => ({ value: u.uid || u.id, label: u.name || u.email || u.uid })))).catch(() => {}); }, [tab]);
   const [s, setS] = useState<any>(null); const [loading, setLoading] = useState(true);
   useEffect(() => { churchApi.getSettings().then(v => setS(v || {})).catch(() => setS({})).finally(() => setLoading(false)); }, []);
   if (loading || !s) return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}><CircularProgress /></Box>;
@@ -130,7 +132,7 @@ export const ChurchSettingsPage: React.FC = () => {
           fields={[
             { name: 'name', label: 'Group name', required: true, helperText: 'For example: Zone A, Grace Cell, Northside Fellowship.' },
             { name: 'description', label: 'Description', type: 'textarea' },
-            { name: 'leaderName', label: 'Group leader' },
+            { name: 'leaderId', label: 'Group leader account', type: 'select', options: [{ value: '', label: 'Not assigned' }, ...leaders], helperText: 'First create or change an active account to Group Leader under Users & Permissions, then assign it here. One leader may care for several groups.' },
             { name: 'meetingDays', label: 'Meeting days', type: 'multiselect', options: dayOpts, helperText: 'Select all days this group meets.' },
             { name: 'meetingTime', label: 'Meeting time' },
             { name: 'location', label: 'Meeting location' },
@@ -145,7 +147,7 @@ export const ChurchSettingsPage: React.FC = () => {
           emptyText="No groups yet. Add your cells or zones so members can be assigned to one when they register."
         />
       </Stack>)}
-      {tab === 4 && <CrudTable columns={[{ key: 'name', label: 'Service' }, { key: 'dayOfWeek', label: 'Day' }, { key: 'startTime', label: 'Start' }, { key: 'endTime', label: 'End' }, { key: 'location', label: 'Location' }]} fields={[{ name: 'name', label: 'Service name', required: true }, { name: 'dayOfWeek', label: 'Day', type: 'select', options: dayOpts }, { name: 'startTime', label: 'Start time' }, { name: 'endTime', label: 'End time' }, { name: 'location', label: 'Location' }]} fetchRows={() => churchApi.getSchedules()} createRow={churchApi.createSchedule} updateRow={churchApi.updateSchedule} deleteRow={churchApi.deleteSchedule} addLabel="Add Service Schedule" />}
+      {tab === 4 && <CrudTable columns={[{ key: 'name', label: 'Service' }, { key: 'dayOfWeek', label: 'Day' }, { key: 'startTime', label: 'Start' }, { key: 'endTime', label: 'End' }, { key: 'location', label: 'Location' }]} fields={[{ name: 'name', label: 'Service name', required: true }, { name: 'meetingDays', label: 'Meeting days', type: 'multiselect', options: dayOpts, required: true, helperText: 'Select every day this service meets.' }, { name: 'startTime', label: 'Start time' }, { name: 'endTime', label: 'End time' }, { name: 'location', label: 'Location' }]} fetchRows={() => churchApi.getSchedules()} createRow={churchApi.createSchedule} updateRow={churchApi.updateSchedule} deleteRow={churchApi.deleteSchedule} addLabel="Add Service Schedule" />}
       {tab === 5 && <SectionForm sectionKey="financial" title="Financial Year" description="Define your church's fiscal year and reporting currency." initial={s.financial || {}} fields={[{ name: 'fiscalYearStart', label: 'Fiscal year start', type: 'date' }, { name: 'fiscalYearEnd', label: 'Fiscal year end', type: 'date' }, { name: 'currency', label: 'Reporting currency', type: 'select', options: currencyOpts }]} />}
       {tab === 6 && <SectionForm sectionKey="sms" title="SMS Settings" description="Configure your SMS gateway for bulk messaging (e.g. mNotify)." initial={s.sms || {}} readOnly={locked('sms')} fields={[{ name: 'enabled', label: 'Enable SMS', type: 'switch' }, { name: 'provider', label: 'Provider' }, { name: 'senderId', label: 'Sender ID' }, { name: 'apiKey', label: 'API key' }]} />}
       {tab === 7 && <SectionForm sectionKey="email" title="Email Settings" description="SMTP configuration for sending emails and receipts." initial={s.email || {}} readOnly={locked('email')} fields={[{ name: 'provider', label: 'Provider' }, { name: 'host', label: 'SMTP host' }, { name: 'port', label: 'SMTP port' }, { name: 'username', label: 'Username' }, { name: 'password', label: 'Password' }, { name: 'fromName', label: 'From name' }, { name: 'fromEmail', label: 'From email' }]} />}

@@ -56,14 +56,14 @@ const PortalLayout: React.FC<PortalLayoutProps> = ({ roleLabel, menuItems, accen
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Box sx={{ bgcolor: `${accent}.main`, p: 0.5, borderRadius: 1, display: 'flex' }}><ShieldCheck size={20} color="white" /></Box>
               <Typography variant="h6" noWrap fontWeight={700} sx={{ letterSpacing: '-0.5px' }}>Ecclesia</Typography>
-              <Chip label={roleLabel} size="small" sx={{ ml: 1, height: 18, fontSize: '0.65rem', fontWeight: 700, bgcolor: `${accent}.main`, color: 'white' }} />
+              <Chip label={roleLabel} size="small" sx={{ display: { xs: 'none', sm: 'inline-flex' }, ml: 1, height: 18, fontSize: '0.65rem', fontWeight: 700, bgcolor: `${accent}.main`, color: 'white' }} />
             </Box>
           </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 2 } }}>
             <IconButton size="small" onClick={toggleColorMode} color="inherit">{mode === 'light' ? <Moon size={18} /> : <Sun size={18} />}</IconButton>
-            <IconButton size="small"><Bell size={18} /></IconButton>
-            <Divider orientation="vertical" flexItem sx={{ mx: 1, height: 24, my: 'auto' }} />
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <IconButton size="small" sx={{ display: { xs: 'none', sm: 'inline-flex' } }}><Bell size={18} /></IconButton>
+            <Divider orientation="vertical" flexItem sx={{ display: { xs: 'none', sm: 'block' }, mx: 1, height: 24, my: 'auto' }} />
+            <Box sx={{ display: { xs: 'none', sm: 'flex' }, alignItems: 'center', gap: 1.5 }}>
               <Avatar sx={{ width: 32, height: 32, bgcolor: `${accent}.main`, fontSize: '0.875rem' }}>{user?.name?.[0] || 'U'}</Avatar>
               <Typography variant="body2" fontWeight={700} sx={{ display: { xs: 'none', md: 'block' } }}>{user?.name}</Typography>
             </Box>
@@ -71,7 +71,7 @@ const PortalLayout: React.FC<PortalLayoutProps> = ({ roleLabel, menuItems, accen
           </Box>
         </Toolbar>
       </AppBar>
-      <Drawer variant={isMobile ? 'temporary' : 'permanent'} open={open} onClose={() => setOpen(!open)} sx={{ width: drawerWidth, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: drawerWidth, boxSizing: 'border-box', borderRight: `1px solid ${theme.palette.divider}`, bgcolor: 'background.paper', ...(!open && !isMobile && { width: theme.spacing(9), overflowX: 'hidden' }) } }}>
+      <Drawer variant={isMobile ? 'temporary' : 'permanent'} open={open} onClose={() => setOpen(!open)} sx={{ width: isMobile ? 0 : open ? drawerWidth : theme.spacing(9), flexShrink: 0, [`& .MuiDrawer-paper`]: { width: drawerWidth, boxSizing: 'border-box', borderRight: `1px solid ${theme.palette.divider}`, bgcolor: 'background.paper', ...(!open && !isMobile && { width: theme.spacing(9), overflowX: 'hidden' }) } }}>
         <Toolbar />
         <Box sx={{ overflow: 'auto', mt: 2, px: 2 }}>
           <List>
@@ -89,7 +89,7 @@ const PortalLayout: React.FC<PortalLayoutProps> = ({ roleLabel, menuItems, accen
           </List>
         </Box>
       </Drawer>
-      <Box component="main" sx={{ flexGrow: 1, p: 3, mt: 8 }}><Outlet /></Box>
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: { xs: 2, md: 3 }, mt: 8 }}><Outlet /></Box>
     </Box>
   );
 };

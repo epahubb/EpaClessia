@@ -163,6 +163,7 @@ export const corsMiddleware: RequestHandler = (req, res, next) => {
   }
 
   const isAllowed =
+    origin === `${req.protocol}://${req.get('host')}` ||
     allowedOrigins.includes(origin) ||
     // In development, permit localhost on any port.
     (!IS_PROD && /^https?:\/\/localhost(:\d+)?$/.test(origin)) ||
@@ -193,6 +194,7 @@ export const corsMiddleware: RequestHandler = (req, res, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(isAllowed ? 204 : 403);
   }
+  if (!isAllowed) return res.status(403).json({ error: 'Origin not permitted.' });
   next();
 };
 

@@ -20,6 +20,7 @@ export type UserRole =
   | 'CHURCH_ADMIN'
   | 'PASTOR'
   | 'MINISTRY_LEADER'
+  | 'GROUP_LEADER'
   | 'MEMBER';
 
 export interface AuthUser {
@@ -259,7 +260,7 @@ export const tenantSchema = z.object({
 export const userSchema = z.object({
   name: z.string().min(2).max(100).trim(),
   email: z.string().email().toLowerCase().trim(),
-  role: z.enum(['SUPER_ADMIN', 'CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'MEMBER']),
+  role: z.enum(['SUPER_ADMIN', 'CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'GROUP_LEADER', 'FINANCE', 'SECRETARY', 'MEMBER']),
   tenantId: z.string().optional(),
 });
 

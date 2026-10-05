@@ -67,6 +67,8 @@ const Churches: React.FC = () => {
   // Fetch Churches Data
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['churches', { search, page, limit, plan, status, sortBy, sortOrder }],
+    refetchInterval: 30000,
+    refetchOnWindowFocus: true,
     queryKeyHashFn: (key) => JSON.stringify(key),
     queryFn: async () => {
       const response = await api.get('/superadmin/churches', {
@@ -84,6 +86,8 @@ const Churches: React.FC = () => {
       const response = await api.get(`/superadmin/churches/${selectedChurch.id}`);
       return response.data;
     },
+    refetchInterval: openDetails ? 30000 : false,
+    refetchOnWindowFocus: true,
     enabled: !!selectedChurch?.id && openDetails
   });
 

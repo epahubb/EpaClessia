@@ -18,6 +18,8 @@ export const pathForRole = (role?: string | null): string => {
       return '/pastor/dashboard';
     case 'MINISTRY_LEADER':
       return '/ministry/dashboard';
+    case 'GROUP_LEADER':
+      return '/group-leader/dashboard';
     case 'FINANCE':
       return '/finance/dashboard';
     case 'SECRETARY':

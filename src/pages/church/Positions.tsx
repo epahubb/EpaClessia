@@ -28,6 +28,7 @@ const linkedRoleOpts = [
   { value: 'CHURCH_ADMIN', label: 'Church Admin' },
   { value: 'PASTOR', label: 'Pastor' },
   { value: 'MINISTRY_LEADER', label: 'Ministry Leader' },
+  { value: 'GROUP_LEADER', label: 'Group Leader' },
   { value: 'FINANCE', label: 'Finance Officer' },
   { value: 'SECRETARY', label: 'Secretary' },
 ];

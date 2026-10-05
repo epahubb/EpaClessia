@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { sessionIsCurrent } from '../lib/sessionSecurity';
 import db from '../lib/db';
 import { JWT_SECRET } from '../lib/config';
 import { churchBlocksAccess, CHURCH_UNAVAILABLE_MESSAGE } from '../lib/accountAccess';
@@ -20,7 +21,9 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as any;
     // Persisted state revokes existing access tokens after a church is deleted
     // or a member is suspended. A signed JWT alone is not current permission.
-    const account = await db('users').where({ uid: decoded.uid }).select('uid', 'role', 'tenantId', 'status').first();
+    const account = await db('users').where({ uid: decoded.uid }).first();
+    if (decoded.type === 'refresh') return res.status(401).json({ error: 'Invalid access token' });
+    if (account && !sessionIsCurrent(decoded, account)) return res.status(401).json({ error: 'Session revoked. Please sign in again.', code: 'SESSION_REVOKED' });
     if (!account) return res.status(401).json({ error: 'Account no longer exists' });
     if (account.status && account.status !== 'active') {
       return res.status(403).json({ error: 'Account is not active. Please contact your administrator.' });

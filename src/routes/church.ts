@@ -1,3 +1,5 @@
+import { churchAccess } from '../middleware/churchAccess';
+import { randomUUID } from 'node:crypto';
 import { allocateMemberId, normalizeMemberId, SIX_DIGIT_MEMBER_ID } from '../lib/memberIds';
 import { decodeProfileImageDataUrl } from '../lib/profileImages';
 import { Router, Response, NextFunction } from 'express';
@@ -151,7 +153,7 @@ import {
 const router = Router();
 
 const genId = (prefix: string) =>
-  `${prefix}_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+  `${prefix}_${randomUUID()}`;
 
 async function resolveTenant(req: AuthRequest, res: Response, next: NextFunction) {
   try {
@@ -238,6 +240,7 @@ function sendImage(
 }
 
 router.use(resolveTenant);
+router.use(churchAccess);
 
 /* ------------------------------------------------------------------ */
 /* Members                                                            */
@@ -331,6 +334,11 @@ router.get('/groups/options', async (req: AuthRequest, res) => {
   }
 });
 
+async function groupLeaderAccount(tenantId: string, uid: unknown) {
+  if (!uid) return null;
+  return db('users').where({ uid: String(uid), tenantId, role: 'GROUP_LEADER', status: 'active' }).select('uid', 'name').first();
+}
+
 router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
   let meetingDays: string[];
   try { meetingDays = normalizeMeetingDays(req.body?.meetingDays ?? req.body?.meetingDay); }
@@ -350,13 +358,15 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
       return res.status(409).json({ error: `"${name}" is already one of your groups.` });
     }
 
+    const leader = await groupLeaderAccount(tid(req), req.body?.leaderId);
+    if (req.body?.leaderId && !leader) return res.status(400).json({ error: 'Choose an active Group Leader account from this church.' });
     const group = {
       id: genId('group'),
       tenantId: tid(req),
       name,
       description: req.body?.description || null,
-      leaderId: req.body?.leaderId || null,
-      leaderName: req.body?.leaderName || null,
+      leaderId: leader?.uid || null,
+      leaderName: leader?.name || req.body?.leaderName || null,
       meetingDay: meetingDays.join(', ') || null,
       meetingTime: req.body?.meetingTime || null,
       location: req.body?.location || null,
@@ -394,6 +404,11 @@ router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: Aut
     }
     for (const key of ['description', 'leaderId', 'leaderName', 'meetingTime', 'location']) {
       if (key in req.body) updates[key] = req.body[key] || null;
+    }
+    if ('leaderId' in req.body) {
+      const leader = await groupLeaderAccount(tenantId, req.body.leaderId);
+      if (req.body.leaderId && !leader) return res.status(400).json({ error: 'Choose an active Group Leader account from this church.' });
+      updates.leaderId = leader?.uid || null; updates.leaderName = leader?.name || null;
     }
     if (meetingDays !== undefined) updates.meetingDay = meetingDays.join(', ') || null;
     if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
@@ -4178,6 +4193,11 @@ router.get('/giving', async (req: AuthRequest, res) => {
 router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'FINANCE'), async (req: AuthRequest, res) => {
   try {
     const { amount, currency, donorName, paymentMethod, purpose, memberId, email } = req.body;
+    if (!Number.isFinite(Number(amount)) || Number(amount) > 999999999999) return res.status(400).json({ error: 'Enter a valid amount.' });
+    if (currency && !/^[A-Z]{3}$/.test(currency)) return res.status(400).json({ error: 'Use a three-letter currency code.' });
+    const receivedAt = req.body.receivedAt ? new Date(req.body.receivedAt) : new Date();
+    if (!Number.isFinite(receivedAt.getTime())) return res.status(400).json({ error: 'Choose a valid collection date and time.' });
+    if (memberId && !await db('members').where({ id: memberId, tenantId: tid(req) }).select('id').first()) return res.status(400).json({ error: 'Choose a member of this church.' });
     if (!amount || Number(amount) <= 0) {
       return res.status(400).json({ error: 'A positive amount is required' });
     }
@@ -4189,7 +4209,8 @@ router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 
 
     const record = {
       tenantId: tid(req),
-      amount: Number(amount),
+      amount: Math.round(Number(amount) * 100) / 100,
+      receivedAt,
       currency: currency || 'GHS',
       donorName: donorName || 'Anonymous',
       paymentMethod: method,
@@ -4202,6 +4223,7 @@ router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 
     };
     const [insertedId] = await db('donations').insert(record).returning('id');
     const id = typeof insertedId === 'object' ? insertedId.id : insertedId;
+    await logActivity(req, 'create', 'donations', String(id));
     res.status(201).json({ ...record, id });
   } catch (error) {
     console.error('Record giving error:', error);
@@ -4916,10 +4938,12 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
     const row: any = {};
     // Mobile money / bank / card details arrive as their own fields; normalising
     // first means only the ones that belong to the chosen method are stored.
+    if (table === 'service_schedules' && 'meetingDays' in body) body = { ...body, dayOfWeek: normalizeMeetingDays(body.meetingDays).join(', ') };
     const source = opts.paymentDetails
       ? { ...body, ...normalizePaymentDetails(body[opts.paymentDetails], body) }
       : body;
     for (const f of opts.fields) {
+      if (f === 'recordedBy') continue; // Actor attribution comes from the authenticated account.
       if (!(f in source)) continue;
       let v = source[f];
       if (opts.dateFields?.includes(f)) v = v ? new Date(v) : null;
@@ -4935,6 +4959,9 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
    * without a transaction ID is refused with a clear reason.
    */
   const checkBody = (body: any): string | null => {
+    for (const f of opts.numberFields || []) if (body[f] != null && body[f] !== '' && !Number.isFinite(Number(body[f]))) return `${f} must be a finite number.`;
+    for (const f of opts.dateFields || []) if (body[f] && !Number.isFinite(new Date(body[f]).getTime())) return `${f} must be a valid date and time.`;
+    if (table === 'expenses' && !(Number(body.amount) > 0)) return 'Enter a positive expense amount.';
     const custom = opts.validate?.(body);
     if (custom) return custom;
     if (opts.paymentDetails) {
@@ -4952,7 +4979,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
         if (val !== undefined && val !== '' && val !== 'all') q = q.where(f, String(val));
       }
       const rows = await q.orderBy(opts.orderBy || 'createdAt', 'desc');
-      res.json({ data: rows });
+      res.json({ data: table === 'service_schedules' ? rows.map(r => ({ ...r, meetingDays: normalizeMeetingDays(r.dayOfWeek) })) : rows });
     } catch (e) {
       console.error(`GET ${basePath} error:`, e);
       res.status(500).json({ error: `Failed to load ${table}` });
@@ -4976,7 +5003,8 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
       }
       const problem = checkBody(body);
       if (problem) return res.status(400).json({ error: problem });
-      const row = { id: genId(opts.idPrefix), tenantId: tid(req), ...coerce(body), createdAt: new Date() };
+      const row: any = { id: genId(opts.idPrefix), tenantId: tid(req), ...coerce(body), createdAt: new Date() };
+      if (opts.fields.includes('recordedBy')) row.recordedBy = req.user?.uid || null;
       await db(table).insert(row);
       await logActivity(req, 'create', table, row.id);
       res.status(201).json(row);
@@ -4986,7 +5014,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
       // act on. The database's own complaint (a missing column, a bad date) is
       // far more useful to whoever has to fix it.
       res.status(500).json({
-        error: `Failed to save this record${e?.message ? `: ${e.message}` : '.'}`,
+        error: 'Failed to save this record. Please contact support if the problem persists.',
       });
     }
   });
@@ -5015,7 +5043,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
     } catch (e: any) {
       console.error(`PUT ${basePath} error:`, e);
       res.status(500).json({
-        error: `Failed to update this record${e?.message ? `: ${e.message}` : '.'}`,
+        error: 'Failed to update this record. Please contact support if the problem persists.',
       });
     }
   });
@@ -5125,7 +5153,7 @@ registerCrud('/service-schedules', 'service_schedules', {
   orderBy: 'name',
   validate: (body) => {
     if (!String(body?.name || '').trim()) return 'Give the service a name, for example "Sunday First Service".';
-    if (!String(body?.dayOfWeek || '').trim()) return 'Choose the day of the week this service runs.';
+    try { if (!normalizeMeetingDays(body?.meetingDays ?? body?.dayOfWeek).length) return 'Choose at least one meeting day.'; } catch { return 'Choose valid meeting days from Sunday to Saturday.'; }
     if (body?.startTime && body?.endTime && String(body.endTime) < String(body.startTime)) {
       return 'The end time cannot be before the start time.';
     }
@@ -5397,6 +5425,7 @@ const CHURCH_ROLES = [
   { role: 'CHURCH_ADMIN', label: 'Church Admin', permissions: ['Full access to all church modules', 'Manage users & roles', 'Manage settings & billing'] },
   { role: 'PASTOR', label: 'Pastor', permissions: ['Members & visitors', 'Finance & giving', 'Events & communication', 'Reports'] },
   { role: 'MINISTRY_LEADER', label: 'Ministry Leader', permissions: ['Assigned ministry members', 'Attendance & events', 'Send communication'] },
+  { role: 'GROUP_LEADER', label: 'Group Leader', permissions: ['Assigned group members only', 'Read attendance reports', 'Group follow-up care and meeting schedules'] },
   { role: 'FINANCE', label: 'Finance Officer', permissions: ['Record giving', 'Expenses, budgets & pledges', 'Finance reports'] },
   { role: 'SECRETARY', label: 'Secretary', permissions: ['Members & visitors', 'Mark attendance (QR, roll call, biometric)', 'Events & service calendar'] },
   { role: 'MEMBER', label: 'Member', permissions: ['View own profile', 'Give online', 'View events'] },
@@ -5497,8 +5526,10 @@ router.post('/users', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res)
     const exists = await db('users').where({ email }).first();
     if (exists) return res.status(409).json({ error: 'A user with this email already exists' });
     const bcrypt = (await import('bcryptjs')).default;
-    const hash = await bcrypt.hash(password || 'ChangeMe123!', 12);
-    const allowedRoles = ['CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'FINANCE', 'SECRETARY', 'MEMBER'];
+    const check = validatePortalPassword(password);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+    const hash = await bcrypt.hash(password, 12);
+    const allowedRoles = ['CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'GROUP_LEADER', 'FINANCE', 'SECRETARY', 'MEMBER'];
     const finalRole = allowedRoles.includes(role) ? role : 'MEMBER';
     const uid = genId('user');
     await db('users').insert({

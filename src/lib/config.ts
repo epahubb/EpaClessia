@@ -40,7 +40,7 @@ export const JWT_SECRET = resolveJwtSecret();
 // Access token is short/medium-lived; the refresh token keeps the session
 // alive so users are not abruptly logged out (which surfaced as
 // "TokenExpiredError: jwt expired"). Both are overridable via env.
-export const ACCESS_TOKEN_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
+export const ACCESS_TOKEN_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '15m';
 export const REFRESH_TOKEN_EXPIRES_IN =
   process.env.JWT_REFRESH_EXPIRES_IN || '30d';
 

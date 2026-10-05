@@ -115,6 +115,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const base = import.meta.env.VITE_API_URL || '/api/v1';
       void fetch(`${base}/auth/logout`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || localStorage.getItem('access_token') || ''}` },
+        body: JSON.stringify({ refreshToken: localStorage.getItem('refresh_token') }),
         credentials: 'include',
         keepalive: true,
       }).catch(() => {});

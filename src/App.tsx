@@ -13,6 +13,9 @@ import Dashboard from './pages/Dashboard';
 // Portal Layouts (Pastor / Ministry Leader / Member)
 import PastorLayout from './layouts/PastorLayout';
 import MinistryLeaderLayout from './layouts/MinistryLeaderLayout';
+import GroupLeaderLayout from './layouts/GroupLeaderLayout';
+import GroupLeaderPortal from './pages/group/GroupLeaderPortal';
+import FinanceDocuments from './pages/church/FinanceDocuments';
 import MemberLayout from './layouts/MemberLayout';
 import FinanceLayout from './layouts/FinanceLayout';
 import SecretaryLayout from './layouts/SecretaryLayout';
@@ -166,8 +169,13 @@ const App: React.FC = () => {
             <Route path="/ministry" element={<Navigate to="/ministry/dashboard" replace />} />
           </Route>
 
+          <Route path="/group-leader" element={<ProtectedRoute allowedRoles={['GROUP_LEADER', 'CHURCH_ADMIN', 'PASTOR']}><GroupLeaderLayout /></ProtectedRoute>}>
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard" element={<GroupLeaderPortal />} />
+          </Route>
+
           {/* Member Portal */}
-          <Route element={<ProtectedRoute allowedRoles={['MEMBER', 'MINISTRY_LEADER', 'PASTOR', 'CHURCH_ADMIN']}><MemberLayout /></ProtectedRoute>}>
+          <Route element={<ProtectedRoute allowedRoles={['MEMBER', 'GROUP_LEADER', 'MINISTRY_LEADER', 'PASTOR', 'CHURCH_ADMIN']}><MemberLayout /></ProtectedRoute>}>
             <Route path="/member/dashboard" element={<MemberDashboard />} />
             <Route path="/member/profile" element={<MemberProfile />} />
             <Route path="/member/giving" element={<MemberGiving />} />
@@ -189,7 +197,7 @@ const App: React.FC = () => {
           */}
           <Route element={<ProtectedRoute allowedRoles={['FINANCE', 'CHURCH_ADMIN', 'PASTOR']}><FinanceLayout /></ProtectedRoute>}>
             <Route path="/finance/dashboard" element={<ChurchFinancePage />} />
-            <Route path="/finance/reports" element={<ChurchReportsPage />} />
+            <Route path="/finance/reports" element={<FinanceDocuments />} />
             <Route path="/finance" element={<Navigate to="/finance/dashboard" replace />} />
           </Route>
 

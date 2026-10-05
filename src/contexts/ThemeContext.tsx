@@ -75,6 +75,12 @@ export const CustomThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
           MuiInputLabel: {
             styleOverrides: { root: { '&.Mui-focused': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' } } },
           },
+          MuiTab: {
+            styleOverrides: { root: { '&.Mui-selected': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' } } },
+          },
+          MuiTabs: {
+            styleOverrides: { indicator: { backgroundColor: mode === 'dark' ? '#72bc8f' : '#1b4332' } },
+          },
           MuiCheckbox: {
             styleOverrides: { root: { '&.Mui-checked': { color: mode === 'dark' ? '#72bc8f' : '#1b4332' } } },
           },
@@ -87,6 +93,7 @@ export const CustomThemeProvider: React.FC<{ children: React.ReactNode }> = ({ c
             styleOverrides: {
               body: {
                 transition: 'background-color 0.3s ease, color 0.3s ease',
+                '& input[type="date"], & input[type="datetime-local"]': { colorScheme: mode },
                 scrollbarColor: mode === 'dark' ? '#1e293b #020617' : '#e2e8f0 #f8fafc',
                 '& *': {
                   transition: 'background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease',

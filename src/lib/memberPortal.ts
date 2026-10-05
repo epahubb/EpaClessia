@@ -225,6 +225,9 @@ export function validatePortalPassword(
       error: `The password must be at least ${PORTAL_PASSWORD_MIN_LENGTH} characters.`,
     };
   }
+  if (new TextEncoder().encode(value).length > 72) {
+    return { ok: false, error: 'The password must not exceed 72 UTF-8 bytes.' };
+  }
   if (value.length > 200) {
     return { ok: false, error: 'The password is too long.' };
   }
