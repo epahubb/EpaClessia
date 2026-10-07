@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Paper, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, TextField,
   MenuItem, CircularProgress, Stack, Checkbox, FormControlLabel, Tooltip,
-  Autocomplete, Divider, Typography
+  Autocomplete, Divider, Typography, Alert, TablePagination
 } from '@mui/material';
-import { Add, Edit, Delete } from '@mui/icons-material';
+import { Add, Edit, Delete, Refresh } from '@mui/icons-material';
 import AuthedImageField from '../common/AuthedImageField';
 
 export type CrudField = {
@@ -51,6 +51,8 @@ type Props = {
   columns: CrudColumn[];
   fields: CrudField[];
   fetchRows: () => Promise<any[]>;
+  /** Optional server pagination; preserve totals instead of silently dropping later pages. */
+  fetchPage?: (params: { page: number; limit: number; search: string }) => Promise<{ data: any[]; pagination: { total: number } }>;
   createRow?: (data: any) => Promise<any>;
   onCreated?: (result: any) => void;
   updateRow?: (id: string, data: any) => Promise<any>;
@@ -199,7 +201,7 @@ const ListField: React.FC<{
 };
 
 export const CrudTable: React.FC<Props> = ({
-  columns, fields, fetchRows, createRow, updateRow, deleteRow,
+  columns, fields, fetchRows, fetchPage, createRow, updateRow, deleteRow,
   idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.',
   onDialogOpen, onCreated,
 }) => {
@@ -217,12 +219,48 @@ export const CrudTable: React.FC<Props> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = async () => {
-    setLoading(true);
-    try { setRows(await fetchRows()); } catch (e) { console.error(e); setRows([]); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+  const [listError, setListError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  const requests = useRef(0);
+  const loaders = useRef({ fetchRows, fetchPage });
+  loaders.current = { fetchRows, fetchPage };
+  const paginated = Boolean(fetchPage);
+  const reload = useCallback(async (options?: { page?: number; search?: string }) => {
+    const request = ++requests.current;
+    setLoading(true); setListError(null);
+    try {
+      const loader = loaders.current;
+      if (loader.fetchPage) {
+        const result = await loader.fetchPage({ page: (options?.page ?? page) + 1, limit: pageSize, search: options?.search ?? search });
+        if (!Array.isArray(result.data)) throw new Error('Invalid list response');
+        if (request === requests.current) {
+          setRows(result.data); setTotal(Number(result.pagination.total));
+          // A deletion can remove the last page; move back to a valid page.
+          if (result.data.length === 0 && (options?.page ?? page) > 0 && Number(result.pagination.total) > 0)
+            setPage(Math.max(0, Math.ceil(Number(result.pagination.total) / pageSize) - 1));
+        }
+      } else {
+        const result = await loader.fetchRows();
+        if (!Array.isArray(result)) throw new Error('Invalid list response');
+        if (request === requests.current) setRows(result);
+      }
+    } catch (e: any) {
+      if (request === requests.current) setListError(e?.friendlyMessage || e?.response?.data?.error || 'The list could not be refreshed. Previously loaded records are retained. Try Refresh; do not register the same person again.');
+    } finally { if (request === requests.current) setLoading(false); }
+  }, [page, pageSize, search]);
+  useEffect(() => { void reload(); return () => { requests.current++; }; }, [reload, paginated]);
+  useEffect(() => {
+    if (!paginated) return;
+    const refresh = () => { void reload(); };
+    const visible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', visible);
+    return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', visible); };
+  }, [reload, paginated]);
 
   /** The blank value a field starts from, which differs by field type. */
   const blankFor = (f: CrudField) =>
@@ -297,9 +335,20 @@ export const CrudTable: React.FC<Props> = ({
         if (Object.keys(payload).length > 0) await updateRow(editing[idKey], payload);
       } else if (createRow) {
         const result = await createRow(payload);
+        if (paginated && result?.[idKey]) {
+          // A confirmed saved record remains visible even if the follow-up GET fails.
+          setRows(previous => [result, ...previous.filter(row => row[idKey] !== result[idKey])].slice(0, pageSize));
+          setTotal(previous => previous + 1);
+        }
         onCreated?.(result);
       }
-      setOpen(false); await reload();
+      setOpen(false);
+      if (!editing && paginated) {
+        // Newest-first page one ensures the registered member is visible,
+        // even when the operator was on a later page or using a search.
+        setPage(0); setSearch(''); setSearchInput('');
+        await reload({ page: 0, search: '' });
+      } else await reload();
     } catch (e: any) {
       // Shown inside the dialog instead of an alert() so the user keeps their
       // typed input and can see which requirement was missed.
@@ -317,8 +366,17 @@ export const CrudTable: React.FC<Props> = ({
 
   return (
     <Box>
+      {listError && <Alert severity="error" sx={{ mb: 2 }} action={<Button color="inherit" onClick={() => void reload()}>Retry</Button>}>{listError}</Alert>}
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 2 }}>
+        {paginated && <Box component="form" onSubmit={e => { e.preventDefault(); setPage(0); setSearch(searchInput.trim()); }} sx={{ display: 'flex', gap: 1, flex: 1 }}>
+          <TextField label="Search members" size="small" value={searchInput} onChange={e => setSearchInput(e.target.value)} fullWidth />
+          <Button type="submit" variant="outlined">Search</Button>
+          {search && <Button onClick={() => { setSearchInput(''); setSearch(''); setPage(0); }}>Clear</Button>}
+        </Box>}
+        <Button startIcon={<Refresh />} variant="outlined" onClick={() => void reload()}>Refresh</Button>
+      </Stack>
       {(createRow || toolbarActions) && (
-        <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mb: 2 }}>
+        <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mb: 2, flexWrap: 'wrap', gap: 1 }}>
           {toolbarActions?.(reload)}
           {createRow && (
             <Button variant="contained" startIcon={<Add />} onClick={openCreate}>{addLabel}</Button>
@@ -337,7 +395,7 @@ export const CrudTable: React.FC<Props> = ({
             {loading ? (
               <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4 }}><CircularProgress size={28} /></TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4, color: 'text.secondary' }}>{emptyText}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4, color: 'text.secondary' }}>{listError ? 'Unable to load the list. Use Retry or Refresh.' : search ? 'No members match your search.' : emptyText}</TableCell></TableRow>
             ) : rows.map((row, i) => (
               <TableRow key={row[idKey] || i} hover>
                 {columns.map(c => <TableCell key={c.key}>{c.render ? c.render(row) : (row[c.key] ?? '—')}</TableCell>)}
@@ -353,6 +411,7 @@ export const CrudTable: React.FC<Props> = ({
           </TableBody>
         </Table>
       </TableContainer>
+      {paginated && <TablePagination component="div" sx={{ '& .MuiTablePagination-toolbar': { px: { xs: 0, sm: 2 }, flexWrap: 'wrap' }, '& .MuiTablePagination-selectLabel': { fontSize: 12 }, '& .MuiTablePagination-displayedRows': { fontSize: 12 }, '& .MuiTablePagination-actions': { ml: { xs: 1, sm: 2 } } }} count={total} page={page} rowsPerPage={pageSize} rowsPerPageOptions={[25, 50, 100]} onPageChange={(_e, value) => setPage(value)} onRowsPerPageChange={e => { setPageSize(Number(e.target.value)); setPage(0); }} />}
 
       <Dialog open={open} onClose={() => { if (!imageProcessing && !saving) setOpen(false); }} fullWidth maxWidth="sm">
         <DialogTitle>{editing ? 'Edit Record' : addLabel}</DialogTitle>

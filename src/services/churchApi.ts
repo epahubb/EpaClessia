@@ -91,6 +91,8 @@ export const churchApi = {
 
   // Members
   getMembers: async (params?: any) => unwrap((await api.get('/church/members', { params })).data),
+  getMembersPage: async (params: { page: number; limit: number; search: string }) =>
+    (await api.get('/church/members', { params: { ...params, sort: 'newest' } })).data,
   getMemberDetails: async (id: string) => (await api.get(`/church/members/${id}/details`)).data,
   getMemberAttendance: async (id: string, params: { from: string; to: string }, signal?: AbortSignal): Promise<{ records: import('../lib/memberAttendance').MemberAttendanceRecord[]; from: string; to: string }> =>
     (await api.get(`/church/members/${id}/attendance`, { params, signal })).data,

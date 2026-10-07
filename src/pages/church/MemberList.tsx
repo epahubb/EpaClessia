@@ -606,6 +606,7 @@ export const MemberList: React.FC = () => {
         columns={columns}
         fields={[...coreFields, ...extendedFields, ...trailingFields]}
         fetchRows={() => churchApi.getMembers()}
+        fetchPage={churchApi.getMembersPage}
         createRow={churchApi.createMember}
         onCreated={result => {
           const access = result?.portalAccess;

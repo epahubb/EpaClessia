@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
@@ -18,7 +18,7 @@ import {
   MenuItem,
   Tooltip,
   Alert,
-  Button
+  Button, useMediaQuery, useTheme
 } from '@mui/material';
 import {
   Menu as MenuIcon,
@@ -81,7 +81,10 @@ export const ChurchAdminLayout: React.FC = () => {
   // whole portal, so this filters nothing out until a tradition is described.
   const { profile, has, label } = usePortalProfile();
   const visibleMenuItems = menuItems.filter((item) => has(item.feature));
-  const [open, setOpen] = useState(true);
+  const theme = useTheme();
+  const mobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const [open, setOpen] = useState(!mobile);
+  useEffect(() => { setOpen(!mobile); }, [mobile]);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
   const isImpersonating = localStorage.getItem('is_impersonating') === 'true';
@@ -147,9 +150,9 @@ export const ChurchAdminLayout: React.FC = () => {
                 easing: theme.transitions.easing.sharp,
                 duration: theme.transitions.duration.leavingScreen,
               }),
-            ...(open && {
-              marginLeft: drawerWidth,
-              width: `calc(100% - ${drawerWidth}px)`,
+            ...(!mobile && {
+              marginLeft: open ? drawerWidth : 56,
+              width: `calc(100% - ${open ? drawerWidth : 56}px)`,
               transition: (theme) =>
                 theme.transitions.create(['width', 'margin', 'top'], {
                   easing: theme.transitions.easing.sharp,
@@ -169,11 +172,11 @@ export const ChurchAdminLayout: React.FC = () => {
               aria-label="open drawer"
               onClick={handleDrawerToggle}
               edge="start"
-              sx={{ marginRight: 5, ...(open && { display: 'none' }) }}
+              sx={{ marginRight: { xs: 1, sm: 5 }, ...(!mobile && open && { display: 'none' }) }}
             >
               <MenuIcon />
             </IconButton>
-            <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1, fontWeight: 600 }}>
+            <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1, minWidth: 0, fontWeight: 600 }}>
               {user?.tenant?.name}
             </Typography>
             
@@ -189,8 +192,8 @@ export const ChurchAdminLayout: React.FC = () => {
               Logout
             </Button>
             <Tooltip title="Account settings">
-              <IconButton onClick={handleMenuOpen} sx={{ p: 0 }}>
-                <Avatar sx={{ bgcolor: 'primary.main' }}>
+              <IconButton onClick={handleMenuOpen} sx={{ p: 0, ml: 1, display: { xs: 'none', sm: 'inline-flex' } }}>
+                <Avatar sx={{ bgcolor: 'primary.main', color: '#fff' }}>
                   {user?.email?.charAt(0).toUpperCase() || 'A'}
                 </Avatar>
               </IconButton>
@@ -219,10 +222,11 @@ export const ChurchAdminLayout: React.FC = () => {
         </AppBar>
 
       <Drawer
-        variant="permanent"
+        variant={mobile ? "temporary" : "permanent"}
         open={open}
+        onClose={() => setOpen(false)}
         sx={{
-          width: drawerWidth,
+          width: mobile ? 0 : open ? drawerWidth : 56,
           flexShrink: 0,
           whiteSpace: 'nowrap',
           boxSizing: 'border-box',
@@ -260,17 +264,17 @@ export const ChurchAdminLayout: React.FC = () => {
           {visibleMenuItems.map((item) => (
             <ListItem key={item.text} disablePadding sx={{ display: 'block' }}>
               <ListItemButton
-                onClick={() => navigate(item.path)}
+                onClick={() => { navigate(item.path); if (mobile) setOpen(false); }}
                 selected={location.pathname === item.path}
                 sx={{
                   minHeight: 48,
                   justifyContent: open ? 'initial' : 'center',
                   px: 2.5,
                   '&.Mui-selected': {
-                    backgroundColor: 'primary.light',
-                    color: 'primary.main',
+                    backgroundColor: theme.palette.mode === 'dark' ? '#1e293b' : 'primary.light',
+                    color: theme.palette.mode === 'dark' ? '#72bc8f' : 'primary.main',
                     '& .MuiListItemIcon-root': {
-                      color: 'primary.main',
+                      color: theme.palette.mode === 'dark' ? '#72bc8f' : 'primary.main',
                     },
                   },
                 }}
@@ -294,8 +298,9 @@ export const ChurchAdminLayout: React.FC = () => {
       <Box 
         component="main" 
         sx={{ 
-          flexGrow: 1, 
-          p: 3, 
+          flexGrow: 1,
+          minWidth: 0,
+          p: { xs: 2, sm: 3 }, 
           backgroundColor: 'background.default', 
           minHeight: '100vh' 
         }}

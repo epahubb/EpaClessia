@@ -3159,15 +3159,22 @@ async function linkChildren(tenantId: string, parentId: string, children: any[],
 
 router.get('/members', async (req: AuthRequest, res) => {
   try {
-    const { search = '', status = 'all', familyId, page = 1, limit = 50 } = req.query;
-    const offset = (Number(page) - 1) * Number(limit);
+    const { search = '', status = 'all', familyId, page = 1, limit = 50, sort = 'name' } = req.query;
+    const pageNumber = Number(page), pageLimit = Number(limit);
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 500)
+      return res.status(400).json({ error: 'Use a positive page and a limit between 1 and 500.' });
+    if (typeof search !== 'string' || search.length > 200 || typeof status !== 'string' || !['name', 'newest'].includes(String(sort)))
+      return res.status(400).json({ error: 'Invalid member search or sort.' });
+    res.set('Cache-Control', 'no-store');
+    const offset = (pageNumber - 1) * pageLimit;
     let query = db('members').where({ tenantId: tid(req) });
     if (search) {
       query = query.where(function () {
-        this.where('firstName', 'like', `%${search}%`)
-          .orWhere('lastName', 'like', `%${search}%`)
-          .orWhere('email', 'like', `%${search}%`)
-          .orWhere('phone', 'like', `%${search}%`);
+        this.where('firstName', db.client.config.client === 'pg' ? 'ilike' : 'like', `%${search}%`)
+          .orWhere('lastName', db.client.config.client === 'pg' ? 'ilike' : 'like', `%${search}%`)
+          .orWhere('email', db.client.config.client === 'pg' ? 'ilike' : 'like', `%${search}%`)
+          .orWhere('phone', db.client.config.client === 'pg' ? 'ilike' : 'like', `%${search}%`)
+          .orWhere('membershipId', 'like', `%${search}%`);
       });
     }
     if (status !== 'all') query = query.where('membershipStatus', String(status));
@@ -3179,7 +3186,8 @@ router.get('/members', async (req: AuthRequest, res) => {
     const data = await query
       .select(await memberColumns())
       .select(hasPhotoColumn())
-      .orderBy('lastName', 'asc')
+      .orderBy(sort === 'newest' ? 'createdAt' : 'lastName', sort === 'newest' ? 'desc' : 'asc')
+      .orderBy('id', 'asc')
       .limit(Number(limit))
       .offset(offset);
     // Ministry assignments are fetched in one query for the whole page rather
@@ -3190,7 +3198,7 @@ router.get('/members', async (req: AuthRequest, res) => {
     );
     res.json({
       data: (data as any[]).map((m) => expandMemberProfile(m, ministries[m.id] || [])),
-      pagination: { total: total?.count || 0, page: Number(page), limit: Number(limit) },
+      pagination: { total: Number(total?.count || 0), page: Number(page), limit: Number(limit) },
     });
   } catch (error) {
     console.error('List members error:', error);

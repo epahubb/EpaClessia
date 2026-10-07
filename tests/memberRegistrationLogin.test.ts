@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import sharp from 'sharp';
-import { newDb } from 'pg-mem';
+import { newDb, DataType } from 'pg-mem';
 import db from '../src/lib/db';
 import churchRouter from '../src/routes/church';
 import memberRouter from '../src/routes/member';
@@ -17,6 +17,8 @@ import { signAccessToken } from '../src/lib/security';
 // member authorization against a SQL database, not mocked response payloads.
 test('registration credentials log in to the member API, with or without email', async t => {
   const memory = newDb();
+  memory.public.registerFunction({ name: 'current_database', returns: DataType.text, implementation: () => 'pgmem' });
+  memory.public.registerFunction({ name: 'current_schema', returns: DataType.text, implementation: () => 'public' });
   const sql = memory.adapters.createKnex();
   const originalClient = db.client;
   (db as any).client = sql.client;
@@ -87,6 +89,41 @@ test('registration credentials log in to the member API, with or without email',
         assert.equal(failedLogin.email, username.toLowerCase(), 'username failures remain visible to the account lockout guard');
       });
     }
+    const list = async (query: string) => {
+      const response = await fetch(base + '/church/members?' + query, { headers: { Authorization: `Bearer ${token}` } });
+      return { status: response.status, cache: response.headers.get('cache-control'), body: await response.json() as any };
+    };
+    await t.test('registered members are immediately available in an uncached newest-first list', async () => {
+      const created = await request('/church/members', { firstName: 'Newest', lastName: 'Zulu', username: 'newest.zulu', password: 'ExactRegistrationPass26!' }, token);
+      assert.equal(created.status, 201);
+      const result = await list('page=1&limit=50&sort=newest');
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.cache, 'no-store');
+      assert.equal(result.body.data[0].id, created.body.id);
+      assert.equal(typeof result.body.pagination.total, 'number');
+      assert.equal('photo' in result.body.data[0], false);
+    });
+    await t.test('members beyond fifty are reachable; totals and search remain tenant scoped', async () => {
+      const fixtures = Array.from({length: 57}, (_, i) => ({ id: `paged-${i}`, tenantId: 'church-fixture', firstName: 'Earlier', lastName: `A${String(i).padStart(2, '0')}`, membershipId: String(100000+i), createdAt: new Date('2025-01-01T00:00:00Z') }));
+      await sql('members').insert([...fixtures, { id: 'foreign-member', tenantId: 'other-church', firstName: 'Foreign', lastName: 'Zulu', membershipId: '999999', createdAt: new Date('2030-01-01') }]);
+      try {
+        const first = await list('page=1&limit=50&sort=newest');
+        const second = await list('page=2&limit=50&sort=newest');
+        assert.equal(first.status, 200); assert.equal(second.status, 200);
+        assert.equal(first.body.data.length, 50);
+        assert.equal(second.body.data.length, first.body.pagination.total-50);
+        const all = [...first.body.data, ...second.body.data];
+        assert.equal(new Set(all.map(m => m.id)).size, first.body.pagination.total);
+        assert.equal(all.some(m => m.id==='foreign-member'), false);
+        const found = await list('search=newest&sort=newest');
+        assert.equal(found.body.pagination.total, 1); assert.equal(found.body.data[0].lastName, 'Zulu');
+        const idSearch = await list('search=100056');
+        assert.equal(idSearch.body.data[0].id, 'paged-56');
+      } finally { await sql('members').whereIn('id', [...fixtures.map(m=>m.id),'foreign-member']).del(); }
+    });
+    await t.test('invalid member pagination is rejected rather than silently truncated', async () => {
+      for(const q of ['page=0','page=-1','limit=501','limit=no','sort=bad']) assert.equal((await list(q)).status, 400, q);
+    });
     await t.test('weak entered password is rejected before registering a member', async () => {
       const before = (await sql('members')).length;
       const response = await request('/church/members', { firstName: 'Invalid', lastName: 'Credentials', username: 'invalid.member', password: 'short' }, token);

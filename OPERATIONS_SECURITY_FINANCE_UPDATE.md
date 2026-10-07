@@ -76,7 +76,7 @@ Remaining operator responsibilities:
 
 ## Validation
 
-Type checks and production build pass. The test suite currently has 278 tests: **277 pass**, with the same pre-existing Excel serial-date expectation failure in `memberImport.test.ts` (`1990-04-03` expected versus `1990-04-01` produced). It was not changed as part of this feature update.
+Type checks and production build pass. The test suite currently has 281 tests: **280 pass**, with the same pre-existing Excel serial-date expectation failure in `memberImport.test.ts` (`1990-04-03` expected versus `1990-04-01` produced). It was not changed as part of this feature update.
 
 15 new checks cover currency/cent calculations, token revocation logic, repeated additive migrations, live member counts, current leader assignment, cross-group/tenant/role denial, scoped care writes, collection-date boundaries, invoices and credential-bound access using production handlers and a pg-mem SQL adapter. The emulator does not replace staging checks on real PostgreSQL (including precision, binary image storage, concurrency and transactional behavior).
 
