@@ -39,7 +39,7 @@ test('registration credentials log in to the member API, with or without email',
   await sql.schema.createTable('ministry_members', table => { table.string('id'); table.string('ministryId'); table.string('memberId'); table.string('tenantId'); });
   await sql.schema.createTable('system_settings', table => { table.string('key'); table.text('value'); });
   await sql.schema.createTable('communications_log', table => {
-    table.increments('id'); for (const name of ['tenantId','type','recipient','subject','message','status']) table.string(name); table.timestamp('createdAt');
+    table.increments('id'); for (const name of ['tenantId','recipient','subject','message','status']) table.string(name); table.string('channel').notNullable(); table.timestamp('createdAt');
   });
   await sql.schema.createTable('login_logs', table => {
     table.increments('id'); for (const name of ['userId','userName','email','ipAddress']) table.string(name); table.boolean('success'); table.timestamp('createdAt');
@@ -73,6 +73,8 @@ test('registration credentials log in to the member API, with or without email',
         assert.equal(created.body.portalAccess.created, true);
         assert.equal(created.body.portalAccess.username, username.toLowerCase());
         assert.equal(created.body.portalAccess.status, 'active');
+        assert.equal((await sql('members').where({ id: created.body.id }).first())?.id, created.body.id);
+        assert.ok(await sql('communications_log').where({ recipient: email || username.toLowerCase() }).first());
         assert.equal(JSON.stringify(created.body).includes(password), false);
         const account = await sql('users').where({ memberId: created.body.id }).first();
         assert.equal(account.role, 'MEMBER'); assert.equal(account.email, email);
@@ -123,6 +125,18 @@ test('registration credentials log in to the member API, with or without email',
     });
     await t.test('invalid member pagination is rejected rather than silently truncated', async () => {
       for(const q of ['page=0','page=-1','limit=501','limit=no','sort=bad']) assert.equal((await list(q)).status, 400, q);
+    });
+    await t.test('invitation audit failure cannot roll back registration or its login', async () => {
+      await sql.schema.renameTable('communications_log', 'communications_log_unavailable');
+      try {
+        const created = await request('/church/members', { firstName: 'Audit', lastName: 'Unavailable', username: 'audit.unavailable', password: 'ExactRegistrationPass26!' }, token);
+        assert.equal(created.status, 201, JSON.stringify(created.body));
+        assert.ok(await sql('members').where({ id: created.body.id }).first());
+        const login = await request('/auth/login', { username: 'audit.unavailable', password: 'ExactRegistrationPass26!' });
+        assert.equal(login.status, 200);
+        const result = await list('search=Unavailable');
+        assert.equal(result.body.data[0].id, created.body.id);
+      } finally { await sql.schema.renameTable('communications_log_unavailable', 'communications_log'); }
     });
     await t.test('weak entered password is rejected before registering a member', async () => {
       const before = (await sql('members')).length;

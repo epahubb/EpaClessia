@@ -28,3 +28,6 @@ Production registration/list handlers tested through a pg-mem SQL adapter: immed
 Desktop, 390px mobile and dark-mode browser checks with UI fixtures cover next page, full-list search, registration from a filtered view, late stale responses, a simulated failed post-save refresh that retains the saved member, and retry without a duplicate POST. These fixtures do not claim live Railway validation. Mobile table controls and desktop/mobile/dark screenshots were inspected.
 
 Type checking and production build pass. Full regression suite: 281 tests, 280 pass, one unchanged pre-existing Excel serial-date expectation failure (1990-04-03 expected, 1990-04-01 produced) in memberImport.test.ts. Independent security/real PostgreSQL staging requirements in OPERATIONS_SECURITY_FINANCE_UPDATE.md still apply.
+
+## Follow-up: PostgreSQL registration rollback
+The listing fix remains included, but a separate registration transaction bug was subsequently found and corrected. See MEMBER_REGISTRATION_COMMIT_FIX.md for the root cause, PostgreSQL-engine regression checks and handling previously rolled-back registrations.

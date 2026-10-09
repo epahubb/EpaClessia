@@ -81,3 +81,6 @@ Type checks and production build pass. The test suite currently has 281 tests: *
 15 new checks cover currency/cent calculations, token revocation logic, repeated additive migrations, live member counts, current leader assignment, cross-group/tenant/role denial, scoped care writes, collection-date boundaries, invoices and credential-bound access using production handlers and a pg-mem SQL adapter. The emulator does not replace staging checks on real PostgreSQL (including precision, binary image storage, concurrency and transactional behavior).
 
 Desktop/mobile/dark-mode UI checks cover the group roster, attendance report/print, follow-up save, finance statement/tithes/forecast, receipt preview/print and invoice forms. Browser fixtures isolate interface behavior; SQL integration tests separately exercise real authorization and financial handlers. No live Railway tenant, camera device or production data was accessed.
+
+## Registration transaction follow-up
+See MEMBER_REGISTRATION_COMMIT_FIX.md for the subsequent production-schema invitation-log mismatch and after-commit registration fix. Earlier validation totals above describe that release, not the final cumulative suite.

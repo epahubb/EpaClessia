@@ -2682,6 +2682,8 @@ export async function provisionPortalAccess(
   opts: {
     baseUrl: string;
     connection?: Knex.Transaction;
+    /** Transaction callers enqueue delivery, then run it only after commit. Never serialize this closure. */
+    deferNotifications?: (deliver: () => Promise<void>) => void;
     reset?: boolean;
     /** Username the church admin typed. Falls back to one derived from the name. */
     username?: string;
@@ -2695,6 +2697,7 @@ export async function provisionPortalAccess(
     activate?: boolean;
   } = { baseUrl: '' },
 ): Promise<PortalAccessResult> {
+  if (opts.connection && !opts.deferNotifications) throw new Error('Transactional portal provisioning requires after-commit notification scheduling.');
   const database = opts.connection || db;
   const email = normalizeLoginEmail(member?.email) || null;
   if (email && !isUsableLoginEmail(email)) {
@@ -2878,64 +2881,65 @@ export async function provisionPortalAccess(
     activationUrl: token ? activationUrl(opts.baseUrl || '', token) : undefined,
   };
 
-  // Email first: it carries the full explanation.
-  let emailSent = false;
-  try {
-    const result = email ? await sendEmail({
-      to: email,
-      subject: portalInviteSubject(churchName),
-      html: emailTemplate({
-        title: token ? 'Activate your member portal' : 'Your member portal is ready',
-        body: portalInviteBody(invite),
-        // The button is the action that is actually needed next: activating,
-        // while that is outstanding, and signing in once it is not.
-        ctaLabel: token ? 'Activate my account' : 'Sign in',
-        ctaUrl: invite.activationUrl || loginUrl,
-        footer: `Sent by ${churchName} via Ecclesia.`,
-      }),
-    }) : null;
-    emailSent = Boolean(result?.success);
-  } catch (error) {
-    console.error('Portal invite email failed:', error);
-  }
-
-  // SMS as well when we have a number: many members read a text sooner than an
-  // email, and it is the same credentials either way.
-  let smsSent = false;
-  if (member.phone) {
-    try {
-      const settings = await getTenantSettings(tenantId, 'sms');
-      const result: any = await sendSMS(String(member.phone), portalInviteSms(invite), {
-        apiKey: settings?.apiKey,
-        senderId: settings?.senderId,
-      });
-      smsSent = Boolean(result?.success);
-    } catch (error) {
-      console.error('Portal invite SMS failed:', error);
-    }
-  }
-
-  await database('communications_log')
-    .insert({
-      tenantId,
-      type: emailSent ? 'email' : 'sms',
-      recipient: email || member.phone || username,
-      subject: portalInviteSubject(churchName),
-      message: 'Member portal invitation',
-      status: emailSent || smsSent ? 'sent' : 'failed',
-      createdAt: now,
-    })
-    .catch(() => {});
-
-  return {
-    created: true,
-    email,
-    username,
-    status,
-    emailSent,
-    smsSent,
-    reset: Boolean(opts.reset),
+  const access: PortalAccessResult = {
+    created: true, email, username, status, emailSent: false, smsSent: false, reset: Boolean(opts.reset),
   };
+  const deliver = async () => {
+    // Email first: it carries the full explanation.
+    let emailSent = false;
+    try {
+      const result = email ? await sendEmail({
+        to: email,
+        subject: portalInviteSubject(churchName),
+        html: emailTemplate({
+          title: token ? 'Activate your member portal' : 'Your member portal is ready',
+          body: portalInviteBody(invite),
+          // The button is the action that is actually needed next: activating,
+          // while that is outstanding, and signing in once it is not.
+          ctaLabel: token ? 'Activate my account' : 'Sign in',
+          ctaUrl: invite.activationUrl || loginUrl,
+          footer: `Sent by ${churchName} via Ecclesia.`,
+        }),
+      }) : null;
+      emailSent = Boolean(result?.success);
+    } catch (error) {
+      console.warn('[members] Portal invitation email delivery failed.');
+    }
+
+    // SMS as well when we have a number: many members read a text sooner than an
+    // email, and it is the same credentials either way.
+    let smsSent = false;
+    if (member.phone) {
+      try {
+        const settings = await getTenantSettings(tenantId, 'sms');
+        const result: any = await sendSMS(String(member.phone), portalInviteSms(invite), {
+          apiKey: settings?.apiKey,
+          senderId: settings?.senderId,
+        });
+        smsSent = Boolean(result?.success);
+      } catch (error) {
+        console.warn('[members] Portal invitation SMS delivery failed.');
+      }
+    }
+
+    await db('communications_log')
+      .insert({
+        tenantId,
+        channel: emailSent ? 'email' : 'sms',
+        recipient: email || member.phone || username,
+        subject: portalInviteSubject(churchName),
+        message: 'Member portal invitation',
+        status: emailSent || smsSent ? 'sent' : 'failed',
+        createdAt: now,
+      })
+      .catch((error: any) => { console.warn('[members] Invitation audit write failed after provisioning; account is retained.', { code: error?.code || 'DATABASE_ERROR' }); });
+
+    access.emailSent = emailSent;
+    access.smsSent = smsSent;
+  };
+  if (opts.deferNotifications) opts.deferNotifications(deliver);
+  else await deliver();
+  return access;
 }
 
 /* --- Extended member record (ministries, education, family, medical) --- */
@@ -3505,6 +3509,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       }
     }
     let portalAccess: PortalAccessResult;
+    const afterCommit: Array<() => Promise<void>> = [];
     const ministryIds = normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries);
     // Save the member and login together. A rejected or failed account creation
     // rolls back the profile too, so a 201 response cannot conceal broken credentials.
@@ -3516,6 +3521,7 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       await linkChildren(tid(req)!, member.id, normalizeChildren(req.body.children), trx);
       portalAccess = await provisionPortalAccess(tid(req)!, member, {
         connection: trx,
+        deferNotifications: deliver => { afterCommit.push(deliver); },
         baseUrl: publicBaseUrl(req),
         username: req.body?.username,
         password: req.body?.password,
@@ -3528,6 +3534,18 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
       }
     });
 
+    // A swallowed SQL failure in PostgreSQL can turn COMMIT into a rollback.
+    // Verify persisted state on a fresh connection before claiming success or sending credentials.
+    const persisted = await db('members').where({ id: member.id, tenantId: tid(req) }).select('id').first();
+    const persistedLogin = !portalAccess.created || await db('users').where({ memberId: member.id, tenantId: tid(req) }).select('uid').first();
+    if (!persisted || !persistedLogin) {
+      console.error('[members] Registration persistence verification failed.', { tenantId: tid(req), memberId: member.id });
+      return res.status(503).json({ error: 'Registration could not be verified. Refresh the member list before retrying to avoid duplicates.' });
+    }
+    console.info('[members] Registration committed.', { tenantId: tid(req), memberId: member.id, portalCreated: portalAccess.created });
+    for (const deliver of afterCommit) {
+      try { await deliver(); } catch { console.warn('[members] After-commit notification failed; member and account remain saved.'); }
+    }
     // Never echo the raw image bytes back in the JSON response.
     const { photo: _omitPhoto, ...safeMember } = member;
     res.status(201).json({

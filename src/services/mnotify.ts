@@ -17,7 +17,7 @@ export async function sendSMS(
   const MNOTIFY_API_KEY = opts?.apiKey || MNOTIFY_ENV_API_KEY;
   const MNOTIFY_SENDER_ID = opts?.senderId || MNOTIFY_ENV_SENDER_ID;
   if (!MNOTIFY_API_KEY) {
-    console.warn('mNotify API Key missing. SMS not sent:', { recipient, message });
+    console.warn('[sms] mNotify API key is missing; delivery skipped. Message content is not logged.');
     return { success: false, error: 'API Key missing' };
   }
 
@@ -31,12 +31,13 @@ export async function sendSMS(
       sender: MNOTIFY_SENDER_ID,
       message: message,
       is_schedule: false
-    });
+    }, { timeout: 15_000 });
 
-    console.log('mNotify response:', response.data);
+    console.log('[sms] mNotify request completed.', { status: response.status });
     return { success: true, data: response.data };
-  } catch (error) {
-    console.error('mNotify error:', error);
-    return { success: false, error };
+  } catch (error: any) {
+    // Axios errors contain request credentials and message/password payloads. Never log the object.
+    console.warn('[sms] mNotify delivery failed.', { status: error?.response?.status, code: error?.code });
+    return { success: false, error: 'SMS delivery failed. Check provider configuration.' };
   }
 }

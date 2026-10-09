@@ -113,10 +113,9 @@ export async function sendEmail(args: {
     );
     return { success: true, provider: cfg.provider || 'http' };
   } catch (error: any) {
-    const message =
-      error?.response?.data?.message || error?.message || 'Unknown email transport error';
-    console.error('[email] send failed:', message);
-    return { success: false, error: String(message), provider: cfg.provider };
+    // Provider/Axios errors can echo invitation HTML or API credentials. Log metadata only.
+    console.warn('[email] Delivery failed.', { status: error?.response?.status, code: error?.code });
+    return { success: false, error: 'Email delivery failed. Check provider configuration.', provider: cfg.provider };
   }
 }
 
