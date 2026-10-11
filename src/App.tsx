@@ -22,6 +22,7 @@ import SecretaryLayout from './layouts/SecretaryLayout';
 // Church Admin Pages
 
 const Sermons = lazy(() => import('./pages/church/Sermons'));
+const PlatformAudit = lazy(() => import('./pages/PlatformAudit'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const SecretaryDashboard = lazy(() => import('./pages/workspace/SecretaryDashboard'));
 const GroupLeaderPortal = lazy(() => import('./pages/group/GroupLeaderPortal'));
@@ -118,6 +119,7 @@ const App: React.FC = () => {
             <Route path="tickets" element={<Tickets />} />
             <Route path="reports" element={<Reports />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="audit" element={<PlatformAudit />} />
             {/* SMS, email, gateway, integrations and backup, per church. */}
             <Route path="church-settings" element={<ChurchConfigurationPage />} />
           </Route>

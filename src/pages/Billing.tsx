@@ -1,9 +1,13 @@
+import PrintDocument from '../components/common/PrintDocument';
+import { summarizePlatformBilling, saveCsv } from '../lib/platformWorkspace';
+import { useSearchParams } from 'react-router-dom';
+import { financeMoney } from '../lib/financeLedger';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box, Typography, Paper, Grid, Button, TextField, Select, MenuItem, FormControl,
   InputLabel, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Chip, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions,
-  Alert, CircularProgress, Divider, InputAdornment, Skeleton, Tabs, Tab,
+  Alert, CircularProgress, LinearProgress, Divider, InputAdornment, Skeleton, Tabs, Tab, Stack,
 } from '@mui/material';
 import {
   DollarSign, Clock, AlertTriangle, Search, Download, Plus, MoreVertical,
@@ -14,7 +18,6 @@ import {
   Tooltip as RTooltip,
 } from 'recharts';
 import { billingService, Invoice } from '../services/billingService';
-import { subscriptionService } from '../services/subscriptionService';
 import PlansManager from '../components/superadmin/PlansManager';
 import SmsManager from '../components/superadmin/SmsManager';
 
@@ -34,12 +37,15 @@ const StatCard: React.FC<{ icon: React.ReactNode; label: string; value: string; 
 );
 
 const Billing: React.FC = () => {
+  const [searchParams,setSearchParams] = useSearchParams();
+  const [displayCurrency,setDisplayCurrency] = useState('GHS');
   const [tab, setTab] = useState(0);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [revenue, setRevenue] = useState<any[]>([]);
+  const [print,setPrint]=useState(false);
+  const [loadError,setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState(searchParams.get('search')||'');
+  const [statusFilter, setStatusFilter] = useState(['all','paid','pending','failed','overdue'].includes(searchParams.get('status')||'')?searchParams.get('status')!:'all');
   const [planFilter, setPlanFilter] = useState('all');
 
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -57,18 +63,15 @@ const Billing: React.FC = () => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  useEffect(()=>{if(searchParams.get('action')==='create-invoice'){setCreateModalOpen(true);setSearchParams(prev=>{const next=new URLSearchParams(prev);next.delete('action');return next;},{replace:true});}},[searchParams,setSearchParams]);
+
   const fetchData = async () => {
-    setLoading(true);
+    setLoading(true);setLoadError('');
     try {
-      const [invoicesRes, revenueRes] = await Promise.all([
-        billingService.getInvoices({ search, status: statusFilter, plan: planFilter }),
-        subscriptionService.getRevenueMonthly().catch(() => []),
-      ]);
+      const invoicesRes = await billingService.getInvoices({search,status:statusFilter,plan:planFilter});
       setInvoices(invoicesRes?.data || invoicesRes || []);
-      const rev = Array.isArray(revenueRes) ? revenueRes : (revenueRes as any)?.data || [];
-      setRevenue(rev.map((r: any) => ({ month: (r.month || '').slice(2), revenue: Number(r.revenue || 0) })));
     } catch (err) {
-      console.error('Failed to load billing data:', err);
+      setLoadError('Billing records could not be loaded. Please retry.');
     } finally {
       setLoading(false);
     }
@@ -76,12 +79,15 @@ const Billing: React.FC = () => {
 
   useEffect(() => { fetchData(); /* eslint-disable-next-line */ }, [search, statusFilter, planFilter]);
 
+  const revenue = useMemo(()=>summarizePlatformBilling(invoices).currencies.find(r=>r.currency===displayCurrency)?.series.map(r=>({month:r.month.slice(2),revenue:r.value}))||[],[invoices,displayCurrency]);
+
   const stats = useMemo(() => {
-    const collected = invoices.filter((i) => i.status === 'paid').reduce((s, i) => s + Number(i.amount || 0), 0);
-    const outstanding = invoices.filter((i) => i.status === 'pending' || i.status === 'overdue').reduce((s, i) => s + Number(i.amount || 0), 0);
-    const overdue = invoices.filter((i) => i.status === 'overdue').length;
+    const loaded = invoices.filter(i=>(i.currency||'GHS')===displayCurrency);
+    const collected = loaded.filter((i) => i.status === 'paid').reduce((s, i) => s + Number(i.amount || 0), 0);
+    const outstanding = loaded.filter((i) => i.status === 'pending' || i.status === 'overdue').reduce((s, i) => s + Number(i.amount || 0), 0);
+    const overdue = loaded.filter(i=>['pending','overdue'].includes(i.status)&&i.dueDate&&new Date(i.dueDate)<new Date()).length;
     return { collected, outstanding, overdue, count: invoices.length };
-  }, [invoices]);
+  }, [invoices,displayCurrency]);
 
   const handleActionMenuOpen = (e: React.MouseEvent<HTMLElement>, invoice: Invoice) => { setAnchorEl(e.currentTarget); setSelectedInvoice(invoice); };
   const handleActionMenuClose = () => setAnchorEl(null);
@@ -119,16 +125,7 @@ const Billing: React.FC = () => {
     catch { setActionError('Failed to send reminder'); }
   };
 
-  const handleExport = () => {
-    setExportAnchorEl(null);
-    const headers = ['Invoice ID', 'Church', 'Plan', 'Cycle', 'Amount (GHS)', 'Status', 'Issue Date', 'Due Date'];
-    const rows = invoices.map((i) => [i.id, i.tenantName, (i.planId || '').toUpperCase(), i.billingCycle, i.amount, (i.status || '').toUpperCase(), new Date(i.issueDate).toLocaleDateString(), new Date(i.dueDate).toLocaleDateString()]);
-    const csv = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const link = document.createElement('a');
-    link.setAttribute('href', encodeURI(csv));
-    link.setAttribute('download', `Billing_Report_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
-  };
+  const handleExport = () => {setExportAnchorEl(null);saveCsv([['Invoice ID','Church','Plan','Cycle','Currency','Amount','Stored status','Issue date','Due date'],...invoices.map(i=>[i.id,i.tenantName,i.planId,i.billingCycle,i.currency||'GHS',i.amount,i.status,i.issueDate,i.dueDate])],`Platform_billing_${new Date().toISOString().slice(0,10)}.csv`);};
 
   const statusChip = (status: string) => {
     const map: Record<string, any> = {
@@ -146,19 +143,19 @@ const Billing: React.FC = () => {
       <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', mb: 3, gap: 2 }}>
         <Box>
           <Typography variant="h4" fontWeight={800} sx={{ letterSpacing: '-0.5px' }}>Billing & Revenue</Typography>
-          <Typography variant="body2" color="text.secondary">Track platform revenue, issue invoices, and reconcile church subscription payments.</Typography>
+          <Typography variant="body2" color="text.secondary">Review platform invoice records, issue invoices and record church subscription payments.</Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1.5 }}>
-          <Button variant="outlined" startIcon={<Download size={18} />} onClick={(e) => setExportAnchorEl(e.currentTarget)} sx={{ borderRadius: 2 }}>Export</Button>
+          <Button disabled={loading||Boolean(loadError)} variant="outlined" startIcon={<Download size={18} />} onClick={(e) => setExportAnchorEl(e.currentTarget)} sx={{ borderRadius: 2 }}>Export</Button>
           <Menu anchorEl={exportAnchorEl} open={Boolean(exportAnchorEl)} onClose={() => setExportAnchorEl(null)}>
             <MenuItem onClick={handleExport}>Export as CSV</MenuItem>
-            <MenuItem onClick={() => { setExportAnchorEl(null); window.print(); }}>Print / PDF</MenuItem>
+            <MenuItem onClick={() => { setExportAnchorEl(null);setPrint(true); }}>Print / PDF</MenuItem>
           </Menu>
           <Button variant="contained" startIcon={<Plus size={18} />} onClick={() => setCreateModalOpen(true)} sx={{ borderRadius: 2, fontWeight: 700 }}>Create Invoice</Button>
         </Box>
       </Box>
 
-      <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3, borderBottom: '1px solid', borderColor: 'divider' }}>
+      <Tabs variant="scrollable" scrollButtons="auto" value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3, borderBottom: '1px solid', borderColor: 'divider' }}>
         <Tab label="Invoices & Revenue" sx={{ fontWeight: 700 }} />
         <Tab label="Subscription Plans" sx={{ fontWeight: 700 }} />
         <Tab label="SMS Packages" sx={{ fontWeight: 700 }} />
@@ -170,18 +167,21 @@ const Billing: React.FC = () => {
       {tab === 1 && <PlansManager />}
       {tab === 2 && <SmsManager />}
 
-      {tab === 0 && (<>
+      {tab === 0 && loadError && <Alert severity="error" action={<Button onClick={fetchData}>Retry</Button>}>{loadError}</Alert>}
+      {tab === 0 && loading && <LinearProgress />}
+      {tab === 0 && !loadError && !loading && (<>
+      <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2} sx={{mb:2}}><Typography variant="caption" color="text.secondary">Summaries cover loaded invoice records, not every platform invoice.</Typography><TextField select size="small" label="Summary currency" value={displayCurrency} onChange={e=>setDisplayCurrency(e.target.value)}>{[...new Set(['GHS',...invoices.map(i=>i.currency||'GHS')])].map(code=><MenuItem key={code} value={code}>{code}</MenuItem>)}</TextField></Stack>
       <Grid container spacing={2.5} sx={{ mb: 3 }}>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<DollarSign size={22} />} label="Total collected" value={GHS(stats.collected)} sub="Paid invoices" color="#16a34a" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<Clock size={22} />} label="Outstanding" value={GHS(stats.outstanding)} sub="Pending + overdue" color="#d97706" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<AlertTriangle size={22} />} label="Overdue invoices" value={String(stats.overdue)} sub="Need follow-up" color="#dc2626" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<Receipt size={22} />} label="Total invoices" value={String(stats.count)} sub="All time" color="#2563eb" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<DollarSign size={22} />} label="Loaded paid invoice value" value={financeMoney(stats.collected,displayCurrency)} sub="Loaded paid records · selected currency" color="#16a34a" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<Clock size={22} />} label="Outstanding" value={financeMoney(stats.outstanding,displayCurrency)} sub="Loaded pending/overdue · selected currency" color="#d97706" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<AlertTriangle size={22} />} label="Overdue invoices" value={String(stats.overdue)} sub="Loaded invoices · selected currency" color="#dc2626" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}><StatCard icon={<Receipt size={22} />} label="Loaded invoices" value={String(stats.count)} sub="Current search / API page" color="#2563eb" /></Grid>
       </Grid>
 
       <Paper sx={{ p: 2.5, borderRadius: 3, border: '1px solid', borderColor: 'divider', mb: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
           <TrendingUp size={18} color="#2563eb" />
-          <Typography fontWeight={800}>Revenue (last 12 months)</Typography>
+          <Typography fontWeight={800}>Loaded paid invoice values · {displayCurrency} · last 12 calendar months</Typography>
         </Box>
         {loading ? <Skeleton variant="rounded" height={240} /> : (
           <ResponsiveContainer width="100%" height={240}>
@@ -195,7 +195,7 @@ const Billing: React.FC = () => {
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
               <XAxis dataKey="month" fontSize={12} tickLine={false} axisLine={false} />
               <YAxis fontSize={12} tickLine={false} axisLine={false} />
-              <RTooltip formatter={(v: any) => GHS(Number(v))} />
+              <RTooltip formatter={(v: any) => financeMoney(v,displayCurrency)} />
               <Area type="monotone" dataKey="revenue" stroke="#2563eb" strokeWidth={2.5} fill="url(#rev)" />
             </AreaChart>
           </ResponsiveContainer>
@@ -251,8 +251,8 @@ const Billing: React.FC = () => {
                   <TableCell><Typography variant="body2" fontWeight={700}>{inv.id}</Typography><Typography variant="caption" color="text.secondary">{inv.description}</Typography></TableCell>
                   <TableCell>{inv.tenantName}</TableCell>
                   <TableCell><Chip label={(inv.planId || '').toUpperCase()} size="small" variant="outlined" /></TableCell>
-                  <TableCell><Typography variant="body2" fontWeight={700}>{GHS(inv.amount)}</Typography><Typography variant="caption" color="text.secondary">{inv.billingCycle}</Typography></TableCell>
-                  <TableCell>{statusChip(inv.status)}</TableCell>
+                  <TableCell><Typography variant="body2" fontWeight={700}>{financeMoney(inv.amount,inv.currency||'GHS')}</Typography><Typography variant="caption" color="text.secondary">{inv.billingCycle}</Typography></TableCell>
+                  <TableCell>{statusChip(['pending','overdue'].includes(inv.status)&&inv.dueDate&&new Date(inv.dueDate)<new Date()?'overdue':inv.status)}</TableCell>
                   <TableCell><Typography variant="caption">{inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : '—'}</Typography></TableCell>
                   <TableCell align="right"><IconButton size="small" onClick={(e) => handleActionMenuOpen(e, inv)}><MoreVertical size={18} /></IconButton></TableCell>
                 </TableRow>
@@ -306,7 +306,7 @@ const Billing: React.FC = () => {
       <Dialog open={payModalOpen} onClose={() => setPayModalOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ fontWeight: 800 }}>Record payment</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Invoice <strong>{selectedInvoice?.id}</strong> — {GHS(selectedInvoice?.amount || 0)}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Invoice <strong>{selectedInvoice?.id}</strong> — {financeMoney(selectedInvoice?.amount||0,selectedInvoice?.currency||'GHS')}</Typography>
           <FormControl fullWidth sx={{ mb: 2 }}><InputLabel>Payment method</InputLabel>
             <Select label="Payment method" value={paymentData.paymentMethod} onChange={(e) => setPaymentData({ ...paymentData, paymentMethod: e.target.value })}>
               <MenuItem value="Bank Wire / Cheque">Bank Wire / Cheque</MenuItem>
@@ -336,7 +336,7 @@ const Billing: React.FC = () => {
               <Divider sx={{ my: 1.5 }} />
               <Grid container spacing={1.5}>
                 <Grid size={{ xs: 6 }}><Typography variant="caption" color="text.secondary">Plan</Typography><Typography>{(selectedInvoice.planId || '').toUpperCase()} · {selectedInvoice.billingCycle}</Typography></Grid>
-                <Grid size={{ xs: 6 }}><Typography variant="caption" color="text.secondary">Amount</Typography><Typography fontWeight={800}>{GHS(selectedInvoice.amount)}</Typography></Grid>
+                <Grid size={{ xs: 6 }}><Typography variant="caption" color="text.secondary">Amount</Typography><Typography fontWeight={800}>{financeMoney(selectedInvoice.amount,selectedInvoice.currency||'GHS')}</Typography></Grid>
                 <Grid size={{ xs: 6 }}><Typography variant="caption" color="text.secondary">Issued</Typography><Typography>{selectedInvoice.issueDate ? new Date(selectedInvoice.issueDate).toLocaleDateString() : '—'}</Typography></Grid>
                 <Grid size={{ xs: 6 }}><Typography variant="caption" color="text.secondary">Due</Typography><Typography>{selectedInvoice.dueDate ? new Date(selectedInvoice.dueDate).toLocaleDateString() : '—'}</Typography></Grid>
                 <Grid size={{ xs: 12 }}><Typography variant="caption" color="text.secondary">Description</Typography><Typography>{selectedInvoice.description}</Typography></Grid>
@@ -349,6 +349,7 @@ const Billing: React.FC = () => {
           <Button variant="contained" onClick={() => setViewModalOpen(false)} sx={{ fontWeight: 700 }}>Close</Button>
         </DialogActions>
       </Dialog>
+      {print&&<PrintDocument title="Platform billing invoice list" onClose={()=>setPrint(false)}><Typography sx={{mb:2}}>Loaded invoice records for the current search/filter. Currencies stay separate.</Typography><table><thead><tr>{['Invoice','Church','Amount','Stored status','Due'].map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{invoices.map(i=><tr key={i.id}><td>{i.id}</td><td>{i.tenantName}</td><td>{financeMoney(i.amount,i.currency||'GHS')}</td><td>{i.status}</td><td>{i.dueDate?new Date(i.dueDate).toLocaleDateString():'Not set'}</td></tr>)}</tbody></table></PrintDocument>}
     </Box>
   );
 };

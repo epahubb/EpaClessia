@@ -18,6 +18,8 @@ interface ChurchDetailsDrawerProps {
   churchId: string | null;
   churchDetails: any; // Result from GET /api/superadmin/churches/:id
   isLoading: boolean;
+  error?: boolean;
+  onRetry?: () => void;
   onImpersonate: (id: string) => void;
   onOpenSettings?: (church: any) => void;
 }
@@ -28,6 +30,8 @@ const ChurchDetailsDrawer: React.FC<ChurchDetailsDrawerProps> = ({
   churchId, 
   churchDetails, 
   isLoading,
+  error,
+  onRetry,
   onImpersonate,
   onOpenSettings
 }) => {
@@ -83,13 +87,13 @@ const ChurchDetailsDrawer: React.FC<ChurchDetailsDrawerProps> = ({
               </Typography>
             </Box>
           </Box>
-          <IconButton onClick={onClose} size="small" sx={{ color: 'text.secondary' }}>
+          <IconButton aria-label="Close church details" onClick={onClose} size="small" sx={{ color: 'text.secondary' }}>
             <X size={20} />
           </IconButton>
         </Box>
 
         <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 3, bgcolor: 'background.default' }}>
-          {isLoading ? (
+          {error ? <Alert severity="error" action={<Button onClick={onRetry}>Retry</Button>}>Church details could not be loaded. Please retry.</Alert> : isLoading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: 300 }}>
               <CircularProgress color="primary" />
             </Box>

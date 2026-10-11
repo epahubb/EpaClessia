@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Box, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, Paper, TextField, InputAdornment,
-  Chip, Typography, CircularProgress, Skeleton
+  Chip, Typography, CircularProgress, Skeleton, Alert, Button
 } from '@mui/material';
 import { Search, Calendar, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { loginLogService } from '../services/loginLogService';
@@ -11,26 +11,28 @@ import { LoginLog } from '../types';
 const LoginLogs: React.FC = () => {
   const [logs, setLogs] = useState<LoginLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error,setError]=useState(''),[revision,setRevision]=useState(0);
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
+    let active=true;setLoading(true);setError('');
     const fetchLogs = async () => {
       try {
         const data = await loginLogService.getAll();
-        setLogs(Array.isArray(data) ? data : []);
+        if(active)setLogs(Array.isArray(data) ? data : []);
       } catch (error) {
-        console.error('Error fetching login logs:', error);
+        if(active)setError('Login records could not be loaded. Please retry.');
       } finally {
-        setLoading(false);
+        if(active)setLoading(false);
       }
     };
-    fetchLogs();
-  }, []);
+    fetchLogs();return()=>{active=false;};
+  }, [revision]);
 
   const filteredLogs = logs.filter(log => 
-    log.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (log.email||'').toLowerCase().includes(searchTerm.toLowerCase()) ||
     log.userName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    log.ipAddress.includes(searchTerm)
+    (log.ipAddress||'').includes(searchTerm)
   );
 
   return (
@@ -52,7 +54,8 @@ const LoginLogs: React.FC = () => {
         />
       </Box>
 
-      <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
+      {error&&<Alert severity="error" action={<Button onClick={()=>setRevision(v=>v+1)}>Retry</Button>}>{error}</Alert>}
+      {!error&&<TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
         <Table>
           <TableHead sx={{ bgcolor: 'action.hover' }}>
             <TableRow>
@@ -106,7 +109,7 @@ const LoginLogs: React.FC = () => {
             )}
           </TableBody>
         </Table>
-      </TableContainer>
+      </TableContainer>}
     </Box>
   );
 };

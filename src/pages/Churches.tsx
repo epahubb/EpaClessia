@@ -4,7 +4,7 @@ import {
   TableContainer, TableHead, TableRow, IconButton, 
   Button, Chip, TextField, InputAdornment, Menu, 
   MenuItem, Skeleton, alpha, useTheme, useMediaQuery,
-  TablePagination, TableSortLabel, Avatar
+  TablePagination, TableSortLabel, Avatar, Alert
 } from '@mui/material';
 import { 
   Search, Plus, MoreVertical, Eye, Edit, 
@@ -36,10 +36,19 @@ const Churches: React.FC = () => {
   const [openEdit, setOpenEdit] = useState(false);
   const [openDelete, setOpenDelete] = useState(false);
   const [openDetails, setOpenDetails] = useState(false);
+  const [reviewChurchId,setReviewChurchId] = useState<string|null>(null);
   const [selectedChurch, setSelectedChurch] = useState<Church | null>(null);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [exportAnchorEl, setExportAnchorEl] = useState<null | HTMLElement>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Navigation actions open existing review/registration UI only; they never submit changes.
+  React.useEffect(() => {
+    const action = searchParams.get('action'), view = searchParams.get('view');
+    if (action === 'register') setOpenAdd(true);
+    if (view) { setReviewChurchId(view); setOpenDetails(true); }
+    if (action === 'register' || view) setSearchParams(prev => { const next=new URLSearchParams(prev);next.delete('action');next.delete('view');return next; },{replace:true});
+  },[searchParams,setSearchParams]);
 
   // Filter States from URL
   const [searchInput, setSearchInput] = useState(searchParams.get('search') || '');
@@ -79,16 +88,17 @@ const Churches: React.FC = () => {
   });
 
   // Fetch Church Details (for drawer)
-  const { data: churchDetails, isLoading: isLoadingDetails } = useQuery({
-    queryKey: ['church-details', selectedChurch?.id],
+  const detailsId = reviewChurchId || selectedChurch?.id;
+  const { data: churchDetails, isLoading: isLoadingDetails, isError: isErrorDetails, refetch: refetchDetails } = useQuery({
+    queryKey: ['church-details', detailsId],
     queryFn: async () => {
-      if (!selectedChurch?.id) return null;
-      const response = await api.get(`/superadmin/churches/${selectedChurch.id}`);
+      if (!detailsId) return null;
+      const response = await api.get(`/superadmin/churches/${detailsId}`);
       return response.data;
     },
     refetchInterval: openDetails ? 30000 : false,
     refetchOnWindowFocus: true,
-    enabled: !!selectedChurch?.id && openDetails
+    enabled: !!detailsId && openDetails
   });
 
   // Mutations
@@ -291,6 +301,8 @@ const Churches: React.FC = () => {
 
   return (
     <Box sx={{ p: { xs: 0, md: 4 } }}>
+      {isError&&<Alert severity="error" action={<Button onClick={()=>refetch()}>Retry</Button>} sx={{mb:2}}>Church records could not be loaded. Please retry.</Alert>}
+
       {/* Page Header */}
       <Box sx={{ 
         mb: 4, 
@@ -689,12 +701,15 @@ const Churches: React.FC = () => {
 
       <ChurchDetailsDrawer 
         open={openDetails} 
-        onClose={() => setOpenDetails(false)} 
-        churchId={selectedChurch?.id || null}
+        onClose={() => {setOpenDetails(false);setReviewChurchId(null);}} 
+        churchId={detailsId || null}
         churchDetails={churchDetails}
         isLoading={isLoadingDetails}
+        error={isErrorDetails}
+        onRetry={() => refetchDetails()}
         onImpersonate={(id) => impersonateMutation.mutate(id)}
         onOpenSettings={(church) => {
+          setReviewChurchId(null);
           setSelectedChurch(church);
           setOpenEdit(true);
         }}

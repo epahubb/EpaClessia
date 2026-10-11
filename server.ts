@@ -55,6 +55,8 @@ import { generateBase32Secret, verifyTotp, buildOtpAuthUrl } from './src/lib/tot
 import { runStartupChecks } from './src/lib/startup-checks';
 import churchRouter from './src/routes/church';
 import { loginHandler } from './src/routes/login';
+import platformWorkspaceRouter from './src/routes/platformWorkspace';
+import { invoiceStatusQuery, ticketStatusQuery } from './src/lib/platformWorkspace';
 import workspaceRouter from './src/routes/workspace';
 import memberRouter from './src/routes/member';
 import pastorRouter from './src/routes/pastor';
@@ -628,6 +630,7 @@ async function startServer() {
 
   // Additional protected super-admin endpoints (subscriptions, transactions,
   // monthly revenue, login logs, role/permission matrix).
+  app.use(['/api/v1/superadmin', '/api/superadmin'], authenticate, platformWorkspaceRouter);
   app.use(['/api/v1/superadmin', '/api/superadmin'], authenticate, authorizeSuperAdmin, superadminExtrasRouter);
 
   // Super Admin - Churches (Tenants)
@@ -998,9 +1001,7 @@ async function startServer() {
         });
       }
 
-      if (status !== 'all') {
-        query = query.where('status', status);
-      }
+      query = invoiceStatusQuery(query, String(status));
 
       if (plan !== 'all') {
         query = query.where('planId', plan);
@@ -1132,7 +1133,7 @@ async function startServer() {
         });
       }
 
-      if (status !== 'all') query = query.where('status', status);
+      query = ticketStatusQuery(query, String(status));
       if (priority !== 'all') query = query.where('priority', priority);
       if (category !== 'all') query = query.where('category', category);
 

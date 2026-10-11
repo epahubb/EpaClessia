@@ -1,4 +1,4 @@
-export type PortalKey = 'church' | 'pastor' | 'ministry' | 'group-leader' | 'finance' | 'secretary' | 'member';
+export type PortalKey = 'super-admin' | 'church' | 'pastor' | 'ministry' | 'group-leader' | 'finance' | 'secretary' | 'member';
 export type WorkspaceLink = {
     label: string;
     path: string;
@@ -15,6 +15,20 @@ export const portalDefinitions: Record<PortalKey, {
     allowed: string[];
     links: WorkspaceLink[];
 }> = {
+    'super-admin': {title:'Platform administration',subtitle:'Church success, billing & governance',accent:'#c7ceff',allowed:['SUPER_ADMIN'],links:[
+        link('Command center','/super-admin','Overview','dashboard','Platform priorities and recorded performance'),
+        link('Churches','/super-admin/churches','Church operations','building','Register, review and manage churches'),
+        link('Church configuration','/super-admin/church-settings','Church operations','settings','Providers, branding, integrations and backups per church'),
+        link('Users & access','/super-admin/users','Church operations','shield','Accounts, administrator assignments and role permissions'),
+        link('Billing & invoices','/super-admin/billing','Commercial','wallet','Platform invoices, recorded payments, plans and SMS packages'),
+        link('Subscriptions','/super-admin/subscriptions','Commercial','file','Subscription plans and payment transactions'),
+        link('Support desk','/super-admin/tickets','Service','message','Ticket queues, replies and internal notes'),
+        link('Communication','/super-admin/communication','Service','message','Platform announcements and messaging'),
+        link('Analytics','/super-admin/analytics','Intelligence','chart','Platform usage and adoption analytics'),
+        link('Reports','/super-admin/reports','Intelligence','chart','Recorded platform reports and exports'),
+        link('Audit & security','/super-admin/audit','Governance','shield','Latest audit records and login logs'),
+        link('System settings','/super-admin/settings','Governance','settings','Platform branding, provider configuration and security settings')
+    ]},
     church: { title: 'Church administration', subtitle: 'People, stewardship & operations', accent: '#a4f3cb', allowed: ['CHURCH_ADMIN'], links: [
             link('Overview', '/church/dashboard', 'Overview', 'dashboard', 'Church activity at a glance', 'dashboard'), link('Members', '/church/members', 'Community', 'users', 'Registration, profiles and membership', 'members'), link('Visitors', '/church/visitors', 'Community', 'userPlus', 'Welcome visitors and follow up', 'visitors'), link('Attendance', '/church/attendance', 'Community', 'attendance', 'Service registers, QR and attendance', 'attendance'), link('Care & follow-up', '/church/engagement', 'Community', 'heart', 'Member engagement and practical care', 'engagement'), link('Ministries & groups', '/church/ministries', 'Community', 'groups', 'Units, leaders and ministry details', 'ministries'), link('Registers', '/church/registers', 'Community', 'book', 'Church and membership registers', 'members'), link('Events & calendar', '/church/events', 'Operations', 'calendar', 'Plan and manage church events', 'events'), link('Finance', '/church/finances', 'Operations', 'wallet', 'Giving, dues, expenses and budgets', 'finances'), link('Sermons', '/church/sermons', 'Communication', 'play', 'Publish sermon links for members', 'communication'), link('Communication', '/church/communication', 'Communication', 'message', 'SMS, email and announcements', 'communication'), link('SMS bundles', '/church/sms-bundles', 'Communication', 'phone', 'Purchase and monitor SMS credits', 'smsBundles'), link('Statistics', '/church/statistics', 'Insights', 'chart', 'Unit statistics and returns', 'ministries'), link('Reports & analytics', '/church/reports', 'Insights', 'chart', 'Church activity and reports', 'reports'), link('Users & permissions', '/church/users', 'Administration', 'shield', 'Accounts and role access', 'users'), link('Roles & positions', '/church/positions', 'Administration', 'badge', 'Church offices and appointments', 'positions'), link('Audit & security', '/church/audit', 'Administration', 'shield', 'Review recorded actions and security', 'audit'), link('Settings', '/church/settings', 'Administration', 'settings', 'Church configuration and branding', 'settings')
         ] },

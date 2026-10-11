@@ -1,3 +1,4 @@
+import { useSearchParams } from 'react-router-dom';
 import React, { useState, useEffect } from 'react';
 import {
   Box, Typography, Paper, Grid, Button, TextField, Select, MenuItem,
@@ -14,6 +15,7 @@ import { ticketService, Ticket, TicketReply } from '../services/ticketService';
 import { churchService } from '../services/churchService';
 
 const Tickets: React.FC = () => {
+  const [searchParams,setSearchParams] = useSearchParams();
   const [stats, setStats] = useState<any>(null);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -21,8 +23,8 @@ const Tickets: React.FC = () => {
 
   // Filters
   const [search, setSearch] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [priorityFilter, setPriorityFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>(['all','unresolved','open','in_progress','resolved','closed'].includes(searchParams.get('status')||'')?searchParams.get('status')!:'all');
+  const [priorityFilter, setPriorityFilter] = useState<string>(['all','urgent','high','normal','low'].includes(searchParams.get('priority')||'')?searchParams.get('priority')!:'all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
 
   // Drawer / Thread Details
@@ -46,11 +48,12 @@ const Tickets: React.FC = () => {
     tenantId: ''
   });
 
+  const [loadError,setLoadError]=useState('');
   const [alertSuccess, setAlertSuccess] = useState<string | null>(null);
   const [alertError, setAlertError] = useState<string | null>(null);
 
   const fetchData = async () => {
-    setLoading(true);
+    setLoading(true);setLoadError('');
     try {
       const [statsRes, ticketsRes] = await Promise.all([
         ticketService.getStats(),
@@ -59,7 +62,7 @@ const Tickets: React.FC = () => {
       setStats(statsRes);
       setTickets(ticketsRes || []);
     } catch (err) {
-      console.error('Failed to load tickets:', err);
+      setLoadError('Support records could not be loaded. Please retry.');
     } finally {
       setLoading(false);
     }
@@ -94,6 +97,10 @@ const Tickets: React.FC = () => {
       setLoadingThread(false);
     }
   };
+
+  const deepTicket = searchParams.get('ticket');
+  useEffect(() => { let active=true;if(!deepTicket||!/^\d+$/.test(deepTicket))return;setDrawerOpen(true);setLoadingThread(true);ticketService.getTicketDetail(deepTicket).then(details=>{if(active){setSelectedTicket(details.ticket);setTicketReplies(details.replies||[]);}}).catch(()=>{if(active){setAlertError('Ticket could not be loaded. Please retry from the support list.');setDrawerOpen(false);}}).finally(()=>{if(active)setLoadingThread(false);});return()=>{active=false;};},[deepTicket]);
+  const closeThread = () => { setDrawerOpen(false);setSearchParams(prev=>{const next=new URLSearchParams(prev);next.delete('ticket');return next;},{replace:true}); };
 
   const handlePostReply = async () => {
     if (!selectedTicket || !replyMessage.trim()) return;
@@ -205,8 +212,9 @@ const Tickets: React.FC = () => {
         </Alert>
       )}
 
+      {loadError&&<Alert severity="error" action={<Button onClick={fetchData}>Retry</Button>} sx={{mb:2}}>{loadError}</Alert>}
       {/* Stats Cards */}
-      <Grid container spacing={2.5} sx={{ mb: 3 }}>
+      {!loading&&!loadError&&<Grid container spacing={2.5} sx={{ mb: 3 }}>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <Paper sx={{ p: 2.5, borderRadius: 3, border: '1px solid', borderColor: 'divider' }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -258,7 +266,7 @@ const Tickets: React.FC = () => {
             <Typography variant="caption" color="text.secondary">Successfully completed</Typography>
           </Paper>
         </Grid>
-      </Grid>
+      </Grid>}
 
       {/* Filter Toolbar */}
       <Paper sx={{ p: 2, mb: 3, borderRadius: 3, border: '1px solid', borderColor: 'divider' }}>
@@ -278,13 +286,15 @@ const Tickets: React.FC = () => {
 
           <Grid size={{ xs: 4, md: 2.5 }}>
             <FormControl fullWidth size="small">
-              <InputLabel>Status</InputLabel>
+              <InputLabel id="ticket-statusFilter-label">Status</InputLabel>
               <Select
+                labelId="ticket-statusFilter-label"
                 value={statusFilter}
                 label="Status"
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
                 <MenuItem value="all">All Statuses</MenuItem>
+                <MenuItem value="unresolved">Unresolved</MenuItem>
                 <MenuItem value="open">Open</MenuItem>
                 <MenuItem value="in_progress">In Progress</MenuItem>
                 <MenuItem value="resolved">Resolved</MenuItem>
@@ -295,8 +305,9 @@ const Tickets: React.FC = () => {
 
           <Grid size={{ xs: 4, md: 2.5 }}>
             <FormControl fullWidth size="small">
-              <InputLabel>Priority</InputLabel>
+              <InputLabel id="ticket-priorityFilter-label">Priority</InputLabel>
               <Select
+                labelId="ticket-priorityFilter-label"
                 value={priorityFilter}
                 label="Priority"
                 onChange={(e) => setPriorityFilter(e.target.value)}
@@ -312,8 +323,9 @@ const Tickets: React.FC = () => {
 
           <Grid size={{ xs: 4, md: 2 }}>
             <FormControl fullWidth size="small">
-              <InputLabel>Category</InputLabel>
+              <InputLabel id="ticket-categoryFilter-label">Category</InputLabel>
               <Select
+                labelId="ticket-categoryFilter-label"
                 value={categoryFilter}
                 label="Category"
                 onChange={(e) => setCategoryFilter(e.target.value)}
@@ -338,7 +350,7 @@ const Tickets: React.FC = () => {
       </Paper>
 
       {/* Tickets List / Grid */}
-      {loading ? (
+      {loadError?null:loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
           <CircularProgress size={36} />
         </Box>
@@ -420,7 +432,7 @@ const Tickets: React.FC = () => {
       <Drawer
         anchor="right"
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={closeThread}
         PaperProps={{ sx: { width: { xs: '100%', sm: 540 }, p: 0 } }}
       >
         {selectedTicket && (
