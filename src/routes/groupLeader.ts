@@ -1,3 +1,8 @@
+import rateLimit from 'express-rate-limit';
+import { createRegisteredMember } from './church';
+import { sendEmail } from '../services/email';
+import { sendSMS } from '../services/mnotify';
+import { decryptSensitiveFields } from '../lib/crypto';
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import db from '../lib/db';
@@ -72,4 +77,49 @@ router.patch('/groups/:id/followups/:followupId', handle(async (req: AuthRequest
   if (!['open', 'completed'].includes(req.body?.status)) return res.status(400).json({ error: 'Choose open or completed.' });
   await db('group_followups').where({ id: followup.id, tenantId: req.user!.tenantId, groupId: group.id }).update({ status: req.body.status, updatedAt: new Date() }); res.json({ success: true });
 }));
+
+router.post('/groups/:id/members', handle(async (req: AuthRequest, res: any) => {
+  const group = await assignedGroup(req, req.params.id); if (!group) return res.status(404).json({ error: 'Assigned group not found.' });
+  const allowed = ['firstName','lastName','email','phone','gender','dateOfBirth','occupation','address','username','password','activateNow'];
+  const body: any = {}; for (const key of allowed) if (key in (req.body || {})) body[key] = req.body[key];
+  if (typeof body.firstName !== 'string' || typeof body.lastName !== 'string' || !body.firstName.trim() || !body.lastName.trim() || body.firstName.length > 120 || body.lastName.length > 120) return res.status(400).json({ error: 'Enter valid first and last names.' });
+  if (body.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (body.dateOfBirth && !Number.isFinite(new Date(body.dateOfBirth).getTime())) return res.status(400).json({ error: 'Enter a valid birth date.' });
+  body.groupId = group.id; body.membershipStatus = 'active'; req.body = body; (req as any).tenantId = req.user!.tenantId;
+  await createRegisteredMember(req, res);
+}));
+router.post('/groups/:id/communications', rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }), handle(async (req: AuthRequest, res: any) => {
+  const group = await assignedGroup(req, req.params.id); if (!group) return res.status(404).json({ error: 'Assigned group not found.' });
+  const b = req.body || {}; if (!['email','sms'].includes(b.channel) || typeof b.message !== 'string' || !b.message.trim() || b.message.length > 4000 || typeof b.subject !== 'string' || b.subject.length > 200) return res.status(400).json({ error: 'Choose email or SMS, a subject, and a message of at most 4,000 characters.' });
+  if (!Array.isArray(b.memberIds) || !b.memberIds.length || b.memberIds.length > 100 || b.memberIds.some((id: any) => typeof id !== 'string')) return res.status(400).json({ error: 'Select between 1 and 100 group members.' });
+  const ids = [...new Set(b.memberIds)]; const tenantId = req.user!.tenantId!;
+  const members = await db('members').where({ tenantId, groupId: group.id }).whereIn('id', ids as string[]).select('id','email','phone','commPreferences');
+  if (members.length !== ids.length) return res.status(404).json({ error: 'A recipient is not in your assigned group.' });
+  const row = await db('church_settings').where({ tenantId, key: 'sms' }).first(); let sms: any = {}; try { sms = decryptSensitiveFields(typeof row?.value === 'string' ? JSON.parse(row.value) : row?.value || {}); } catch {}
+  const addresses = new Set<string>(); let sent = 0, failed = 0, skipped = 0;
+  const eligible = members.filter(m => {
+    let preferences: any = {}; try { preferences = typeof m.commPreferences === 'string' ? JSON.parse(m.commPreferences) : m.commPreferences || {}; } catch {}
+    const recipient = String(b.channel === 'email' ? m.email || '' : m.phone || '').trim();
+    if (!recipient || preferences[b.channel] === false || addresses.has(recipient.toLowerCase())) { skipped++; return false; }
+    addresses.add(recipient.toLowerCase()); return true;
+  });
+  // Reserve atomically so two leaders cannot spend the same church SMS credits.
+  if (b.channel === 'sms' && eligible.length) {
+    const reserved = await db('tenants').where({ id: tenantId }).where('smsCredits','>=',eligible.length).decrement('smsCredits', eligible.length);
+    if (!reserved) return res.status(402).json({ error: 'Insufficient church SMS credits. Ask your administrator to purchase a bundle.', required: eligible.length });
+  }
+  const escape = (text: string) => text.replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]!));
+  // Small bounded batches avoid blocking every recipient behind one provider call.
+  for (let i = 0; i < eligible.length; i += 5) await Promise.all(eligible.slice(i, i + 5).map(async m => {
+    const recipient = String(b.channel === 'email' ? m.email || '' : m.phone || '').trim();
+    let success = false; try {
+      const result: any = b.channel === 'email' ? await sendEmail({ to: recipient, subject: b.subject.trim() || group.name, html: '<p>'+escape(b.message).replace(/\n/g,'<br />')+'</p>', text: b.message }) : await sendSMS(recipient, b.message, { apiKey: sms.apiKey, senderId: sms.senderId }); success = Boolean(result?.success);
+    } catch {}
+    if (success) sent++; else failed++;
+    await db('communications_log').insert({ tenantId, channel: b.channel, recipient, subject: b.subject.trim() || group.name, message: b.message, status: success ? 'sent' : 'failed', sentBy: req.user!.uid, createdAt: new Date() }).catch(() => {});
+  }));
+  if (b.channel === 'sms' && eligible.length > sent) await db('tenants').where({ id: tenantId }).increment('smsCredits', eligible.length - sent);
+  res.json({ sent, failed, skipped, message: failed ? 'Some messages were not sent. Check SMS/email configuration and provider availability.' : 'Message processing complete.' });
+}));
+
 export default router;

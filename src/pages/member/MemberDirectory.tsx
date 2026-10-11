@@ -53,13 +53,13 @@ export default function MemberDirectory() {
     setLoading(true);
     try {
       const [dir, pref] = await Promise.all([
-        memberEngagementService.getDirectory().catch(() => []),
-        memberEngagementService.getDirectoryPreferences().catch(() => null),
+        memberEngagementService.getDirectory(),
+        memberEngagementService.getDirectoryPreferences(),
       ]);
       setEntries(dir);
       setPrefs(pref);
-    } catch {
-      notify('Failed to load directory', 'error');
+    } catch (e: any) {
+      notify(e.message || 'Could not load directory. Please retry.', 'error');
     } finally {
       setLoading(false);
     }
@@ -168,6 +168,7 @@ export default function MemberDirectory() {
         />
       </Stack>
 
+      <Button onClick={load} disabled={loading} sx={{ mb: 2 }}>Refresh directory</Button>
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 6 }}>
           <CircularProgress />

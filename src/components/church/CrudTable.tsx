@@ -254,12 +254,12 @@ export const CrudTable: React.FC<Props> = ({
   }, [page, pageSize, search]);
   useEffect(() => { void reload(); return () => { requests.current++; }; }, [reload, paginated]);
   useEffect(() => {
-    if (!paginated) return;
     const refresh = () => { void reload(); };
     const visible = () => { if (document.visibilityState === 'visible') refresh(); };
     window.addEventListener('focus', refresh);
+    window.addEventListener('epaclessia:data-changed', refresh);
     document.addEventListener('visibilitychange', visible);
-    return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', visible); };
+    return () => { window.removeEventListener('focus', refresh); window.removeEventListener('epaclessia:data-changed', refresh); document.removeEventListener('visibilitychange', visible); };
   }, [reload, paginated]);
 
   /** The blank value a field starts from, which differs by field type. */

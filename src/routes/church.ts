@@ -1,3 +1,5 @@
+import { financeTotals } from '../lib/financeReports';
+import { ministryRoster, ministryCounts } from '../lib/ministryRoster';
 import { churchAccess } from '../middleware/churchAccess';
 import { randomUUID } from 'node:crypto';
 import { allocateMemberId, normalizeMemberId, SIX_DIGIT_MEMBER_ID } from '../lib/memberIds';
@@ -8,7 +10,7 @@ import db from '../lib/db';
 import { canonicalRole, isChurchRole } from '../lib/accountRoles';
 import { normalizeMeetingDays, groupWithMeetingDays } from '../lib/groupMeetingDays';
 import { portalActivationPreference } from '../lib/accountAccess';
-import { attendanceDateRange, defaultAttendanceRange } from '../lib/memberAttendance';
+import { attendanceDateRange, defaultAttendanceRange, summarizeMemberAttendance } from '../lib/memberAttendance';
 import { decryptSensitiveFields } from '../lib/crypto';
 import { AuthRequest } from '../middleware/auth';
 import { sendSMS } from '../services/mnotify';
@@ -336,7 +338,7 @@ router.get('/groups/options', async (req: AuthRequest, res) => {
 
 async function groupLeaderAccount(tenantId: string, uid: unknown) {
   if (!uid) return null;
-  return db('users').where({ uid: String(uid), tenantId, role: 'GROUP_LEADER', status: 'active' }).select('uid', 'name').first();
+  return db('users').where({ uid: String(uid), tenantId, status: 'active' }).whereIn('role', ['MEMBER','GROUP_LEADER']).select('uid', 'name', 'role').first();
 }
 
 router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRequest, res) => {
@@ -359,7 +361,7 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
     }
 
     const leader = await groupLeaderAccount(tid(req), req.body?.leaderId);
-    if (req.body?.leaderId && !leader) return res.status(400).json({ error: 'Choose an active Group Leader account from this church.' });
+    if (req.body?.leaderId && !leader) return res.status(400).json({ error: 'Choose an active member or Group Leader account from this church.' });
     const group = {
       id: genId('group'),
       tenantId: tid(req),
@@ -374,7 +376,10 @@ router.post('/groups', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: AuthRe
       active: isTruthyFlag(req.body?.active),
       createdAt: new Date(),
     };
-    await db('church_groups').insert(group);
+    await db.transaction(async trx => {
+      await trx('church_groups').insert(group);
+      if (leader?.role === 'MEMBER') { await trx('users').where({ uid: leader.uid, tenantId: tid(req), role: 'MEMBER' }).update({ role: 'GROUP_LEADER' }); await trx('user_tenant_roles').where({ userId: leader.uid, tenantId: tid(req) }).update({ role: 'GROUP_LEADER' }); }
+    });
     // `memberCount` is part of the shape the groups table renders, so a newly
     // created group comes back in the same shape as a listed one.
     res.status(201).json({ ...groupWithMeetingDays(group), memberCount: 0 });
@@ -397,6 +402,7 @@ router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: Aut
     if (!existing) return res.status(404).json({ error: 'Group not found' });
 
     const updates: any = {};
+    let chosenLeader: any = null;
     if ('name' in req.body) {
       const name = String(req.body.name || '').trim();
       if (!name) return res.status(400).json({ error: 'Please enter a name for the group.' });
@@ -407,15 +413,18 @@ router.put('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: Aut
     }
     if ('leaderId' in req.body) {
       const leader = await groupLeaderAccount(tenantId, req.body.leaderId);
-      if (req.body.leaderId && !leader) return res.status(400).json({ error: 'Choose an active Group Leader account from this church.' });
-      updates.leaderId = leader?.uid || null; updates.leaderName = leader?.name || null;
+      if (req.body.leaderId && !leader) return res.status(400).json({ error: 'Choose an active member or Group Leader account from this church.' });
+      chosenLeader = leader; updates.leaderId = leader?.uid || null; updates.leaderName = leader?.name || null;
     }
     if (meetingDays !== undefined) updates.meetingDay = meetingDays.join(', ') || null;
     if ('sortOrder' in req.body) updates.sortOrder = Number(req.body.sortOrder) || 0;
     if ('active' in req.body) updates.active = isTruthyFlag(req.body.active);
 
     if (Object.keys(updates).length) {
-      await db('church_groups').where({ id: req.params.id, tenantId }).update(updates);
+      await db.transaction(async trx => {
+        await trx('church_groups').where({ id: req.params.id, tenantId }).update(updates);
+        if (chosenLeader?.role === 'MEMBER') { await trx('users').where({ uid: chosenLeader.uid, tenantId, role: 'MEMBER' }).update({ role: 'GROUP_LEADER' }); await trx('user_tenant_roles').where({ userId: chosenLeader.uid, tenantId }).update({ role: 'GROUP_LEADER' }); }
+      });
     }
 
     // Members carry the group name for display, so a rename has to reach them
@@ -2554,6 +2563,7 @@ router.put('/offices/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: Au
     if (!existing) return res.status(404).json({ error: 'Office not found' });
 
     const updates: any = {};
+    let chosenLeader: any = null;
     if ('name' in req.body) {
       const name = String(req.body.name || '').trim();
       if (!name) return res.status(400).json({ error: 'Please enter a name for the office.' });
@@ -3448,7 +3458,7 @@ router.delete(
   },
 );
 
-router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), async (req: AuthRequest, res) => {
+export const createRegisteredMember = async (req: AuthRequest, res: Response) => {
   try {
     const { firstName, lastName, email, phone, gender, dateOfBirth, familyId, membershipStatus, notes,
       membershipId, anniversaryDate, maritalStatus, occupation, address, branchId, ministryId, photoUrl,
@@ -3561,7 +3571,8 @@ router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER',
     if ((error as any)?.status) return res.status((error as any).status).json({ error: (error as Error).message });
     handleImageError(error, res, 'Failed to create member');
   }
-});
+};
+router.post('/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'), createRegisteredMember);
 
 /**
  * Send (or re-send) a member's portal invitation.
@@ -3901,13 +3912,15 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
     if (groupError) return res.status(400).json({ error: groupError });
 
     const ministriesSupplied = 'ministryIds' in req.body || 'ministries' in req.body;
+    if (ministriesSupplied) updates.ministryId = null; // Multi-ministry assignments supersede legacy single-ministry data.
     if (Object.keys(updates).length === 0 && !ministriesSupplied) {
       return res.status(400).json({ error: 'No updatable fields were supplied' });
     }
 
-    if (Object.keys(updates).length > 0) {
-      await db('members').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
-    }
+    await db.transaction(async trx => {
+      if (Object.keys(updates).length > 0) await trx('members').where({ id: req.params.id, tenantId: tid(req) }).update(updates);
+      if (ministriesSupplied) await syncMemberMinistries(tid(req)!, { ...existing, ...updates, id: req.params.id }, normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries), req.user?.uid, trx);
+    });
 
     const changedAt = new Date();
 
@@ -3944,14 +3957,6 @@ router.put('/members/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADE
       }
     }
 
-    if (ministriesSupplied) {
-      await syncMemberMinistries(
-        tid(req)!,
-        { ...existing, ...updates, id: req.params.id },
-        normalizeMinistryIds(req.body.ministryIds ?? req.body.ministries),
-        req.user?.uid,
-      );
-    }
     if ('spouseMemberId' in updates && updates.spouseMemberId) {
       await linkSpouse(tid(req)!, { ...existing, ...updates, id: req.params.id });
     }
@@ -4049,7 +4054,9 @@ router.post('/events', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 
     if (end && end.getTime() < start.getTime()) {
       return res.status(400).json({ error: 'The end time cannot be before the start time.' });
     }
+    if (req.body.ministryId && !await db('ministries').where({ id: req.body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
     const event = {
+      ...(req.body.ministryId ? { ministryId: req.body.ministryId } : {}),
       id: genId('event'),
       tenantId: tid(req),
       title,
@@ -4078,7 +4085,8 @@ router.put('/events/:id', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER
       .where({ id: req.params.id, tenantId: tid(req) })
       .first();
     if (!existing) return res.status(404).json({ error: 'Event not found' });
-    const allowed = ['title', 'description', 'location', 'startTime', 'endTime', 'category'];
+    if (req.body.ministryId && !await db('ministries').where({ id: req.body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
+    const allowed = ['title', 'description', 'location', 'startTime', 'endTime', 'category', 'ministryId'];
     const updates: any = {};
     for (const key of allowed) if (key in req.body) updates[key] = req.body[key];
     if (updates.startTime) updates.startTime = new Date(updates.startTime);
@@ -4115,7 +4123,9 @@ router.post('/events/:id/checkin', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Provide either memberId or childName' });
     }
     const checkInCode = String(Math.floor(1000 + Math.random() * 9000));
+    if (req.body.ministryId && !await db('ministries').where({ id: req.body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
     const record = {
+      ...(req.body.ministryId ? { ministryId: req.body.ministryId } : {}),
       tenantId: tid(req),
       eventId: req.params.id,
       memberId: memberId || null,
@@ -4233,7 +4243,9 @@ router.post('/giving', requireRole('CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 
     const detailError = validatePaymentDetails(method, req.body);
     if (detailError) return res.status(400).json({ error: detailError });
 
+    if (req.body.ministryId && !await db('ministries').where({ id: req.body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
     const record = {
+      ...(req.body.ministryId ? { ministryId: req.body.ministryId } : {}),
       tenantId: tid(req),
       amount: Math.round(Number(amount) * 100) / 100,
       receivedAt,
@@ -5005,6 +5017,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
         if (val !== undefined && val !== '' && val !== 'all') q = q.where(f, String(val));
       }
       const rows = await q.orderBy(opts.orderBy || 'createdAt', 'desc');
+      if (table === 'ministries') { const counts = await ministryCounts(db, tid(req)); return res.json({ data: rows.map(r => ({ ...r, memberCount: counts[r.id] || 0 })) }); }
       res.json({ data: table === 'service_schedules' ? rows.map(r => ({ ...r, meetingDays: normalizeMeetingDays(r.dayOfWeek) })) : rows });
     } catch (e) {
       console.error(`GET ${basePath} error:`, e);
@@ -5027,6 +5040,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
         body.memberId = member.id;
         body.memberName = memberLabel(member);
       }
+      if (body.ministryId && !await db('ministries').where({ id: body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
       const problem = checkBody(body);
       if (problem) return res.status(400).json({ error: problem });
       const row: any = { id: genId(opts.idPrefix), tenantId: tid(req), ...coerce(body), createdAt: new Date() };
@@ -5061,6 +5075,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
         body.memberId = member.id;
         body.memberName = memberLabel(member);
       }
+      if (body.ministryId && !await db('ministries').where({ id: body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
       const problem = checkBody({ ...existing, ...body });
       if (problem) return res.status(400).json({ error: problem });
       await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).update(coerce(body));
@@ -5086,17 +5101,35 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
   });
 }
 
+router.get('/ministries/:id/overview', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req); const ministry = await db('ministries').where({ id: req.params.id, tenantId }).first();
+    if (!ministry) return res.status(404).json({ error: 'Ministry not found.' });
+    const defaults = defaultAttendanceRange(); let range; try { range = attendanceDateRange(req.query.from || defaults.from, req.query.to || defaults.to); } catch (e: any) { return res.status(400).json({ error: e.message }); }
+    const members = await ministryRoster(db, tenantId, ministry.id).select('m.id','m.firstName','m.lastName','m.membershipId','m.phone','m.email','m.membershipStatus').orderBy('m.lastName').limit(2001);
+    if (members.length > 2000) return res.status(422).json({ error: 'This ministry exceeds 2,000 members. Use a member export.' });
+    const [giving, expenses, events] = await Promise.all([
+      db('donations').where({ tenantId, ministryId: ministry.id }).whereRaw('COALESCE("receivedAt", "createdAt") >= ?', [range.start]).whereRaw('COALESCE("receivedAt", "createdAt") < ?', [range.endExclusive]).select('id','amount','currency','purpose','status','donorName','receivedAt','createdAt').limit(10001),
+      db('expenses').where({ tenantId, ministryId: ministry.id }).where('date','>=',range.start).where('date','<',range.endExclusive).select('id','amount','currency','description','status','vendor','date').limit(10001),
+      db('events').where({ tenantId, ministryId: ministry.id }).where('startTime','>=',range.start).where('startTime','<',range.endExclusive).select('id','title','location','startTime','endTime').orderBy('startTime','desc').limit(1001),
+    ]);
+    if (giving.length > 10000 || expenses.length > 10000 || events.length > 1000) return res.status(422).json({ error: 'Choose a shorter date range.' });
+    const marks = members.length && events.length ? await db('event_attendance').where({ tenantId }).whereIn('memberId', members.map(m => m.id)).whereIn('eventId', events.map(e => e.id)).select('id','memberId','eventId','present','status','checkInAt').limit(10001) : [];
+    if (marks.length > 10000) return res.status(422).json({ error: 'Choose a shorter attendance range.' });
+    res.json({ ministry: { ...ministry, memberCount: members.length }, from: range.from, to: range.to, members: members.map(m => ({ ...m, attendance: summarizeMemberAttendance(marks.filter(a => a.memberId === m.id).map(a => ({ ...a, eventStartTime: events.find(e => e.id === a.eventId)?.startTime }))) })), giving, expenses, events, totals: financeTotals(giving, expenses, range.from, range.to) });
+  } catch (e) { console.error('Ministry overview failed:', e); res.status(500).json({ error: 'Could not load ministry details. Please retry.' }); }
+});
+
 registerCrud('/ministries', 'ministries', {
   idPrefix: 'min',
-  fields: ['type', 'name', 'description', 'leaderId', 'leaderName', 'meetingDay', 'meetingTime', 'location', 'memberCount', 'status'],
-  numberFields: ['memberCount'],
+  fields: ['type', 'name', 'description', 'leaderId', 'leaderName', 'meetingDay', 'meetingTime', 'location', 'status'],
   filterFields: ['type', 'status'],
   orderBy: 'name',
 });
 registerCrud('/expenses', 'expenses', {
   idPrefix: 'exp',
   fields: [
-    'category', 'description', 'amount', 'currency', 'paymentMethod', 'vendor',
+    'ministryId', 'category', 'description', 'amount', 'currency', 'paymentMethod', 'vendor',
     'status', 'recordedBy', 'date',
     ...PAYMENT_DETAIL_FIELDS,
   ],
@@ -5170,6 +5203,12 @@ registerCrud('/sermons', 'sermons', {
   dateFields: ['date'],
   filterFields: ['seriesName', 'speaker'],
   orderBy: 'date',
+  writeRoles: ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'],
+  validate: body => {
+    if (!String(body.title || '').trim()) return 'Enter a sermon title.';
+    for (const key of ['videoUrl','audioUrl','notesUrl','thumbnailUrl']) if (body[key]) { try { if (!['https:', 'http:'].includes(new URL(body[key]).protocol)) return 'Sermon links must use HTTPS or HTTP.'; } catch { return 'Enter valid sermon links.'; } }
+    return null;
+  },
 });
 registerCrud('/service-schedules', 'service_schedules', {
   idPrefix: 'svc',

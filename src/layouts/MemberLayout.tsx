@@ -1,3 +1,4 @@
+import ChurchIdentity from '../components/common/ChurchIdentity';
 import React, { useState, useEffect } from 'react';
 import { 
   Box, AppBar, Toolbar, IconButton, Typography, Drawer, 
@@ -18,7 +19,7 @@ const drawerWidth = 280;
 const MemberLayout: React.FC = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
-  const [open, setOpen] = useState(!isMobile);
+  const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
@@ -55,15 +56,11 @@ const MemberLayout: React.FC = () => {
         <Toolbar sx={{ justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center' }}>
             <IconButton color="inherit" onClick={toggleDrawer} edge="start" sx={{ mr: 2 }}><MenuIcon size={20} /></IconButton>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box sx={{ bgcolor: 'info.main', p: 0.5, borderRadius: 1, display: 'flex' }}><ShieldCheck size={20} color="white" /></Box>
-              <Typography variant="h6" noWrap fontWeight={700} sx={{ letterSpacing: '-0.5px' }}>Ecclesia</Typography>
-              <Chip label="MEMBER" size="small" sx={{ ml: 1, height: 18, fontSize: '0.65rem', fontWeight: 700, bgcolor: 'info.main', color: 'white' }} />
-            </Box>
+            <ChurchIdentity compact />
           </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 2 } }}>
             <IconButton size="small" onClick={toggleColorMode} color="inherit">{mode === 'light' ? <Moon size={18} /> : <Sun size={18} />}</IconButton>
-            <IconButton size="small"><Bell size={18} /></IconButton>
+            
             <Divider orientation="vertical" flexItem sx={{ mx: 1, height: 24, my: 'auto' }} />
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
               <Avatar sx={{ width: 32, height: 32, bgcolor: 'info.main', fontSize: '0.875rem' }}>{user?.name?.[0] || 'U'}</Avatar>
@@ -73,7 +70,7 @@ const MemberLayout: React.FC = () => {
           </Box>
         </Toolbar>
       </AppBar>
-      <Drawer variant={isMobile ? "temporary" : "permanent"} open={open} onClose={toggleDrawer} sx={{ width: drawerWidth, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: drawerWidth, boxSizing: 'border-box', borderRight: `1px solid ${theme.palette.divider}`, bgcolor: 'background.paper', ...(!open && !isMobile && { width: theme.spacing(9), overflowX: 'hidden' }) } }}>
+      <Drawer variant={isMobile ? "temporary" : "permanent"} open={open} onClose={toggleDrawer} sx={{ width: isMobile ? 0 : open ? drawerWidth : 72, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: drawerWidth, boxSizing: 'border-box', borderRight: `1px solid ${theme.palette.divider}`, bgcolor: 'background.paper', ...(!open && !isMobile && { width: theme.spacing(9), overflowX: 'hidden' }) } }}>
         <Toolbar />
         <Box sx={{ overflow: 'auto', mt: 2, px: 2 }}>
           <List>
@@ -91,7 +88,7 @@ const MemberLayout: React.FC = () => {
           </List>
         </Box>
       </Drawer>
-      <Box component="main" sx={{ flexGrow: 1, p: 3, mt: 8 }}><Outlet /></Box>
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: { xs: 2, md: 3 }, mt: 8 }}>{user?.role === 'GROUP_LEADER' && <Button variant="outlined" onClick={() => navigate('/group-leader/dashboard')} sx={{ mb: 2 }}>Open Group Leader Portal</Button>}<Outlet /></Box>
     </Box>
   );
 };

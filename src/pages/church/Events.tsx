@@ -14,7 +14,9 @@ export const ChurchEventsPage: React.FC = () => {
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const emptyForm = { name: '', location: '', startTime: '', endTime: '', category: 'service', description: '' };
+  const [ministries, setMinistries] = useState<any[]>([]);
+  useEffect(() => { churchApi.getMinistries().then(setMinistries).catch(() => {}); }, []);
+  const emptyForm = { ministryId: '', name: '', location: '', startTime: '', endTime: '', category: 'service', description: '' };
   const [form, setForm] = useState<any>(emptyForm);
   const [checkinFor, setCheckinFor] = useState<any | null>(null);
   const [code, setCode] = useState('');
@@ -46,6 +48,7 @@ export const ChurchEventsPage: React.FC = () => {
       }
       await churchApi.createEvent({
         title: form.name.trim(),
+        ministryId: form.ministryId || undefined,
         // `datetime-local` gives "2026-08-22T09:30" with no zone. Sending it as
         // an ISO string keeps the time the user actually typed instead of
         // letting the server reinterpret a half-formed value.
@@ -147,7 +150,7 @@ export const ChurchEventsPage: React.FC = () => {
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ fontWeight: 800 }}>Create event</DialogTitle>
         <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 0.5 }}>
+          <Grid container spacing={2} sx={{ mt: 0.5 }}><Grid size={{ xs: 12 }}><TextField select fullWidth label="Ministry (optional)" value={form.ministryId} onChange={e => setForm({ ...form, ministryId: e.target.value })}><MenuItem value="">Church-wide / unassigned</MenuItem>{ministries.map(m => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</TextField></Grid>
             <Grid size={{ xs: 12 }}><TextField fullWidth label="Event name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth required type="datetime-local" label="Start time" InputLabelProps={{ shrink: true }} value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} helperText="Required" /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth type="datetime-local" label="End time" InputLabelProps={{ shrink: true }} value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} helperText="Optional" /></Grid>

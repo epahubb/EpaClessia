@@ -43,7 +43,7 @@ const SectionForm: React.FC<{ sectionKey: string; title: string; description?: s
 export const ChurchSettingsPage: React.FC = () => {
   const [tab, setTab] = useState(0);
   const [leaders, setLeaders] = useState<{ value: string; label: string }[]>([]);
-  useEffect(() => { churchApi.getUsers().then(rows => setLeaders(rows.filter((u: any) => u.role === 'GROUP_LEADER' && u.status === 'active').map((u: any) => ({ value: u.uid || u.id, label: u.name || u.email || u.uid })))).catch(() => {}); }, [tab]);
+  useEffect(() => { churchApi.getUsers().then(rows => setLeaders(rows.filter((u: any) => ['MEMBER', 'GROUP_LEADER'].includes(u.role) && u.status === 'active').map((u: any) => ({ value: u.uid || u.id, label: u.name || u.email || u.uid })))).catch(() => {}); }, [tab]);
   const [s, setS] = useState<any>(null); const [loading, setLoading] = useState(true);
   useEffect(() => { churchApi.getSettings().then(v => setS(v || {})).catch(() => setS({})).finally(() => setLoading(false)); }, []);
   if (loading || !s) return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}><CircularProgress /></Box>;
@@ -117,7 +117,7 @@ export const ChurchSettingsPage: React.FC = () => {
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             A group that still has members cannot be deleted — move them first, or mark the
             group inactive, which keeps it on existing members without offering it for new ones.
-            This is separate from ministries, which a member may join several of.
+            This is separate from ministries, which a member may join several of. Choose an active member account as leader to enable its Group Leader portal; a typed name alone does not grant access.
           </Typography>
         </CardContent></Card>
         <CrudTable

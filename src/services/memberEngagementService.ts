@@ -28,10 +28,13 @@ export interface MemberGroup {
   description?: string;
   leaderName?: string;
   meetingDay?: string;
+  meetingDays?: string[];
   meetingTime?: string;
   location?: string;
   memberCount: number;
   joined: boolean;
+  canJoin?: boolean;
+  kind?: string;
 }
 
 export interface Sermon {

@@ -61,6 +61,7 @@ const menuItems = [
   { feature: 'ministries' as PortalFeature, text: 'Statistics', icon: <StatisticsIcon />, path: '/church/statistics' },
   { feature: 'events' as PortalFeature, text: 'Events & Calendar', icon: <EventIcon />, path: '/church/events' },
   { feature: 'finances' as PortalFeature, text: 'Finance', icon: <FinanceIcon />, path: '/church/finances' },
+  { feature: 'communication' as PortalFeature, text: 'Sermons', icon: <CommunicationIcon />, path: '/church/sermons' },
   { feature: 'communication' as PortalFeature, text: 'Communication', icon: <CommunicationIcon />, path: '/church/communication' },
   { feature: 'smsBundles' as PortalFeature, text: 'SMS Bundles', icon: <SmsIcon />, path: '/church/sms-bundles' },
   { feature: 'users' as PortalFeature, text: 'Users & Permissions', icon: <UsersIcon />, path: '/church/users' },

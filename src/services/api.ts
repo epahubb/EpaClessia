@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api/v1',
+  timeout: 30000,
 });
 
 api.interceptors.request.use(async (config) => {
@@ -179,7 +180,8 @@ api.interceptors.response.use(
 export default api;
 
 api.interceptors.response.use(response => {
-  if (['put', 'post', 'delete'].includes(response.config.method || '') && /users|user-tenant-roles|branding|settings/.test(response.config.url || '')) {
+  if (['put','post','patch','delete'].includes(response.config.method || '') && /members|ministries|groups/.test(response.config.url || '')) window.dispatchEvent(new Event('epaclessia:data-changed'));
+  if (['put', 'post', 'delete'].includes(response.config.method || '') && /users|user-tenant-roles|branding|settings|groups/.test(response.config.url || '')) {
     window.dispatchEvent(new Event('epaclessia:account-changed'));
   }
   return response;

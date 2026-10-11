@@ -38,18 +38,14 @@ export default function MemberSermons() {
   const [series, setSeries] = useState('');
   const [toast, setToast] = useState<Toast>({ open: false, message: '', severity: 'success' });
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await memberEngagementService.getSermons();
-        setSermons(res);
-      } catch {
-        setToast({ open: true, message: 'Failed to load sermons', severity: 'error' });
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const load = async () => {
+    setLoading(true);
+    try { setSermons(await memberEngagementService.getSermons()); }
+    catch (e: any) { setToast({ open: true, message: e.message || 'Could not load sermons. Please retry.', severity: 'error' }); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, []);
+
 
   const seriesOptions = useMemo(
     () => Array.from(new Set(sermons.map((s) => s.seriesName).filter(Boolean))) as string[],
@@ -77,7 +73,7 @@ export default function MemberSermons() {
             Watch, listen, and revisit past messages.
           </Typography>
         </Box>
-        <Stack direction="row" spacing={2}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
           <TextField
             size="small"
             placeholder="Search"
@@ -109,6 +105,7 @@ export default function MemberSermons() {
         </Stack>
       </Stack>
 
+      <Button onClick={load} disabled={loading} sx={{ mb: 2 }}>Refresh sermons</Button>
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 6 }}>
           <CircularProgress />
@@ -164,7 +161,7 @@ export default function MemberSermons() {
                       startIcon={<PlayCircle size={16} />}
                       href={s.videoUrl}
                       target="_blank"
-                      rel="noopener"
+                      rel="noopener noreferrer"
                     >
                       Watch
                     </Button>
@@ -176,7 +173,7 @@ export default function MemberSermons() {
                       startIcon={<Headphones size={16} />}
                       href={s.audioUrl}
                       target="_blank"
-                      rel="noopener"
+                      rel="noopener noreferrer"
                     >
                       Listen
                     </Button>
@@ -188,7 +185,7 @@ export default function MemberSermons() {
                       startIcon={<FileText size={16} />}
                       href={s.notesUrl}
                       target="_blank"
-                      rel="noopener"
+                      rel="noopener noreferrer"
                     >
                       Notes
                     </Button>

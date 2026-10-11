@@ -35,8 +35,8 @@ export default function MemberGroups() {
     try {
       const res = await memberEngagementService.getGroups();
       setGroups(res);
-    } catch {
-      notify('Failed to load groups', 'error');
+    } catch (e: any) {
+      notify(e.message || 'Could not load groups. Please retry.', 'error');
     } finally {
       setLoading(false);
     }
@@ -95,6 +95,7 @@ export default function MemberGroups() {
         />
       </Stack>
 
+      <Button onClick={load} disabled={loading} sx={{ mb: 2 }}>Refresh groups</Button>
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 6 }}>
           <CircularProgress />
@@ -125,11 +126,11 @@ export default function MemberGroups() {
                         Led by {g.leaderName}
                       </Typography>
                     )}
-                    {(g.meetingDay || g.meetingTime) && (
+                    {(g.meetingDays?.length || g.meetingDay || g.meetingTime) && (
                       <Stack direction="row" spacing={0.5} alignItems="center">
                         <Clock size={14} />
                         <Typography variant="caption" color="text.secondary">
-                          {[g.meetingDay, g.meetingTime].filter(Boolean).join(' at ')}
+                          {[g.meetingDays?.join(', ') || g.meetingDay, g.meetingTime].filter(Boolean).join(' at ')}
                         </Typography>
                       </Stack>
                     )}
@@ -155,10 +156,10 @@ export default function MemberGroups() {
                     variant={g.joined ? 'outlined' : 'contained'}
                     color={g.joined ? 'inherit' : 'primary'}
                     startIcon={g.joined ? <LogOut size={16} /> : <LogIn size={16} />}
-                    disabled={busyId === g.id}
+                    disabled={busyId === g.id || g.canJoin === false}
                     onClick={() => toggle(g)}
                   >
-                    {busyId === g.id ? 'Working…' : g.joined ? 'Leave' : 'Join'}
+                    {g.canJoin === false ? (g.joined ? 'Assigned group' : 'Ask admin to assign') : busyId === g.id ? 'Working…' : g.joined ? 'Leave' : 'Join'}
                   </Button>
                 </CardActions>
               </Card>

@@ -1,3 +1,4 @@
+import memberEngagementRouter from './memberEngagement';
 import { allocateMemberId } from '../lib/memberIds';
 import { decodeProfileImageDataUrl } from '../lib/profileImages';
 import { ImageValidationError, toDataUrl } from '../lib/images';
@@ -114,6 +115,7 @@ async function resolveMember(req: AuthRequest, res: Response, next: NextFunction
 }
 
 router.use(resolveMember);
+router.use(memberEngagementRouter);
 
 function ctx(req: AuthRequest) {
   return {
@@ -952,8 +954,8 @@ router.get('/attendance/history', async (req: AuthRequest, res) => {
     const limit = Math.min(Number(req.query.limit) || 25, 100);
 
     const rows = await db('event_attendance')
-      .where({ tenantId, memberId: identity })
-      .leftJoin('events', 'events.id', 'event_attendance.eventId')
+      .where({ 'event_attendance.tenantId': tenantId, 'event_attendance.memberId': identity })
+      .leftJoin('events', function () { this.on('events.id', '=', 'event_attendance.eventId').andOn('events.tenantId', '=', 'event_attendance.tenantId'); })
       .select(
         'event_attendance.id',
         'event_attendance.eventId',

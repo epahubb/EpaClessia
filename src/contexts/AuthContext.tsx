@@ -17,7 +17,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const buildDefaultContext = (u: User): TenantRole | null => {
-  if (u.roles && u.roles.length > 0) return u.roles[0];
+  if (u.roles && u.roles.length > 0) return u.roles.find(r => r.role === u.role && r.tenantId === u.tenantId) || { ...u.roles[0], role: u.role || u.roles[0].role };
   if (u.role === 'SUPER_ADMIN') {
     return {
       id: 'sa-role',

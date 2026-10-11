@@ -244,7 +244,10 @@ export const Finance: React.FC = () => {
     },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'completed'} color={r.status === 'pending' ? 'warning' : 'success'} /> },
   ];
+  const [ministryOptions, setMinistryOptions] = useState<{ value: string; label: string }[]>([]);
+  useEffect(() => { churchApi.getMinistries().then(rows => setMinistryOptions([{ value: '', label: 'Church-wide / unassigned' }, ...rows.map((m: any) => ({ value: m.id, label: m.name }))])).catch(() => {}); }, []);
   const givingFields: any[] = [
+    { name: 'ministryId', label: 'Ministry (optional)', type: 'select', options: ministryOptions },
     { name: 'receivedAt', label: 'Collection date & time', type: 'datetime', helperText: 'Local time; saved as a UTC instant. Leave blank to use the current time.' },
     { name: 'amount', label: 'Amount (GHS)', type: 'number', required: true },
     {
@@ -260,6 +263,7 @@ export const Finance: React.FC = () => {
     ...paymentDetailFields('paymentMethod'),
   ];
   const expenseFields: any[] = [
+    { name: 'ministryId', label: 'Ministry (optional)', type: 'select', options: ministryOptions },
     { name: 'category', label: 'Category', type: 'select', options: ['Utilities', 'Salaries', 'Welfare', 'Maintenance', 'Events', 'Missions', 'Supplies', 'Other'].map(c => ({ value: c, label: c })), required: true },
     { name: 'description', label: 'Description' },
     { name: 'amount', label: 'Amount (GHS)', type: 'number', required: true },

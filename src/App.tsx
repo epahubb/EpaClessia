@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { BrandingProvider } from './contexts/BrandingContext';
@@ -8,73 +8,75 @@ import { ChurchAdminLayout } from './layouts/ChurchAdminLayout';
 import LoginPage from './pages/LoginPage';
 import RoleSyncRedirect from './components/RoleSyncRedirect';
 import RoleLanding from './components/RoleLanding';
-import Dashboard from './pages/Dashboard';
 
 // Portal Layouts (Pastor / Ministry Leader / Member)
 import PastorLayout from './layouts/PastorLayout';
 import MinistryLeaderLayout from './layouts/MinistryLeaderLayout';
 import GroupLeaderLayout from './layouts/GroupLeaderLayout';
-import GroupLeaderPortal from './pages/group/GroupLeaderPortal';
-import FinanceDocuments from './pages/church/FinanceDocuments';
 import MemberLayout from './layouts/MemberLayout';
 import FinanceLayout from './layouts/FinanceLayout';
 import SecretaryLayout from './layouts/SecretaryLayout';
 
 // Portal Dashboards
-import PastorDashboard from './pages/pastor/PastorDashboard';
-import PastorPrayers from './pages/pastor/PastorPrayers';
-import PastorVisitation from './pages/pastor/PastorVisitation';
-import PastorCounseling from './pages/pastor/PastorCounseling';
-import PastorMemberCare from './pages/pastor/PastorMemberCare';
-import PastorReports from './pages/pastor/PastorReports';
-import PastorCommunication from './pages/pastor/PastorCommunication';
-import MinistryDashboard from './pages/ministry/MinistryDashboard';
-import MinistryMembers from './pages/ministry/MinistryMembers';
-import MinistryTasks from './pages/ministry/MinistryTasks';
-import MinistryEvents from './pages/ministry/MinistryEvents';
-import MinistryReports from './pages/ministry/MinistryReports';
-import MinistryCommunication from './pages/ministry/MinistryCommunication';
-import MemberDashboard from './pages/member/MemberDashboard';
-import MemberGiving from './pages/member/MemberGiving';
-import MemberEvents from './pages/member/MemberEvents';
-import MemberProfile from './pages/member/MemberProfile';
-import MemberGroups from './pages/member/MemberGroups';
-import MemberPrayer from './pages/member/MemberPrayer';
-import MemberSermons from './pages/member/MemberSermons';
-import MemberDirectory from './pages/member/MemberDirectory';
-import MemberAttendance from './pages/member/MemberAttendance';
-import Churches from './pages/Churches';
-import Subscriptions from './pages/Subscriptions';
-import Users from './pages/Users';
-import Communication from './pages/Communication';
-import Analytics from './pages/Analytics';
-import Billing from './pages/Billing';
-import Tickets from './pages/Tickets';
-import Reports from './pages/Reports';
-import Settings from './pages/Settings';
-import Unauthorized from './pages/Unauthorized';
 
 // Church Admin Pages
-import { Dashboard as ChurchDashboard } from './pages/church/Dashboard';
-import { MemberList } from './pages/church/MemberList';
-import ChurchSettingsPage from './pages/church/Settings';
-import MemberEngagementPage from './pages/church/MemberEngagement';
-import UnitStatisticsPage from './pages/church/UnitStatistics';
-import ChurchRegistersPage from './pages/church/Registers';
-import ChurchConfigurationPage from './pages/ChurchConfiguration';
-import AbsenceSurveyPage from './pages/AbsenceSurvey';
-import ActivateAccountPage from './pages/ActivateAccount';
-import ChurchEventsPage from './pages/church/Events';
-import ChurchCommunicationPage from './pages/church/Communication';
-import ChurchAttendancePage from './pages/church/Attendance';
-import ChurchVisitorsPage from './pages/church/Visitors';
-import ChurchMinistriesPage from './pages/church/Ministries';
-import ChurchFinancePage from './pages/church/Finance';
-import ChurchUsersPage from './pages/church/UsersPermissions';
-import ChurchPositionsPage from './pages/church/Positions';
-import ChurchReportsPage from './pages/church/Reports';
-import ChurchSmsBundlesPage from './pages/church/SmsBundles';
-import ChurchAuditPage from './pages/church/AuditSecurity';
+
+const Sermons = lazy(() => import('./pages/church/Sermons'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const GroupLeaderPortal = lazy(() => import('./pages/group/GroupLeaderPortal'));
+const FinanceDocuments = lazy(() => import('./pages/church/FinanceDocuments'));
+const PastorDashboard = lazy(() => import('./pages/pastor/PastorDashboard'));
+const PastorPrayers = lazy(() => import('./pages/pastor/PastorPrayers'));
+const PastorVisitation = lazy(() => import('./pages/pastor/PastorVisitation'));
+const PastorCounseling = lazy(() => import('./pages/pastor/PastorCounseling'));
+const PastorMemberCare = lazy(() => import('./pages/pastor/PastorMemberCare'));
+const PastorReports = lazy(() => import('./pages/pastor/PastorReports'));
+const PastorCommunication = lazy(() => import('./pages/pastor/PastorCommunication'));
+const MinistryDashboard = lazy(() => import('./pages/ministry/MinistryDashboard'));
+const MinistryMembers = lazy(() => import('./pages/ministry/MinistryMembers'));
+const MinistryTasks = lazy(() => import('./pages/ministry/MinistryTasks'));
+const MinistryEvents = lazy(() => import('./pages/ministry/MinistryEvents'));
+const MinistryReports = lazy(() => import('./pages/ministry/MinistryReports'));
+const MinistryCommunication = lazy(() => import('./pages/ministry/MinistryCommunication'));
+const MemberDashboard = lazy(() => import('./pages/member/MemberDashboard'));
+const MemberGiving = lazy(() => import('./pages/member/MemberGiving'));
+const MemberEvents = lazy(() => import('./pages/member/MemberEvents'));
+const MemberProfile = lazy(() => import('./pages/member/MemberProfile'));
+const MemberGroups = lazy(() => import('./pages/member/MemberGroups'));
+const MemberPrayer = lazy(() => import('./pages/member/MemberPrayer'));
+const MemberSermons = lazy(() => import('./pages/member/MemberSermons'));
+const MemberDirectory = lazy(() => import('./pages/member/MemberDirectory'));
+const MemberAttendance = lazy(() => import('./pages/member/MemberAttendance'));
+const Churches = lazy(() => import('./pages/Churches'));
+const Subscriptions = lazy(() => import('./pages/Subscriptions'));
+const Users = lazy(() => import('./pages/Users'));
+const Communication = lazy(() => import('./pages/Communication'));
+const Analytics = lazy(() => import('./pages/Analytics'));
+const Billing = lazy(() => import('./pages/Billing'));
+const Tickets = lazy(() => import('./pages/Tickets'));
+const Reports = lazy(() => import('./pages/Reports'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Unauthorized = lazy(() => import('./pages/Unauthorized'));
+const ChurchDashboard = lazy(() => import('./pages/church/Dashboard').then(module => ({ default: module.Dashboard })));
+const MemberList = lazy(() => import('./pages/church/MemberList').then(module => ({ default: module.MemberList })));
+const ChurchSettingsPage = lazy(() => import('./pages/church/Settings'));
+const MemberEngagementPage = lazy(() => import('./pages/church/MemberEngagement'));
+const UnitStatisticsPage = lazy(() => import('./pages/church/UnitStatistics'));
+const ChurchRegistersPage = lazy(() => import('./pages/church/Registers'));
+const ChurchConfigurationPage = lazy(() => import('./pages/ChurchConfiguration'));
+const AbsenceSurveyPage = lazy(() => import('./pages/AbsenceSurvey'));
+const ActivateAccountPage = lazy(() => import('./pages/ActivateAccount'));
+const ChurchEventsPage = lazy(() => import('./pages/church/Events'));
+const ChurchCommunicationPage = lazy(() => import('./pages/church/Communication'));
+const ChurchAttendancePage = lazy(() => import('./pages/church/Attendance'));
+const ChurchVisitorsPage = lazy(() => import('./pages/church/Visitors'));
+const ChurchMinistriesPage = lazy(() => import('./pages/church/Ministries'));
+const ChurchFinancePage = lazy(() => import('./pages/church/Finance'));
+const ChurchUsersPage = lazy(() => import('./pages/church/UsersPermissions'));
+const ChurchPositionsPage = lazy(() => import('./pages/church/Positions'));
+const ChurchReportsPage = lazy(() => import('./pages/church/Reports'));
+const ChurchSmsBundlesPage = lazy(() => import('./pages/church/SmsBundles'));
+const ChurchAuditPage = lazy(() => import('./pages/church/AuditSecurity'));
 
 const App: React.FC = () => {
   return (
@@ -82,6 +84,7 @@ const App: React.FC = () => {
       <BrandingProvider>
       <Router>
         <RoleSyncRedirect />
+        <Suspense fallback={<div role="status" style={{ padding: 32 }}>Loading portal…</div>}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
@@ -127,6 +130,7 @@ const App: React.FC = () => {
           {/* Church Admin Routes */}
           <Route element={<ProtectedRoute allowedRoles={['CHURCH_ADMIN']}><ChurchAdminLayout /></ProtectedRoute>}>
             <Route path="/church/dashboard" element={<ChurchDashboard />} />
+            <Route path="/church/sermons" element={<Sermons />} />
             <Route path="/church/members" element={<MemberList />} />
             <Route path="/church/visitors" element={<ChurchVisitorsPage />} />
             <Route path="/church/attendance" element={<ChurchAttendancePage />} />
@@ -220,6 +224,7 @@ const App: React.FC = () => {
           <Route path="/unauthorized" element={<Unauthorized />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
+        </Suspense>
       </Router>
       </BrandingProvider>
     </AuthProvider>
