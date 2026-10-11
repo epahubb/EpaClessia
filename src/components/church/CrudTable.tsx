@@ -48,6 +48,7 @@ export type CrudField = {
 export type CrudColumn = { key: string; label: string; render?: (row: any) => React.ReactNode };
 
 type Props = {
+  searchable?: boolean;
   columns: CrudColumn[];
   fields: CrudField[];
   fetchRows: () => Promise<any[]>;
@@ -203,8 +204,9 @@ const ListField: React.FC<{
 export const CrudTable: React.FC<Props> = ({
   columns, fields, fetchRows, fetchPage, createRow, updateRow, deleteRow,
   idKey = 'id', addLabel = 'Add New', rowActions, toolbarActions, emptyText = 'No records yet.',
-  onDialogOpen, onCreated,
+  onDialogOpen, onCreated, searchable = false,
 }) => {
+  const [localSearch, setLocalSearch] = useState('');
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -362,12 +364,14 @@ export const CrudTable: React.FC<Props> = ({
     catch (e: any) { alert(e?.response?.data?.error || 'Failed to delete'); }
   };
 
+  const displayRows = searchable && localSearch.trim() ? rows.filter(row => columns.some(c => String(row[c.key] ?? '').toLowerCase().includes(localSearch.trim().toLowerCase()))) : rows;
   const showActions = !!(updateRow || deleteRow || rowActions);
 
   return (
     <Box>
       {listError && <Alert severity="error" sx={{ mb: 2 }} action={<Button color="inherit" onClick={() => void reload()}>Retry</Button>}>{listError}</Alert>}
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 2 }}>
+        {searchable && !paginated && <TextField label="Search records" size="small" value={localSearch} onChange={e => setLocalSearch(e.target.value)} sx={{ flex: 1 }} />}
         {paginated && <Box component="form" onSubmit={e => { e.preventDefault(); setPage(0); setSearch(searchInput.trim()); }} sx={{ display: 'flex', gap: 1, flex: 1 }}>
           <TextField label="Search members" size="small" value={searchInput} onChange={e => setSearchInput(e.target.value)} fullWidth />
           <Button type="submit" variant="outlined">Search</Button>
@@ -394,9 +398,9 @@ export const CrudTable: React.FC<Props> = ({
           <TableBody>
             {loading ? (
               <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4 }}><CircularProgress size={28} /></TableCell></TableRow>
-            ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4, color: 'text.secondary' }}>{listError ? 'Unable to load the list. Use Retry or Refresh.' : search ? 'No members match your search.' : emptyText}</TableCell></TableRow>
-            ) : rows.map((row, i) => (
+            ) : displayRows.length === 0 ? (
+              <TableRow><TableCell colSpan={columns.length + 1} align="center" sx={{ py: 4, color: 'text.secondary' }}>{listError ? 'Unable to load the list. Use Retry or Refresh.' : localSearch.trim() ? 'No records match your search.' : search ? 'No members match your search.' : emptyText}</TableCell></TableRow>
+            ) : displayRows.map((row, i) => (
               <TableRow key={row[idKey] || i} hover>
                 {columns.map(c => <TableCell key={c.key}>{c.render ? c.render(row) : (row[c.key] ?? '—')}</TableCell>)}
                 {showActions && (

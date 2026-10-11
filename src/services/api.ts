@@ -180,6 +180,7 @@ api.interceptors.response.use(
 export default api;
 
 api.interceptors.response.use(response => {
+  if (['put','post','patch','delete'].includes(response.config.method || '') && /giving|dues|expenses|budgets|pledges|finance/.test(response.config.url || '')) window.dispatchEvent(new Event('epaclessia:finance-changed'));
   if (['put','post','patch','delete'].includes(response.config.method || '') && /members|ministries|groups/.test(response.config.url || '')) window.dispatchEvent(new Event('epaclessia:data-changed'));
   if (['put', 'post', 'delete'].includes(response.config.method || '') && /users|user-tenant-roles|branding|settings|groups/.test(response.config.url || '')) {
     window.dispatchEvent(new Event('epaclessia:account-changed'));

@@ -3,6 +3,7 @@ import { Box, Typography, Tabs, Tab, Grid, Card, CardContent, Chip, Button, Aler
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import CrudTable from '../../components/church/CrudTable';
 import api from '../../services/api';
+import { financeMoney } from '../../lib/financeLedger';
 import FinanceDocuments from './FinanceDocuments';
 import churchApi from '../../services/churchApi';
 
@@ -10,6 +11,7 @@ const GHS = (n: number) => new Intl.NumberFormat('en-GH', { style: 'currency', c
 const COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#ec4899'];
 
 const DEFAULT_PURPOSES = ['Tithe', 'Offering', 'Welfare', 'Donation', 'Building Fund', 'Missions'];
+const currencyField: any = { name: 'currency', label: 'Currency', type: 'autocomplete', options: ['GHS','USD','EUR','GBP'].map(value => ({ value, label: value })), defaultValue: 'GHS', required: true, freeSolo: true, helperText: 'Three-letter currency code. Currencies are never added together.' };
 const methodOpts = [{ value: 'cash', label: 'Cash' }, { value: 'card', label: 'Card' }, { value: 'mobile_money', label: 'Mobile Money' }, { value: 'bank', label: 'Bank Transfer' }, { value: 'cheque', label: 'Cheque' }];
 const asOptions = (values: string[]) => values.map(v => ({ value: v, label: v }));
 const momoNetworks = asOptions(['MTN MoMo', 'Telecel Cash', 'AirtelTigo Money', 'Other']);
@@ -186,13 +188,15 @@ const Overview: React.FC = () => {
   );
 };
 
-export const Finance: React.FC = () => {
+export const Finance: React.FC<{ section?: number }> = ({ section }) => {
   const [tab, setTab] = useState(() => {
+    if (section != null) return section;
     const reference = new URLSearchParams(window.location.search).get('reference') || new URLSearchParams(window.location.search).get('trxref');
     return reference?.startsWith('svc_') || reference?.startsWith('invpay_') ? 8 : 0;
   });
   // Purposes and inventory categories are church-defined, so the forms load
   // them instead of relying on a fixed list baked into this page.
+  useEffect(() => { if (section != null) setTab(section); }, [section]);
   const duesPaymentRequestId = useRef<string | null>(null);
   const [duesSchedules, setDuesSchedules] = useState<any[]>([]);
   const [purposes, setPurposes] = useState<string[]>(DEFAULT_PURPOSES);
@@ -200,10 +204,10 @@ export const Finance: React.FC = () => {
   const [members, setMembers] = useState<{ value: string; label: string }[]>([]);
 
   const loadLists = () => {
-    churchApi.getDues().then(setDuesSchedules).catch(() => setDuesSchedules([]));
-    churchApi.getPurposeOptions().then(p => { if (p.length) setPurposes(p); }).catch(() => {});
-    churchApi.getInventoryCategories().then(c => { if (c.length) setCategories(c); }).catch(() => {});
-    api.get('/church/finance/member-options').then(r => r.data.data).then(rows => setMembers((rows || [])
+    if (section == null || section === 7) churchApi.getDues().then(setDuesSchedules).catch(() => setDuesSchedules([]));
+    if (section == null || [1,2,6].includes(section)) churchApi.getPurposeOptions().then(p => { if (p.length) setPurposes(p); }).catch(() => {});
+    if (section == null || section === 5) churchApi.getInventoryCategories().then(c => { if (c.length) setCategories(c); }).catch(() => {});
+    if (section == null || [2,7].includes(section)) api.get('/church/finance/member-options').then(r => r.data.data).then(rows => setMembers((rows || [])
       .filter((m: any) => m.membershipStatus !== 'visitor')
       .map((m: any) => ({ value: m.id, label: `${m.firstName || ''} ${m.lastName || ''}`.trim() || m.membershipId || m.id })))).catch(() => setMembers([]));
   };
@@ -239,20 +243,21 @@ export const Finance: React.FC = () => {
     { key: 'createdAt', label: 'Recorded at', render: (r: any) => r.createdAt ? new Date(r.createdAt).toLocaleString() : '—' },
     { key: 'donorName', label: 'Giver', render: (r: any) => r.memberName || r.donorName || r.name || 'Anonymous' },
     { key: 'purpose', label: 'Purpose' },
-    { key: 'amount', label: 'Amount', render: (r: any) => GHS(r.amount) },
+    { key: 'amount', label: 'Amount', render: (r: any) => financeMoney(r.amount, r.currency || 'GHS') },
     { key: 'paymentMethod', label: 'Method', render: (r: any) => methodOpts.find(m => m.value === (r.paymentMethod || r.method))?.label || r.paymentMethod || r.method || r.channel || '—' },
     {
       key: 'reference', label: 'Reference',
       render: (r: any) => r.transactionId || r.transferReference || r.reference || '—',
     },
-    { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'completed'} color={r.status === 'pending' ? 'warning' : 'success'} /> },
+    { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'completed'} color={r.status === 'failed' ? 'error' : r.status === 'completed' ? 'success' : 'warning'} /> },
   ];
   const [ministryOptions, setMinistryOptions] = useState<{ value: string; label: string }[]>([]);
-  useEffect(() => { churchApi.getMinistries().then(rows => setMinistryOptions([{ value: '', label: 'Church-wide / unassigned' }, ...rows.map((m: any) => ({ value: m.id, label: m.name }))])).catch(() => {}); }, []);
+  useEffect(() => { if (section != null && ![1,3].includes(section)) return; api.get('/church/finance/ministry-options').then(r => r.data.data).then(rows => setMinistryOptions([{ value: '', label: 'Church-wide / unassigned' }, ...rows.map((m: any) => ({ value: m.id, label: m.name }))])).catch(() => {}); }, []);
   const givingFields: any[] = [
+    currencyField,
     { name: 'ministryId', label: 'Ministry (optional)', type: 'select', options: ministryOptions },
     { name: 'receivedAt', label: 'Collection date & time', type: 'datetime', helperText: 'Local time; saved as a UTC instant. Leave blank to use the current time.' },
-    { name: 'amount', label: 'Amount (GHS)', type: 'number', required: true },
+    { name: 'amount', label: 'Amount (selected currency)', type: 'number', required: true },
     {
       name: 'purpose', label: 'Purpose', type: 'autocomplete', options: asOptions(purposes),
       required: true, defaultValue: 'Tithe', freeSolo: true,
@@ -266,10 +271,11 @@ export const Finance: React.FC = () => {
     ...paymentDetailFields('paymentMethod'),
   ];
   const expenseFields: any[] = [
+    currencyField,
     { name: 'ministryId', label: 'Ministry (optional)', type: 'select', options: ministryOptions },
     { name: 'category', label: 'Category', type: 'select', options: ['Utilities', 'Salaries', 'Welfare', 'Maintenance', 'Events', 'Missions', 'Supplies', 'Other'].map(c => ({ value: c, label: c })), required: true },
     { name: 'description', label: 'Description' },
-    { name: 'amount', label: 'Amount (GHS)', type: 'number', required: true },
+    { name: 'amount', label: 'Amount (selected currency)', type: 'number', required: true },
     { name: 'vendor', label: 'Vendor / Payee' },
     { name: 'paymentMethod', label: 'Payment method', type: 'select', options: methodOpts, defaultValue: 'cash', required: true },
     { name: 'status', label: 'Status', type: 'select', options: [{ value: 'pending', label: 'Pending' }, { value: 'approved', label: 'Approved' }, { value: 'paid', label: 'Paid' }], defaultValue: 'paid' },
@@ -281,7 +287,7 @@ export const Finance: React.FC = () => {
     { key: 'category', label: 'Category' },
     { key: 'description', label: 'Description' },
     { key: 'vendor', label: 'Vendor' },
-    { key: 'amount', label: 'Amount', render: (r: any) => GHS(r.amount) },
+    { key: 'amount', label: 'Amount', render: (r: any) => financeMoney(r.amount, r.currency || 'GHS') },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'paid'} /> },
   ];
   const budgetFields: any[] = [
@@ -298,14 +304,15 @@ export const Finance: React.FC = () => {
     { key: 'remaining', label: 'Remaining', render: (r: any) => GHS((Number(r.allocated) || 0) - (Number(r.spent) || 0)) },
   ];
   const pledgeFields: any[] = [
+    currencyField,
     { name: 'memberId', label: 'Member', type: 'select', options: members, required: true, helperText: 'Only registered members of this church can make a pledge.' },
     {
       name: 'purpose', label: 'Purpose', type: 'autocomplete', options: asOptions(purposes),
       defaultValue: 'Building Fund', freeSolo: true,
       helperText: 'Pick a purpose or type a new one.',
     },
-    { name: 'amountPledged', label: 'Amount pledged (GHS)', type: 'number', required: true },
-    { name: 'amountPaid', label: 'Amount paid (GHS)', type: 'number' },
+    { name: 'amountPledged', label: 'Amount pledged (selected currency)', type: 'number', required: true },
+    { name: 'amountPaid', label: 'Amount paid (selected currency)', type: 'number' },
     { name: 'status', label: 'Status', type: 'select', options: [{ value: 'active', label: 'Active' }, { value: 'fulfilled', label: 'Fulfilled' }, { value: 'cancelled', label: 'Cancelled' }], defaultValue: 'active' },
     { name: 'dueDate', label: 'Due date', type: 'date' },
     { name: 'paymentMethod', label: 'How the pledge is being paid', type: 'select', options: methodOpts, defaultValue: 'cash' },
@@ -313,14 +320,15 @@ export const Finance: React.FC = () => {
   ];
   const pledgeCols: any[] = [
     { key: 'memberName', label: 'Member' }, { key: 'purpose', label: 'Purpose' },
-    { key: 'amountPledged', label: 'Pledged', render: (r: any) => GHS(r.amountPledged) },
-    { key: 'amountPaid', label: 'Paid', render: (r: any) => GHS(r.amountPaid) },
+    { key: 'amountPledged', label: 'Pledged', render: (r: any) => financeMoney(r.amountPledged, r.currency || 'GHS') },
+    { key: 'amountPaid', label: 'Paid', render: (r: any) => financeMoney(r.amountPaid, r.currency || 'GHS') },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'active'} color={r.status === 'fulfilled' ? 'success' : r.status === 'cancelled' ? 'default' : 'warning'} /> },
   ];
   const duesFields: any[] = [
+    currencyField,
     { name: 'name', label: 'Dues name', required: true, helperText: 'For example: Monthly Welfare Dues.' },
     { name: 'description', label: 'Description', type: 'textarea' },
-    { name: 'amount', label: 'Amount per collection (GHS)', type: 'number', required: true },
+    { name: 'amount', label: 'Amount per collection (selected currency)', type: 'number', required: true },
     { name: 'frequency', label: 'Collection frequency', type: 'select', required: true, defaultValue: 'monthly', options: [
       { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' },
       { value: 'quarterly', label: 'Quarterly' }, { value: 'yearly', label: 'Yearly' },
@@ -334,7 +342,7 @@ export const Finance: React.FC = () => {
   ];
   const duesCols: any[] = [
     { key: 'name', label: 'Dues' },
-    { key: 'amount', label: 'Amount', render: (r: any) => GHS(r.amount) },
+    { key: 'amount', label: 'Amount', render: (r: any) => financeMoney(r.amount, r.currency || 'GHS') },
     { key: 'frequency', label: 'Frequency', render: (r: any) => String(r.frequency || 'monthly').replace('_', ' ') },
     { key: 'startDate', label: 'Starts', render: (r: any) => r.startDate ? new Date(r.startDate).toLocaleDateString() : '—' },
     { key: 'recurring', label: 'Recurring', render: (r: any) => <Chip size="small" label={r.recurring ? 'Yes' : 'No'} color={r.recurring ? 'info' : 'default'} /> },
@@ -399,24 +407,20 @@ export const Finance: React.FC = () => {
   const tabDefs = ['Overview', 'Tithes & Offerings', 'Donations & Pledges', 'Expenses', 'Budget', 'Inventory', 'Purposes', 'Member Dues', 'Platform Charges', 'Payment History', 'Reports & Documents'];
   return (
     <Box>
-      <Typography variant="h4" fontWeight={800} gutterBottom>Finance</Typography>
-      <Typography color="text.secondary" sx={{ mb: 2 }}>Tithes, offerings, donations, pledges, welfare, expenses, budgets, inventory and reports.</Typography>
-      <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ mb: 2 }}>
-        {tabDefs.map(t => <Tab key={t} label={t} />)}
-      </Tabs>
+      {section == null && <><Typography variant="h4" fontWeight={800} gutterBottom>Finance</Typography><Typography color="text.secondary" sx={{ mb: 2 }}>Tithes, offerings, donations, pledges, welfare, expenses, budgets, inventory and reports.</Typography><Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ mb: 2 }}>{tabDefs.map(t => <Tab key={t} label={t} />)}</Tabs></>}
       {tab === 0 && <Overview />}
       {tab === 10 && <FinanceDocuments />}
-      {tab === 1 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} createRow={withRememberedPurpose(churchApi.addGiving, 'giving')} addLabel="Record Giving" emptyText="No giving records yet." />}
-      {tab === 2 && <CrudTable columns={pledgeCols} fields={pledgeFields} fetchRows={() => churchApi.getPledges()} createRow={withRememberedPurpose(churchApi.createPledge, 'pledge')} updateRow={churchApi.updatePledge} deleteRow={churchApi.deletePledge} addLabel="Add Pledge" />}
-      {tab === 3 && <CrudTable columns={expenseCols} fields={expenseFields} fetchRows={() => churchApi.getExpenses()} createRow={churchApi.createExpense} updateRow={churchApi.updateExpense} deleteRow={churchApi.deleteExpense} addLabel="Record Expense" />}
-      {tab === 4 && <CrudTable columns={budgetCols} fields={budgetFields} fetchRows={() => churchApi.getBudgets()} createRow={churchApi.createBudget} updateRow={churchApi.updateBudget} deleteRow={churchApi.deleteBudget} addLabel="Add Budget Line" />}
-      {tab === 5 && <CrudTable columns={invCols} fields={invFields} fetchRows={() => churchApi.getInventory()} createRow={withRememberedCategory(churchApi.createInventory)} updateRow={churchApi.updateInventory} deleteRow={churchApi.deleteInventory} addLabel="Add Inventory Item" />}
+      {tab === 1 && <CrudTable searchable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} createRow={withRememberedPurpose(churchApi.addGiving, 'giving')} addLabel="Record Giving" emptyText="No giving records yet." />}
+      {tab === 2 && <CrudTable searchable columns={pledgeCols} fields={pledgeFields} fetchRows={() => churchApi.getPledges()} createRow={withRememberedPurpose(churchApi.createPledge, 'pledge')} updateRow={churchApi.updatePledge} deleteRow={churchApi.deletePledge} addLabel="Add Pledge" />}
+      {tab === 3 && <CrudTable searchable columns={expenseCols} fields={expenseFields} fetchRows={() => churchApi.getExpenses()} createRow={churchApi.createExpense} updateRow={churchApi.updateExpense} deleteRow={churchApi.deleteExpense} addLabel="Record Expense" />}
+      {tab === 4 && <CrudTable searchable columns={budgetCols} fields={budgetFields} fetchRows={() => churchApi.getBudgets()} createRow={churchApi.createBudget} updateRow={churchApi.updateBudget} deleteRow={churchApi.deleteBudget} addLabel="Add Budget Line" />}
+      {tab === 5 && <CrudTable searchable columns={invCols} fields={invFields} fetchRows={() => churchApi.getInventory()} createRow={withRememberedCategory(churchApi.createInventory)} updateRow={churchApi.updateInventory} deleteRow={churchApi.deleteInventory} addLabel="Add Inventory Item" />}
       {tab === 6 && (
         <Box>
           <Typography color="text.secondary" sx={{ mb: 2 }}>
             Purposes appear in the giving and pledge forms. You can also simply type a new purpose while recording money and it will be saved here automatically.
           </Typography>
-          <CrudTable
+          <CrudTable searchable
             columns={purposeCols} fields={purposeFields}
             fetchRows={() => churchApi.getPurposes()}
             createRow={async (d: any) => { const r = await churchApi.createPurpose(d); loadLists(); return r; }}
@@ -428,11 +432,11 @@ export const Finance: React.FC = () => {
       )}
       {tab === 7 && <Stack spacing={3}>
         <Alert severity="info">Set the dues schedule below, then use Record Dues Payment for money already received. These payments appear in the member’s dues history. This does not charge the member online or create a donation.</Alert>
-        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues schedules</Typography><CrudTable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={async d => { const r = await churchApi.createDues(d); loadLists(); return r; }} updateRow={async (id, d) => { const r = await churchApi.updateDues(id, d); loadLists(); return r; }} deleteRow={async id => { const r = await churchApi.deleteDues(id); loadLists(); return r; }} addLabel="Set Member Dues" emptyText="No member dues have been set." /></Box>
-        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues payments</Typography><CrudTable columns={duesPaymentCols} fields={duesPaymentFields} fetchRows={() => api.get('/church/dues-payments').then(r => r.data.data)} createRow={recordDuesPayment} onDialogOpen={() => { duesPaymentRequestId.current = null; }} addLabel="Record Dues Payment" emptyText="No dues payments recorded yet." /></Box>
+        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues schedules</Typography><CrudTable searchable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={async d => { const r = await churchApi.createDues(d); loadLists(); return r; }} updateRow={async (id, d) => { const r = await churchApi.updateDues(id, d); loadLists(); return r; }} deleteRow={async id => { const r = await churchApi.deleteDues(id); loadLists(); return r; }} addLabel="Set Member Dues" emptyText="No member dues have been set." /></Box>
+        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues payments</Typography><CrudTable searchable columns={duesPaymentCols} fields={duesPaymentFields} fetchRows={() => api.get('/church/dues-payments').then(r => r.data.data)} createRow={recordDuesPayment} onDialogOpen={() => { duesPaymentRequestId.current = null; }} addLabel="Record Dues Payment" emptyText="No dues payments recorded yet." /></Box>
       </Stack>}
       {tab === 8 && <ServiceChargesPanel />}
-      {tab === 9 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
+      {tab === 9 && <CrudTable searchable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
     </Box>
   );
 };

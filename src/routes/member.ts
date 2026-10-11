@@ -293,6 +293,7 @@ router.post('/dues/:id/initialize', async (req: AuthRequest, res) => {
     }
 
     const collection = await churchCollectionFor(tenantId, amount);
+    if (String(dues.currency || 'GHS').toUpperCase() !== String(collection.gateway.currency || 'GHS').toUpperCase()) return res.status(400).json({ error: 'This dues currency is not supported by your church’s online payment gateway. Please contact the finance office for an offline payment.' });
     const reference = genId('duespay');
     await db('member_dues_payments').insert({
       id: genId('duepay'),

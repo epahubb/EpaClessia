@@ -4972,13 +4972,13 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
   const writeRoles = FINANCE_TABLES.includes(table)
     ? [...baseWriteRoles, 'FINANCE']
     : baseWriteRoles;
-  const coerce = (body: any) => {
+  const coerce = (body: any, existing?: any) => {
     const row: any = {};
     // Mobile money / bank / card details arrive as their own fields; normalising
     // first means only the ones that belong to the chosen method are stored.
     if (table === 'service_schedules' && 'meetingDays' in body) body = { ...body, dayOfWeek: normalizeMeetingDays(body.meetingDays).join(', ') };
     const source = opts.paymentDetails
-      ? { ...body, ...normalizePaymentDetails(body[opts.paymentDetails], body) }
+      ? { ...body, ...normalizePaymentDetails(body[opts.paymentDetails] ?? existing?.[opts.paymentDetails], { ...existing, ...body }) }
       : body;
     for (const f of opts.fields) {
       if (f === 'recordedBy') continue; // Actor attribution comes from the authenticated account.
@@ -4997,6 +4997,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
    * without a transaction ID is refused with a clear reason.
    */
   const checkBody = (body: any): string | null => {
+    if (opts.fields.includes('currency') && body.currency && !/^[A-Z]{3}$/.test(String(body.currency))) return 'Use an uppercase three-letter currency code.';
     for (const f of opts.numberFields || []) if (body[f] != null && body[f] !== '' && !Number.isFinite(Number(body[f]))) return `${f} must be a finite number.`;
     for (const f of opts.dateFields || []) if (body[f] && !Number.isFinite(new Date(body[f]).getTime())) return `${f} must be a valid date and time.`;
     if (table === 'expenses' && !(Number(body.amount) > 0)) return 'Enter a positive expense amount.';
@@ -5078,7 +5079,7 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
       if (body.ministryId && !await db('ministries').where({ id: body.ministryId, tenantId: tid(req) }).first()) return res.status(400).json({ error: 'Choose a ministry from this church.' });
       const problem = checkBody({ ...existing, ...body });
       if (problem) return res.status(400).json({ error: problem });
-      await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).update(coerce(body));
+      await db(table).where({ id: (req as any).params.id, tenantId: tid(req) }).update(coerce(body, existing));
       await logActivity(req, 'update', table, (req as any).params.id);
       res.json({ success: true });
     } catch (e: any) {

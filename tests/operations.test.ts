@@ -39,6 +39,8 @@ test('production group and finance handlers enforce tenant, assignment and role 
  await sql.schema.createTable('expenses', t => { t.string('id'); for (const f of ['tenantId','currency','status','category','description','vendor','paymentMethod']) t.string(f); t.decimal('amount',14,2); t.timestamp('date'); t.timestamp('createdAt'); });
  await sql.schema.createTable('budgets', t => { t.string('id'); t.string('tenantId'); t.string('fiscalYear'); });
  await sql.schema.createTable('pledges', t => { t.string('id'); t.string('tenantId'); t.timestamp('createdAt'); });
+ await sql.schema.createTable('member_dues', t => { for (const f of ['id','tenantId','name']) t.string(f); });
+ await sql.schema.createTable('member_dues_payments', t => { for (const f of ['id','tenantId','duesId','memberId','currency','status','paymentMethod','reference','collectionPeriod','externalReference','recordedBy']) t.string(f); t.text('notes'); t.decimal('amount',15,2); t.timestamp('paidAt'); t.timestamp('createdAt'); });
  await sql.schema.createTable('audit_logs', t => { t.increments('id'); for (const f of ['adminUid','action','resource','resourceId','ipAddress','userAgent']) t.string(f); t.timestamp('createdAt'); });
  await sql('tenants').insert([{ id: 'a', name: 'Grace Church', status: 'active' }, { id: 'b', name: 'Other Church', status: 'active' }, { id: 'empty', name: 'Empty Church', status: 'active' }]);
  await sql('donations').insert({ tenantId: 'a', amount: 50, currency: 'GHS', status: 'completed', purpose: 'Offering', createdAt: new Date('2026-09-30T23:59:59Z') });

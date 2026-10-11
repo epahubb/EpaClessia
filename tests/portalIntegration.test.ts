@@ -8,6 +8,8 @@ import db from '../src/lib/db';
 
 import memberRouter from '../src/routes/member';
 import groupRouter from '../src/routes/groupLeader';
+import { PAYMENT_DETAIL_FIELDS } from '../src/lib/paymentDetails';
+import financeRouter from '../src/routes/financeReports';
 import churchRouter from '../src/routes/church';
 import { authenticate } from '../src/middleware/auth';
 import { signAccessToken } from '../src/lib/security';
@@ -45,10 +47,13 @@ test('portal integration: ministries, member features, and assigned group tools 
     await sql.schema.createTable('events', x=>{x.string('id').primary();for(const f of ['tenantId','ministryId','title','location'])x.string(f);x.timestamp('startTime');x.timestamp('endTime');});
     await sql.schema.createTable('event_attendance', x=>{x.increments('id');for(const f of ['tenantId','memberId','eventId','status','method'])x.string(f);x.boolean('present');x.timestamp('checkInAt');});
     await sql.schema.createTable('donations', x=>{x.increments('id');for(const f of ['tenantId','ministryId','currency','purpose','status','donorName'])x.string(f);x.decimal('amount');x.timestamp('createdAt');x.timestamp('receivedAt');});
-    await sql.schema.createTable('expenses', x=>{x.string('id');for(const f of ['tenantId','ministryId','currency','description','status','vendor'])x.string(f);x.decimal('amount');x.timestamp('date');});
+    await sql.schema.createTable('expenses', x=>{x.string('id');for(const f of ['tenantId','ministryId','currency','description','status','vendor','category','recordedBy','paymentMethod'])x.string(f);x.decimal('amount');x.timestamp('date');x.timestamp('createdAt');for(const field of PAYMENT_DETAIL_FIELDS) { if(field==='paymentDate')x.timestamp(field);else x.string(field); }});
     await sql.schema.createTable('system_settings', x=>{x.string('key');x.text('value');});
     await sql.schema.createTable('church_settings', x=>{x.string('tenantId');x.string('key');x.text('value');});
     await sql.schema.createTable('communications_log', x=>{x.increments('id');for(const f of ['tenantId','channel','recipient','subject','message','status','sentBy'])x.string(f);x.timestamp('createdAt');});
+    await sql.schema.createTable('church_finance_invoices', x => { for(const f of ['id','tenantId','recipient','description','currency','status']) x.string(f); x.decimal('amount',15,2); x.timestamp('issueAt'); x.timestamp('dueAt'); });
+    await sql.schema.createTable('budgets', x => { x.string('id'); x.string('tenantId'); x.string('fiscalYear'); x.string('category'); x.decimal('allocated'); x.decimal('spent'); });
+    await sql.schema.createTable('pledges', x => { x.string('id'); x.string('tenantId'); x.timestamp('createdAt'); });
     await sql.schema.createTable('audit_logs',x=>{x.increments('id');for(const f of ['adminUid','action','resource','resourceId','ipAddress','userAgent'])x.string(f);x.timestamp('createdAt');});
     await sql.schema.createTable('church_activity_log',x=>{x.increments('id');for(const f of ['tenantId','userId','userName','action','entity','entityId','details','ipAddress'])x.string(f);x.timestamp('createdAt');});
     await sql('tenants').insert([{id:'a',name:'Grace Church',status:'active'},{id:'b',name:'Other Church',status:'active'}]);
@@ -61,7 +66,7 @@ test('portal integration: ministries, member features, and assigned group tools 
     await sql('event_attendance').insert([{tenantId:'a',eventId:'ev1',memberId:'m1',present:true,status:'checked_in'},{tenantId:'a',eventId:'ev2',memberId:'m1',present:false,status:'absent'}]);
     await sql('donations').insert([{tenantId:'a',ministryId:'min1',amount:100.11,currency:'GHS',status:'completed',createdAt:new Date('2026-10-01')},{tenantId:'a',amount:999,currency:'GHS',status:'completed',createdAt:new Date('2026-10-01')},{tenantId:'b',ministryId:'min1',amount:999,currency:'GHS',status:'completed',createdAt:new Date('2026-10-01')}]);
     await sql('expenses').insert({id:'exp1',tenantId:'a',ministryId:'min1',amount:30,currency:'GHS',status:'paid',date:new Date('2026-10-01')});
-    const app=express();app.use(express.json());app.use('/church',authenticate,churchRouter);app.use('/member',authenticate,memberRouter);app.use('/group',authenticate,groupRouter);
+    const app=express();app.use(express.json());app.use('/finance',authenticate,financeRouter);app.use('/church',authenticate,churchRouter);app.use('/member',authenticate,memberRouter);app.use('/group',authenticate,groupRouter);
     server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
     const tokens=Object.fromEntries(accounts.map(x=>[x.uid,signAccessToken({uid:x.uid,tenantId:x.tenantId,role:x.role})]));
     const request=async(path:string,user='member',body?:any,method='POST')=>{const r=await fetch(base+path,{method:body===undefined?'GET':method,headers:{Authorization:'Bearer '+tokens[user],'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,body:await r.json() as any};};
@@ -98,6 +103,18 @@ test('portal integration: ministries, member features, and assigned group tools 
       assert.equal((await request('/church/dues-payments','finance',{...once,requestId:'52345678-1234-4234-8234-123456789012'})).status,409);
       assert.equal((await request('/church/dues-payments','finance')).body.data.length,3);
       const history=await request('/member/dues');assert.equal(history.status,200,JSON.stringify(history.body));assert.equal(history.body.payments.length,3);
+    });
+    await t.test('finance workspace includes dues once, paid expenses only, separate currencies and scoped branding', async () => {
+      await sql('member_dues_payments').insert([{id:'fx',tenantId:'b',memberId:'m3',duesId:'foreign-dues',amount:999,currency:'GHS',status:'completed',paidAt:new Date('2026-01-02'),createdAt:new Date('2026-01-02')},{id:'pending',tenantId:'a',memberId:'m1',amount:900,currency:'GHS',status:'pending',createdAt:new Date('2026-01-02')},{id:'usd',tenantId:'a',memberId:'m1',amount:5,currency:'USD',status:'completed',paidAt:new Date('2026-01-02'),createdAt:new Date('2026-01-02')}]);
+      await sql('expenses').insert([{id:'janpaid',tenantId:'a',amount:10,currency:'GHS',status:'paid',date:new Date('2026-01-02')},{id:'janpending',tenantId:'a',amount:500,currency:'GHS',status:'approved',date:new Date('2026-01-02')}]);
+      const r=await request('/finance/report?from=2026-01-01&to=2026-01-03','finance');assert.equal(r.status,200,JSON.stringify(r.body));assert.equal(r.body.dues.length,5);const ghs=r.body.totals.find((v:any)=>v.currency==='GHS');assert.equal(ghs.income,100);assert.equal(ghs.expenses,10);assert.equal(ghs.net,90);assert.equal(r.body.totals.find((v:any)=>v.currency==='USD').income,5);assert.equal(r.body.dues.some((v:any)=>v.id==='fx'),false);assert.equal('notes' in r.body.dues[0],false);
+      assert.equal((await request('/finance/identity','finance')).body.name,'Grace Church');assert.equal((await request('/finance/report?from=2026-01-03&to=2026-01-01','finance')).status,400);assert.equal((await request('/finance/report','member')).status,403);
+      const opts=await request('/finance/ministry-options','finance');assert.equal(opts.status,200);assert.equal(opts.body.data.some((v:any)=>v.id==='foreign'),false);
+    });
+    await t.test('expense status edits preserve bank details unless the method is deliberately changed', async () => {
+      const create=await request('/church/expenses','finance',{amount:20,currency:'USD',category:'Utilities',paymentMethod:'bank',bankName:'Fixture Bank',transferReference:'BANK-001',status:'pending'});assert.equal(create.status,201,JSON.stringify(create.body));
+      const id=create.body.id;assert.equal((await request('/church/expenses/'+id,'finance',{status:'paid'},'PUT')).status,200);const paid=await sql('expenses').where({id}).first();assert.equal(paid.status,'paid');assert.equal(paid.paymentMethod,'bank');assert.equal(paid.transferReference,'BANK-001');assert.equal(paid.bankName,'Fixture Bank');
+      assert.equal((await request('/church/expenses/'+id,'finance',{paymentMethod:'cash'},'PUT')).status,200);assert.equal((await sql('expenses').where({id}).first()).transferReference,null);
     });
     await t.test('admin group assignment promotes only chosen member account and updates access',async()=>{const r=await request('/church/groups/g1','admin',{leaderId:'member'},'PUT');assert.equal(r.status,200,JSON.stringify(r.body));assert.equal((await sql('users').where({uid:'member'}).first()).role,'GROUP_LEADER');const assigned=await request('/group/groups','member');assert.equal(assigned.status,200);assert.deepEqual(assigned.body.data.map((g:any)=>g.id),['g1']);assert.equal((await request('/group/groups/g1/overview','leader')).status,404);});
   } finally { if(server){server.closeAllConnections();await new Promise<void>(r=>server.close(r));}(db as any).client=original;await sql.destroy();await engine.close(); }

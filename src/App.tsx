@@ -71,6 +71,9 @@ const ChurchCommunicationPage = lazy(() => import('./pages/church/Communication'
 const ChurchAttendancePage = lazy(() => import('./pages/church/Attendance'));
 const ChurchVisitorsPage = lazy(() => import('./pages/church/Visitors'));
 const ChurchMinistriesPage = lazy(() => import('./pages/church/Ministries'));
+const FinanceDashboard = lazy(() => import('./pages/finance/FinanceDashboard'));
+const FinanceLedger = lazy(() => import('./pages/finance/FinanceLedger'));
+const FinanceSection = lazy(() => import('./pages/finance/FinanceSection'));
 const ChurchFinancePage = lazy(() => import('./pages/church/Finance'));
 const ChurchUsersPage = lazy(() => import('./pages/church/UsersPermissions'));
 const ChurchPositionsPage = lazy(() => import('./pages/church/Positions'));
@@ -200,8 +203,18 @@ const App: React.FC = () => {
             grants FINANCE write access to exactly those tables and nothing else.
           */}
           <Route element={<ProtectedRoute allowedRoles={['FINANCE', 'CHURCH_ADMIN', 'PASTOR']}><FinanceLayout /></ProtectedRoute>}>
-            <Route path="/finance/dashboard" element={<ChurchFinancePage />} />
-            <Route path="/finance/reports" element={<FinanceDocuments />} />
+            <Route path="/finance/dashboard" element={<FinanceDashboard />} />
+            <Route path="/finance/transactions" element={<FinanceLedger />} />
+            <Route path="/finance/invoices" element={<FinanceDocuments key="invoices" initialDocument="invoice" />} />
+            <Route path="/finance/giving" element={<FinanceSection name="giving" />} />
+            <Route path="/finance/dues" element={<FinanceSection name="dues" />} />
+            <Route path="/finance/pledges" element={<FinanceSection name="pledges" />} />
+            <Route path="/finance/expenses" element={<FinanceSection name="expenses" />} />
+            <Route path="/finance/budgets" element={<FinanceSection name="budgets" />} />
+            <Route path="/finance/inventory" element={<FinanceSection name="inventory" />} />
+            <Route path="/finance/charges" element={<FinanceSection name="charges" />} />
+            <Route path="/finance/purposes" element={<FinanceSection name="purposes" />} />
+            <Route path="/finance/reports" element={<FinanceDocuments key="reports" />} />
             <Route path="/finance" element={<Navigate to="/finance/dashboard" replace />} />
           </Route>
 
