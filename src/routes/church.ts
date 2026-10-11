@@ -5144,6 +5144,53 @@ registerCrud('/budgets', 'budgets', {
   numberFields: ['allocated', 'spent'],
   filterFields: ['fiscalYear'],
 });
+// Staff-recorded dues are a separate ledger, not ordinary donations.
+router.get('/dues-payments', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  try {
+    const data = await db('member_dues_payments as p')
+      .leftJoin('members as m', function () { this.on('m.id', '=', 'p.memberId').andOn('m.tenantId', '=', 'p.tenantId'); })
+      .leftJoin('member_dues as d', function () { this.on('d.id', '=', 'p.duesId').andOn('d.tenantId', '=', 'p.tenantId'); })
+      .where('p.tenantId', tid(req)).select('p.*', 'm.firstName', 'm.lastName', 'm.membershipId', 'd.name as duesName')
+      .orderBy('p.paidAt', 'desc');
+    res.json({ data: data.map(r => ({ ...r, memberName: `${r.firstName || ''} ${r.lastName || ''}`.trim() || r.memberId })) });
+  } catch (error) { console.error('Dues ledger fetch failed:', error); res.status(500).json({ error: 'Failed to load dues payments.' }); }
+});
+router.post('/dues-payments', requireRole('CHURCH_ADMIN', 'PASTOR', 'FINANCE'), async (req: AuthRequest, res) => {
+  const body = req.body || {}, tenantId = tid(req);
+  const amount = Number(body.amount), paidAt = new Date(body.paidAt);
+  const requestId = String(body.requestId || '');
+  if (typeof body.memberId !== 'string' || !body.memberId || body.memberId.length > 255 || typeof body.duesId !== 'string' || !body.duesId || body.duesId.length > 255) return res.status(400).json({ error: 'Choose a member and dues schedule.' });
+  if (typeof body.paidAt !== 'string' || !body.paidAt.trim()) return res.status(400).json({ error: 'Enter a payment date and time.' });
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) return res.status(400).json({ error: 'A valid payment request ID is required.' });
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000000 || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return res.status(400).json({ error: 'Enter a positive amount with at most two decimal places.' });
+  if (!Number.isFinite(paidAt.getTime()) || paidAt.getTime() > Date.now() + 300000) return res.status(400).json({ error: 'Enter a valid payment date, not in the future.' });
+  if (!['cash', 'mobile_money', 'bank', 'cheque', 'card'].includes(body.paymentMethod)) return res.status(400).json({ error: 'Choose a payment method.' });
+  const collectionPeriod = String(body.collectionPeriod || '').trim(), notes = String(body.notes || '').trim(), externalReference = String(body.externalReference || '').trim();
+  if (!collectionPeriod || collectionPeriod.length > 100 || notes.length > 2000 || externalReference.length > 200) return res.status(400).json({ error: 'Enter a collection period; keep notes and reference within their limits.' });
+  if (body.paymentMethod !== 'cash' && !externalReference) return res.status(400).json({ error: 'Enter the payment transaction or receipt reference.' });
+  try {
+    const row = await db.transaction(async trx => {
+      // Serialize entries for this member; retries reuse their request ID.
+      const member = await trx('members').where({ id: body.memberId, tenantId }).forUpdate().first();
+      if (!member || member.membershipStatus === 'visitor') throw Object.assign(new Error('Choose a registered member in this church.'), { status: 404 });
+      const reference = `dueman_${requestId}`;
+      const existing = await trx('member_dues_payments').where({ tenantId, reference }).first();
+      if (existing) {
+        if (existing.memberId !== member.id || existing.duesId !== body.duesId || Number(existing.amount) !== amount || existing.collectionPeriod !== collectionPeriod || existing.paymentMethod !== body.paymentMethod || existing.externalReference !== externalReference || existing.notes !== notes || new Date(existing.paidAt).getTime() !== paidAt.getTime()) throw Object.assign(new Error('This request ID already belongs to another payment.'), { status: 409 });
+        return existing;
+      }
+      const dues = await trx('member_dues').where({ id: body.duesId, tenantId, active: true }).first();
+      if (!dues) throw Object.assign(new Error('Choose an active dues schedule in this church.'), { status: 404 });
+      if (!dues.recurring && await trx('member_dues_payments').where({ tenantId, memberId: member.id, duesId: dues.id, status: 'completed' }).first()) throw Object.assign(new Error('This member has already paid this one-time due.'), { status: 409 });
+      const saved = { id: genId('duepay'), tenantId, memberId: member.id, duesId: dues.id, amount: Math.round(amount * 100) / 100, currency: dues.currency || 'GHS', chargeAmount: 0, netAmount: amount, totalAmount: amount, serviceChargeStatus: 'not_applicable', status: 'completed', paymentMethod: body.paymentMethod, reference, externalReference, collectionPeriod, notes, recordedBy: req.user!.uid, paidAt, createdAt: new Date() };
+      await trx('member_dues_payments').insert(saved);
+      await trx('church_activity_log').insert({ tenantId, userId: req.user!.uid, userName: (req as any).dbUser?.name || 'Finance staff', action: 'DUES_PAYMENT_RECORDED', entity: 'member_dues_payments', entityId: saved.id, details: `${saved.currency} ${saved.amount} · ${collectionPeriod}`, ipAddress: req.ip || null, createdAt: new Date() });
+      return saved;
+    });
+    res.status(201).json({ data: row });
+  } catch (error: any) { if (!error.status) console.error('Dues payment save failed:', error); res.status(error.status || 500).json({ error: error.status ? error.message : 'Failed to record dues payment. Retry the same submission.' }); }
+});
+
 registerCrud('/dues', 'member_dues', {
   idPrefix: 'due',
   fields: ['name', 'description', 'amount', 'currency', 'frequency', 'startDate', 'endDate', 'collectionDay', 'recurring', 'active'],
@@ -5151,7 +5198,7 @@ registerCrud('/dues', 'member_dues', {
   dateFields: ['startDate', 'endDate'],
   filterFields: ['frequency', 'active'],
   orderBy: 'startDate',
-  writeRoles: ['CHURCH_ADMIN', 'PASTOR'],
+  writeRoles: ['CHURCH_ADMIN', 'PASTOR', 'FINANCE'],
   validate: (body) => {
     if (!String(body?.name || '').trim()) return 'Please give this dues schedule a name.';
     if (!Number(body?.amount) || Number(body.amount) <= 0) return 'The dues amount must be greater than zero.';

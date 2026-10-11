@@ -490,7 +490,7 @@ const MemberGiving: React.FC = () => {
                 <Stack spacing={0.75}>
                   {duesPayments.slice(0, 10).map((payment: any) => (
                     <Box key={payment.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                      <Typography variant="body2">{fmtDate(payment.paidAt || payment.createdAt)} · {payment.status}</Typography>
+                      <Typography variant="body2">{fmtDate(payment.paidAt || payment.createdAt)}{payment.collectionPeriod ? ` · ${payment.collectionPeriod}` : ''} · {payment.status}</Typography>
                       <Typography variant="body2" fontWeight={700}>{fmt(payment.amount)}</Typography>
                     </Box>
                   ))}

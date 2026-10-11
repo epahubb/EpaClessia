@@ -1,6 +1,6 @@
 import type { Response, NextFunction } from 'express';
 import type { AuthRequest } from './auth';
-const FINANCE_PATHS = /^\/(?:finance(?:\/|$)|giving(?:\/|$)|expenses(?:\/|$)|budgets(?:\/|$)|pledges(?:\/|$)|inventory(?:\/|$)|inventory-categories(?:\/|$)|finance-purposes(?:\/|$)|dues(?:\/|$)|billing(?:\/|$)|service-charges(?:\/|$))/;
+const FINANCE_PATHS = /^\/(?:finance(?:\/|$)|giving(?:\/|$)|expenses(?:\/|$)|budgets(?:\/|$)|pledges(?:\/|$)|inventory(?:\/|$)|inventory-categories(?:\/|$)|finance-purposes(?:\/|$)|dues-payments(?:\/|$)|dues(?:\/|$)|billing(?:\/|$)|service-charges(?:\/|$))/;
 export function churchAccess(req: AuthRequest, res: Response, next: NextFunction) {
   const role = (req as any).dbUser?.role || req.user?.role;
   if (['SUPER_ADMIN', 'CHURCH_ADMIN', 'PASTOR', 'MINISTRY_LEADER', 'SECRETARY'].includes(role)) return next();

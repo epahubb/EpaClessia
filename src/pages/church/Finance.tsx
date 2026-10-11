@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Box, Typography, Tabs, Tab, Grid, Card, CardContent, Chip, Button, Alert, Stack, CircularProgress } from '@mui/material';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import CrudTable from '../../components/church/CrudTable';
@@ -193,11 +193,14 @@ export const Finance: React.FC = () => {
   });
   // Purposes and inventory categories are church-defined, so the forms load
   // them instead of relying on a fixed list baked into this page.
+  const duesPaymentRequestId = useRef<string | null>(null);
+  const [duesSchedules, setDuesSchedules] = useState<any[]>([]);
   const [purposes, setPurposes] = useState<string[]>(DEFAULT_PURPOSES);
   const [categories, setCategories] = useState<string[]>([]);
   const [members, setMembers] = useState<{ value: string; label: string }[]>([]);
 
   const loadLists = () => {
+    churchApi.getDues().then(setDuesSchedules).catch(() => setDuesSchedules([]));
     churchApi.getPurposeOptions().then(p => { if (p.length) setPurposes(p); }).catch(() => {});
     churchApi.getInventoryCategories().then(c => { if (c.length) setCategories(c); }).catch(() => {});
     api.get('/church/finance/member-options').then(r => r.data.data).then(rows => setMembers((rows || [])
@@ -356,6 +359,30 @@ export const Finance: React.FC = () => {
     { key: 'unitValue', label: 'Unit value', render: (r: any) => GHS(r.unitValue) },
     { key: 'condition', label: 'Condition' }, { key: 'location', label: 'Location' },
   ];
+  const duesPaymentFields: any[] = [
+    { name: 'memberId', label: 'Member', type: 'select', options: members, required: true },
+    { name: 'duesId', label: 'Dues schedule', type: 'select', options: duesSchedules.filter(d => d.active).map(d => ({ value: d.id, label: `${d.name} (${d.currency || 'GHS'} ${Number(d.amount).toFixed(2)})` })), required: true },
+    { name: 'amount', label: 'Amount received (schedule currency)', type: 'number', required: true },
+    { name: 'collectionPeriod', label: 'Collection period', required: true, helperText: 'For example: October 2026, week of 12 October, or Annual 2026.' },
+    { name: 'paidAt', label: 'Payment date & time', type: 'datetime', required: true },
+    { name: 'paymentMethod', label: 'Payment method', type: 'select', options: methodOpts, defaultValue: 'cash', required: true },
+    { name: 'externalReference', label: 'Transaction / receipt reference', required: true, showIf: (form: any) => form.paymentMethod !== 'cash' },
+    { name: 'notes', label: 'Notes', type: 'textarea' },
+  ];
+  const duesPaymentCols: any[] = [
+    { key: 'memberName', label: 'Member' }, { key: 'membershipId', label: 'Member ID' },
+    { key: 'duesName', label: 'Dues' }, { key: 'collectionPeriod', label: 'Period' },
+    { key: 'amount', label: 'Amount', render: (r: any) => `${r.currency || 'GHS'} ${Number(r.amount).toFixed(2)}` },
+    { key: 'paidAt', label: 'Paid at', render: (r: any) => r.paidAt ? new Date(r.paidAt).toLocaleString() : '—' },
+    { key: 'paymentMethod', label: 'Method' }, { key: 'externalReference', label: 'Receipt reference' },
+    { key: 'status', label: 'Status' },
+  ];
+  const recordDuesPayment = (data: any) => {
+    // Keep the same key across retries of this dialog after an uncertain response.
+    duesPaymentRequestId.current ||= crypto.randomUUID();
+    return api.post('/church/dues-payments', { ...data, requestId: duesPaymentRequestId.current }).then(r => r.data.data);
+  };
+
   const purposeFields: any[] = [
     { name: 'name', label: 'Purpose name', required: true },
     { name: 'category', label: 'Used for', type: 'select', options: asOptions(['giving', 'pledge', 'expense']), defaultValue: 'giving' },
@@ -399,7 +426,11 @@ export const Finance: React.FC = () => {
           />
         </Box>
       )}
-      {tab === 7 && <CrudTable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={churchApi.createDues} updateRow={churchApi.updateDues} deleteRow={churchApi.deleteDues} addLabel="Set Member Dues" emptyText="No member dues have been set." />}
+      {tab === 7 && <Stack spacing={3}>
+        <Alert severity="info">Set the dues schedule below, then use Record Dues Payment for money already received. These payments appear in the member’s dues history. This does not charge the member online or create a donation.</Alert>
+        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues schedules</Typography><CrudTable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={async d => { const r = await churchApi.createDues(d); loadLists(); return r; }} updateRow={async (id, d) => { const r = await churchApi.updateDues(id, d); loadLists(); return r; }} deleteRow={async id => { const r = await churchApi.deleteDues(id); loadLists(); return r; }} addLabel="Set Member Dues" emptyText="No member dues have been set." /></Box>
+        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues payments</Typography><CrudTable columns={duesPaymentCols} fields={duesPaymentFields} fetchRows={() => api.get('/church/dues-payments').then(r => r.data.data)} createRow={recordDuesPayment} onDialogOpen={() => { duesPaymentRequestId.current = null; }} addLabel="Record Dues Payment" emptyText="No dues payments recorded yet." /></Box>
+      </Stack>}
       {tab === 8 && <ServiceChargesPanel />}
       {tab === 9 && <CrudTable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
     </Box>

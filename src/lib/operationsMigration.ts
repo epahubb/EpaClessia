@@ -18,6 +18,10 @@ export async function migrateOperations(db: Knex) {
   for (const table of ['donations','expenses','events']) {
     if (!await db.schema.hasColumn(table, 'ministryId')) await db.schema.alterTable(table, t => { t.string('ministryId'); t.index(['tenantId','ministryId']); });
   }
+  if (await db.schema.hasTable('member_dues_payments')) {
+    for (const field of ['collectionPeriod', 'externalReference', 'recordedBy']) if (!await db.schema.hasColumn('member_dues_payments', field)) await db.schema.alterTable('member_dues_payments', t => t.string(field));
+    if (!await db.schema.hasColumn('member_dues_payments', 'notes')) await db.schema.alterTable('member_dues_payments', t => t.text('notes'));
+  }
   // Repair only explicit leader-account assignments, never infer permissions from a name.
   const leaders = await db('church_groups as g').join('users as u', function () { this.on('u.uid','=','g.leaderId').andOn('u.tenantId','=','g.tenantId'); }).where({ 'g.active': true, 'u.status': 'active', 'u.role': 'MEMBER' }).select('u.uid','u.tenantId');
   for (const leader of leaders) await db.transaction(async trx => { await trx('users').where({ uid: leader.uid, tenantId: leader.tenantId, role: 'MEMBER' }).update({ role: 'GROUP_LEADER' }); await trx('user_tenant_roles').where({ userId: leader.uid, tenantId: leader.tenantId }).update({ role: 'GROUP_LEADER' }); });
