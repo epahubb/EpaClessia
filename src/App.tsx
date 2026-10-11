@@ -23,6 +23,7 @@ import SecretaryLayout from './layouts/SecretaryLayout';
 
 const Sermons = lazy(() => import('./pages/church/Sermons'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const SecretaryDashboard = lazy(() => import('./pages/workspace/SecretaryDashboard'));
 const GroupLeaderPortal = lazy(() => import('./pages/group/GroupLeaderPortal'));
 const FinanceDocuments = lazy(() => import('./pages/church/FinanceDocuments'));
 const PastorDashboard = lazy(() => import('./pages/pastor/PastorDashboard'));
@@ -179,6 +180,11 @@ const App: React.FC = () => {
           <Route path="/group-leader" element={<ProtectedRoute allowedRoles={['GROUP_LEADER', 'CHURCH_ADMIN', 'PASTOR']}><GroupLeaderLayout /></ProtectedRoute>}>
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="dashboard" element={<GroupLeaderPortal />} />
+            <Route path="members" element={<GroupLeaderPortal initialTab={0} />} />
+            <Route path="attendance" element={<GroupLeaderPortal initialTab={1} />} />
+            <Route path="followups" element={<GroupLeaderPortal initialTab={2} />} />
+            <Route path="statistics" element={<GroupLeaderPortal initialTab={3} />} />
+            <Route path="communication" element={<GroupLeaderPortal initialTab={4} />} />
           </Route>
 
           {/* Member Portal */}
@@ -221,12 +227,12 @@ const App: React.FC = () => {
           {/*
             Secretary Portal
 
-            Attendance is the landing screen because marking the roll is the
-            secretary's core task. SECRETARY is included in ATTENDANCE_ROLES on
+            The secretary overview links directly to attendance and records. SECRETARY is included in ATTENDANCE_ROLES on
             the server, so the QR, roll-call and biometric tabs all work here.
           */}
           <Route element={<ProtectedRoute allowedRoles={['SECRETARY', 'CHURCH_ADMIN', 'PASTOR']}><SecretaryLayout /></ProtectedRoute>}>
-            <Route path="/secretary/dashboard" element={<ChurchAttendancePage />} />
+            <Route path="/secretary/dashboard" element={<SecretaryDashboard />} />
+            <Route path="/secretary/attendance" element={<ChurchAttendancePage />} />
             <Route path="/secretary/members" element={<MemberList />} />
             <Route path="/secretary/visitors" element={<ChurchVisitorsPage />} />
             <Route path="/secretary/events" element={<ChurchEventsPage />} />

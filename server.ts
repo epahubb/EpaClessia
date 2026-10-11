@@ -55,6 +55,7 @@ import { generateBase32Secret, verifyTotp, buildOtpAuthUrl } from './src/lib/tot
 import { runStartupChecks } from './src/lib/startup-checks';
 import churchRouter from './src/routes/church';
 import { loginHandler } from './src/routes/login';
+import workspaceRouter from './src/routes/workspace';
 import memberRouter from './src/routes/member';
 import pastorRouter from './src/routes/pastor';
 import groupLeaderRouter from './src/routes/groupLeader';
@@ -614,6 +615,7 @@ async function startServer() {
 
   // Member self-service API (giving, profile). Every route is scoped to the
   // authenticated member's own identity and church.
+  app.use('/api/v1/workspace', authenticate, workspaceRouter);
   app.use('/api/v1/member', authenticate, memberRouter);
 
   // Biometric terminals have no user session, so this router is intentionally

@@ -71,7 +71,7 @@ async function requireMinistry(
     res.status(404).json({ error: 'Ministry not found' });
     return null;
   }
-  if (!isPrivileged(req) && ministry.leaderId && ministry.leaderId !== uid(req)) {
+  if (!isPrivileged(req) && ministry.leaderId !== uid(req)) {
     res.status(403).json({ error: 'You do not lead this ministry' });
     return null;
   }

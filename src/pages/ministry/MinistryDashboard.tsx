@@ -1,164 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  Grid, Typography, Box, Paper, 
-  Button, Card, CardContent,
-  List, ListItem, ListItemText, ListItemAvatar, Avatar,
-  LinearProgress
-} from '@mui/material';
-import { 
-  LayoutDashboard, Users, CheckSquare, Calendar, 
-  Plus, ArrowRight, Clock, BarChart3
-} from 'lucide-react';
+import { Alert, Box, Button, LinearProgress, List, ListItem, ListItemText, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { Calendar, ChartNoAxesCombined, CheckSquare, Users } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { ministryLeaderService } from '../../services/ministryLeaderService';
-
-const MinistryDashboard: React.FC = () => {
-  const [stats, setStats] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const ministries = await ministryLeaderService.getManagedMinistries();
-        if (ministries.length > 0) {
-          const data = await ministryLeaderService.getDashboardStats(ministries[0].id);
-          setStats(data);
-        }
-      } catch (error) {
-        console.error('Error fetching stats:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchStats();
-  }, []);
-
-  const statCards = [
-    { title: 'Ministry Members', value: stats?.memberCount || 0, icon: <Users />, color: '#10b981' },
-    { title: 'Pending Tasks', value: stats?.pendingTasksCount || 0, icon: <CheckSquare />, color: '#f59e0b' },
-    { title: 'Upcoming Events', value: stats?.upcomingEventsCount || 0, icon: <Calendar />, color: '#3b82f6' },
-    { title: 'Avg Attendance', value: `${stats?.avgAttendance || 0}%`, icon: <BarChart3 />, color: '#8b5cf6' },
-  ];
-
-  return (
-    <Box>
-      <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Box>
-          <Typography variant="h4" fontWeight={800} sx={{ letterSpacing: '-1px' }}>Ministry Dashboard</Typography>
-          <Typography variant="body1" color="text.secondary">Managing your ministry team and tasks</Typography>
-        </Box>
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <Button variant="contained" startIcon={<Plus size={18} />} sx={{ borderRadius: 2 }}>Create Task</Button>
-          <Button variant="outlined" startIcon={<Calendar size={18} />} sx={{ borderRadius: 2 }}>Schedule Event</Button>
-        </Box>
-      </Box>
-
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        {statCards.map((card, index) => (
-          <Grid size={{ xs: 12, sm: 6, md: 3 }} key={index}>
-            <Card sx={{ borderRadius: 3, boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}>
-              <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Box sx={{ bgcolor: `${card.color}15`, color: card.color, p: 1.5, borderRadius: 2, display: 'flex' }}>
-                  {card.icon}
-                </Box>
-                <Box>
-                  <Typography variant="body2" color="text.secondary" fontWeight={600}>{card.title}</Typography>
-                  <Typography variant="h5" fontWeight={800}>{card.value}</Typography>
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-        ))}
-      </Grid>
-
-      <Grid container spacing={3}>
-        <Grid size={{ xs: 12, md: 8 }}>
-          <Paper sx={{ p: 3, borderRadius: 4, mb: 3 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-              <Typography variant="h6" fontWeight={700}>Pending Tasks</Typography>
-              <Button size="small" endIcon={<ArrowRight size={16} />}>View All</Button>
-            </Box>
-            <List>
-              {stats?.pendingTasks?.map((task: any) => (
-                <ListItem key={task.id} sx={{ px: 0 }}>
-                  <ListItemAvatar>
-                    <Avatar sx={{ bgcolor: 'warning.light', color: 'warning.main' }}>
-                      <Clock size={20} />
-                    </Avatar>
-                  </ListItemAvatar>
-                  <ListItemText 
-                    primary={<Typography fontWeight={700}>{task.title}</Typography>}
-                    secondary={`Assigned to: ${task.assigneeName} • Due: ${task.dueDate}`}
-                  />
-                  <Button variant="outlined" size="small">Complete</Button>
-                </ListItem>
-              ))}
-            </List>
-          </Paper>
-
-          <Paper sx={{ p: 3, borderRadius: 4 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-              <Typography variant="h6" fontWeight={700}>Ministry Events</Typography>
-              <Button size="small" endIcon={<ArrowRight size={16} />}>Calendar</Button>
-            </Box>
-            <List>
-              {stats?.upcomingEvents?.map((event: any) => (
-                <ListItem key={event.id} sx={{ px: 0 }}>
-                  <ListItemAvatar>
-                    <Avatar sx={{ bgcolor: 'primary.light', color: 'primary.main' }}>
-                      <Calendar size={20} />
-                    </Avatar>
-                  </ListItemAvatar>
-                  <ListItemText 
-                    primary={<Typography fontWeight={700}>{event.title}</Typography>}
-                    secondary={`${event.date} • ${event.location}`}
-                  />
-                  <Button variant="text" size="small">Details</Button>
-                </ListItem>
-              ))}
-            </List>
-          </Paper>
-        </Grid>
-
-        <Grid size={{ xs: 12, md: 4 }}>
-          <Paper sx={{ p: 3, borderRadius: 4, mb: 3 }}>
-            <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>Member Participation</Typography>
-            <Box sx={{ mb: 3 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" fontWeight={600}>Active Volunteers</Typography>
-                <Typography variant="body2" fontWeight={700}>{Number(stats?.activeVolunteersRate || 0)}%</Typography>
-              </Box>
-              <LinearProgress variant="determinate" value={Number(stats?.activeVolunteersRate || 0)} sx={{ height: 8, borderRadius: 4 }} />
-            </Box>
-            <Box sx={{ mb: 3 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" fontWeight={600}>Task Completion</Typography>
-                <Typography variant="body2" fontWeight={700}>{Number(stats?.taskCompletionRate || 0)}%</Typography>
-              </Box>
-              <LinearProgress variant="determinate" value={Number(stats?.taskCompletionRate || 0)} color="warning" sx={{ height: 8, borderRadius: 4 }} />
-            </Box>
-          </Paper>
-
-          <Paper sx={{ p: 3, borderRadius: 4 }}>
-            <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>Recent Members</Typography>
-            <List>
-              {stats?.recentMembers?.map((member: any) => (
-                <ListItem key={member.id} sx={{ px: 0 }}>
-                  <ListItemAvatar>
-                    <Avatar sx={{ width: 32, height: 32 }}>{member.name[0]}</Avatar>
-                  </ListItemAvatar>
-                  <ListItemText 
-                    primary={<Typography variant="body2" fontWeight={700}>{member.name}</Typography>}
-                    secondary={member.role}
-                  />
-                </ListItem>
-              ))}
-            </List>
-            <Button fullWidth variant="text" sx={{ mt: 1, fontWeight: 700 }}>View Team</Button>
-          </Paper>
-        </Grid>
-      </Grid>
-    </Box>
-  );
-};
-
-export default MinistryDashboard;
+import { useWorkspaceData, WorkspaceActions, WorkspaceHero, WorkspaceMetrics, WorkspacePanel, WorkspaceStatus } from '../../components/workspace/WorkspaceParts';
+export default function MinistryDashboard() {
+    const options = useWorkspaceData<any[]>(() => ministryLeaderService.getManagedMinistries()), [ministryId, setMinistryId] = useState(new URLSearchParams(window.location.search).get('ministryId') || ''), navigate = useNavigate(), [saving, setSaving] = useState(''), [notice, setNotice] = useState('');
+    useEffect(() => { if (options.data)
+        setMinistryId(current => options.data!.some(m => m.id === current) ? current : options.data![0]?.id || ''); }, [options.data]);
+    const state = useWorkspaceData(() => ministryId ? ministryLeaderService.getDashboardStats(ministryId) : Promise.resolve(null), [ministryId]), d = state.data;
+    const complete = async (id: string) => { setSaving(id); setNotice(''); try {
+        await ministryLeaderService.updateTask(id, { status: 'done' } as any);
+        state.refresh();
+    }
+    catch (e: any) {
+        setNotice(e?.response?.data?.error || 'Could not complete this task. Please retry.');
+    }
+    finally {
+        setSaving('');
+    } };
+    return <Stack spacing={3}><WorkspaceHero eyebrow="Ministry leadership" title="Equip your team. Move the mission forward." description="A dedicated space for your assigned ministries, team tasks, participation and upcoming events." action={<Button variant="contained" onClick={() => navigate(`/ministry/tasks?ministryId=${encodeURIComponent(ministryId)}`)}>Manage tasks</Button>}/><WorkspaceActions items={[{ label: 'Team & attendance', path: `/ministry/members?ministryId=${encodeURIComponent(ministryId)}`, description: 'Roster and ministry session records' }, { label: 'Tasks', path: `/ministry/tasks?ministryId=${encodeURIComponent(ministryId)}`, description: 'Assign, prioritize and complete work' }, { label: 'Plan an event', path: `/ministry/events?ministryId=${encodeURIComponent(ministryId)}`, description: 'Meetings and ministry gatherings' }, { label: 'Ministry reports', path: `/ministry/reports?ministryId=${encodeURIComponent(ministryId)}`, description: 'Activity and participation insights' }]}/><WorkspaceStatus state={options}/>{options.data?.length ? <TextField select label="Managed ministry" value={ministryId} onChange={e => { setMinistryId(e.target.value); navigate(`/ministry/dashboard?ministryId=${encodeURIComponent(e.target.value)}`, { replace: true }); }} sx={{ maxWidth: 460 }}>{options.data.map(m => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</TextField> : !options.loading && !options.error && <Alert severity="info">No ministry is assigned to this account. Ask the administrator to link your account as the ministry leader.</Alert>}{ministryId && <WorkspaceStatus state={state}/>} {notice && <Alert severity="error">{notice}</Alert>}
+ {d && !state.loading && !state.error && <><WorkspaceMetrics items={[{ label: 'Active roster entries', value: d.memberCount ?? 0, hint: 'Recorded ministry roster', icon: <Users size={18}/> }, { label: 'Pending tasks', value: d.pendingTasksCount ?? 0, hint: 'Tasks not marked done', icon: <CheckSquare size={18}/> }, { label: 'Upcoming events shown', value: d.upcomingEventsCount ?? 0, hint: 'Next events, up to five', icon: <Calendar size={18}/> }, { label: 'Session attendance', value: `${d.avgAttendance ?? 0}%`, hint: 'Average of recent recorded sessions', icon: <ChartNoAxesCombined size={18}/> }]}/><Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0,2fr) minmax(0,1fr)' }, gap: 2.5 }}><Stack spacing={2.5}><WorkspacePanel title="Tasks to move forward" action={<Button onClick={() => navigate(`/ministry/tasks?ministryId=${encodeURIComponent(ministryId)}`)}>All tasks</Button>}><List>{(d.pendingTasks || []).map((t: any) => <ListItem key={t.id} disableGutters sx={{ gap: 2 }}><ListItemText primary={t.title} secondary={[t.assigneeName || 'Unassigned', t.dueDate ? new Date(t.dueDate).toLocaleDateString() : 'No due date'].join(' · ')}/><Button disabled={Boolean(saving)} onClick={() => complete(t.id)}>{saving === t.id ? 'Saving…' : 'Complete'}</Button></ListItem>)}{!d.pendingTasks?.length && <Typography color="text.secondary">No pending tasks recorded.</Typography>}</List></WorkspacePanel><WorkspacePanel title="Ministry gatherings" action={<Button onClick={() => navigate(`/ministry/events?ministryId=${encodeURIComponent(ministryId)}`)}>Events</Button>}><List>{(d.upcomingEvents || []).map((e: any) => <ListItem key={e.id} disableGutters><ListItemText primary={e.title} secondary={[e.date || e.startTime, e.location].filter(Boolean).join(' · ')}/></ListItem>)}{!d.upcomingEvents?.length && <Typography color="text.secondary">No upcoming ministry events.</Typography>}</List></WorkspacePanel></Stack><Stack spacing={2.5}><WorkspacePanel title="Team participation">{[['Active roster', d.activeVolunteersRate], ['Task completion', d.taskCompletionRate]].map(([label, value]) => <Box key={String(label)} sx={{ mb: 2 }}><Stack direction="row" justifyContent="space-between"><Typography variant="body2">{label}</Typography><Typography variant="body2" fontWeight={700}>{Number(value || 0)}%</Typography></Stack><LinearProgress variant="determinate" value={Math.max(0, Math.min(100, Number(value || 0)))} sx={{ height: 6, borderRadius: 4, mt: 1, '& .MuiLinearProgress-bar': { bgcolor: '#58b58d' } }}/></Box>)}</WorkspacePanel><WorkspacePanel title="Recent roster entries" action={<Button onClick={() => navigate(`/ministry/members?ministryId=${encodeURIComponent(ministryId)}`)}>Team</Button>}><List>{(d.recentMembers || []).map((m: any) => <ListItem key={m.id} disableGutters><ListItemText primary={m.name || 'Ministry member'} secondary={m.role || 'Member'}/></ListItem>)}{!d.recentMembers?.length && <Typography color="text.secondary">No roster entries yet.</Typography>}</List></WorkspacePanel></Stack></Box></>}
+ </Stack>;
+}

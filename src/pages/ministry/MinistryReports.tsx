@@ -56,7 +56,7 @@ interface Ministry {
 
 export default function MinistryReports() {
   const [ministries, setMinistries] = useState<Ministry[]>([]);
-  const [ministryId, setMinistryId] = useState<string>('');
+  const [ministryId, setMinistryId] = useState<string>(new URLSearchParams(window.location.search).get('ministryId')||'');
   const [data, setData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');

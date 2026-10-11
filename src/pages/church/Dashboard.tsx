@@ -1,83 +1,17 @@
-import React, { useEffect, useState } from 'react';
-import { Box, Grid, Card, CardContent, Typography, Avatar, List, ListItem, ListItemText, ListItemAvatar, CircularProgress, Stack, Divider } from '@mui/material';
-import { People, PersonAddAlt1, EventAvailable, VolunteerActivism, Event, Cake, PendingActions, History } from '@mui/icons-material';
-import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import React from 'react';
+import { Box, Button, List, ListItem, ListItemText, Stack, Typography, useTheme } from '@mui/material';
+import { Calendar, CheckSquare, UserPlus, Users } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import churchApi from '../../services/churchApi';
-
-const GHS = (n: number) => new Intl.NumberFormat('en-GH', { style: 'currency', currency: 'GHS', maximumFractionDigits: 0 }).format(Number(n) || 0);
-
-const Row: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <Stack direction="row" justifyContent="space-between"><Typography variant="body2" color="text.secondary">{label}</Typography><Typography variant="body2" fontWeight={700}>{value}</Typography></Stack>
-);
-
-export const Dashboard: React.FC = () => {
-  const [d, setD] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => { churchApi.getDashboard().then(setD).catch((e) => console.error(e)).finally(() => setLoading(false)); }, []);
-  if (loading) return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}><CircularProgress /></Box>;
-  const data = d || {}; const giving = data.giving || {};
-  const stats = [
-    { label: 'Total Members', value: data.members ?? 0, icon: <People />, color: '#6366f1' },
-    { label: 'Visitors', value: data.visitors ?? 0, icon: <PersonAddAlt1 />, color: '#06b6d4' },
-    { label: 'Attendance Today', value: data.attendanceToday ?? 0, icon: <EventAvailable />, color: '#22c55e' },
-    { label: 'Giving (This Month)', value: GHS(giving.thisMonth || 0), icon: <VolunteerActivism />, color: '#f59e0b' },
-    { label: 'Upcoming Events', value: data.upcomingEvents ?? 0, icon: <Event />, color: '#a855f7' },
-    { label: 'Pending Approvals', value: data.pendingApprovals ?? 0, icon: <PendingActions />, color: '#ef4444' },
-  ];
-  return (
-    <Box>
-      <Typography variant="h4" fontWeight={800} gutterBottom>Church Dashboard</Typography>
-      <Typography color="text.secondary" sx={{ mb: 3 }}>A live overview of your church community and activity.</Typography>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        {stats.map((s) => (<Grid size={{ xs: 12, sm: 6, md: 4 }} key={s.label}><Card variant="outlined"><CardContent>
-          <Stack direction="row" spacing={2} alignItems="center">
-            <Avatar sx={{ bgcolor: s.color }}>{s.icon}</Avatar>
-            <Box><Typography variant="body2" color="text.secondary">{s.label}</Typography><Typography variant="h5" fontWeight={800}>{s.value}</Typography></Box>
-          </Stack>
-        </CardContent></Card></Grid>))}
-      </Grid>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid size={{ xs: 12, md: 8 }}><Card variant="outlined"><CardContent>
-          <Typography fontWeight={700} gutterBottom>Giving Trend (last 6 months)</Typography>
-          <ResponsiveContainer width="100%" height={260}><AreaChart data={data.charts?.giving || []}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><RTooltip formatter={(v: any) => GHS(v)} /><Area dataKey="total" stroke="#6366f1" fill="#6366f1" fillOpacity={0.2} /></AreaChart></ResponsiveContainer>
-        </CardContent></Card></Grid>
-        <Grid size={{ xs: 12, md: 4 }}><Card variant="outlined"><CardContent>
-          <Typography fontWeight={700} gutterBottom>Giving Summary</Typography>
-          <Stack spacing={1}>
-            <Row label="This Week" value={GHS(giving.thisWeek || 0)} />
-            <Row label="This Month" value={GHS(giving.thisMonth || 0)} />
-            <Row label="All Time" value={GHS(giving.total || 0)} />
-          </Stack>
-          <Divider sx={{ my: 1.5 }} />
-          {(giving.byPurpose || []).slice(0, 5).map((p: any) => <Row key={p.purpose} label={p.purpose} value={GHS(p.total)} />)}
-        </CardContent></Card></Grid>
-      </Grid>
-      <Grid container spacing={2}>
-        <Grid size={{ xs: 12, md: 4 }}><Card variant="outlined"><CardContent>
-          <Typography fontWeight={700} gutterBottom>Attendance (last 6 weeks)</Typography>
-          <ResponsiveContainer width="100%" height={220}><LineChart data={data.charts?.attendance || []}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="week" /><YAxis /><RTooltip /><Line dataKey="attendance" stroke="#22c55e" strokeWidth={2} /></LineChart></ResponsiveContainer>
-        </CardContent></Card></Grid>
-        <Grid size={{ xs: 12, md: 4 }}><Card variant="outlined"><CardContent>
-          <Typography fontWeight={700} gutterBottom>Upcoming Events</Typography>
-          <List dense>{(data.upcomingEventsList || []).length === 0 && <Typography variant="body2" color="text.secondary">No upcoming events.</Typography>}
-            {(data.upcomingEventsList || []).map((e: any) => <ListItem key={e.id} disableGutters><ListItemAvatar><Avatar sx={{ bgcolor: '#a855f7' }}><Event /></Avatar></ListItemAvatar><ListItemText primary={e.title || e.name} secondary={e.startTime ? new Date(e.startTime).toLocaleString() : ''} /></ListItem>)}</List>
-        </CardContent></Card></Grid>
-        <Grid size={{ xs: 12, md: 4 }}><Card variant="outlined"><CardContent>
-          <Typography fontWeight={700} gutterBottom>Birthdays & Anniversaries</Typography>
-          <List dense>
-            {((data.birthdays || []).length + (data.anniversaries || []).length) === 0 && <Typography variant="body2" color="text.secondary">None this month.</Typography>}
-            {(data.birthdays || []).map((b: any) => <ListItem key={'b' + b.id} disableGutters><ListItemAvatar><Avatar sx={{ bgcolor: '#ec4899' }}><Cake /></Avatar></ListItemAvatar><ListItemText primary={b.name} secondary={`Birthday \u2022 ${b.date ? new Date(b.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''}`} /></ListItem>)}
-            {(data.anniversaries || []).map((a: any) => <ListItem key={'a' + a.id} disableGutters><ListItemAvatar><Avatar sx={{ bgcolor: '#f59e0b' }}><Cake /></Avatar></ListItemAvatar><ListItemText primary={a.name} secondary={`Anniversary \u2022 ${a.date ? new Date(a.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''}`} /></ListItem>)}
-          </List>
-        </CardContent></Card></Grid>
-        <Grid size={{ xs: 12 }}><Card variant="outlined"><CardContent>
-          <Typography fontWeight={700} gutterBottom>Recent Activities</Typography>
-          <List dense>{(data.recentActivities || []).length === 0 && <Typography variant="body2" color="text.secondary">No recent activity.</Typography>}
-            {(data.recentActivities || []).map((r: any, i: number) => <ListItem key={r.id || i} disableGutters><ListItemAvatar><Avatar sx={{ bgcolor: '#64748b' }}><History /></Avatar></ListItemAvatar><ListItemText primary={`${r.userName || 'System'} ${r.action} ${r.entity}`} secondary={r.createdAt ? new Date(r.createdAt).toLocaleString() : ''} /></ListItem>)}</List>
-        </CardContent></Card></Grid>
-      </Grid>
-    </Box>
-  );
-};
-
+import { useWorkspaceData, WorkspaceActions, WorkspaceHero, WorkspaceMetrics, WorkspacePanel, WorkspaceStatus } from '../../components/workspace/WorkspaceParts';
+export function Dashboard() {
+    const state = useWorkspaceData(() => churchApi.getDashboard()), navigate = useNavigate(), theme = useTheme(), { user } = useAuth(), d = state.data;
+    return <Stack spacing={3}><WorkspaceHero eyebrow="Church administration" title="A connected church. A clearer day." description={`Welcome, ${user?.name?.split(' ')[0] || 'administrator'}. Find your people, prepare your services and keep church operations moving.`} action={<Button variant="contained" onClick={() => navigate('/church/members')}>Manage members</Button>}/><WorkspaceActions items={[{ label: 'Member records', path: '/church/members', description: 'Register, search and manage profiles' }, { label: 'Prepare attendance', path: '/church/attendance', description: 'Service registers and check-in' }, { label: 'Finance workspace', path: '/finance/dashboard', description: 'Giving, dues, budgets and reports' }, { label: 'Plan an event', path: '/church/events', description: 'Calendar and service arrangements' }]}/><WorkspaceStatus state={state}/>
+ {d && !state.loading && !state.error && <><WorkspaceMetrics items={[{ label: 'Member records', value: d.members ?? 0, hint: 'Recorded in your church', icon: <Users size={18}/> }, { label: 'Visitor records', value: d.visitors ?? 0, hint: 'Welcome and follow up', icon: <UserPlus size={18}/> }, { label: 'Upcoming events', value: d.upcomingEvents ?? 0, hint: 'Future scheduled events', icon: <Calendar size={18}/> }, { label: 'Pending approvals', value: d.pendingApprovals ?? 0, hint: 'Member records awaiting review', icon: <CheckSquare size={18}/> }]}/>
+ <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0,2fr) minmax(0,1fr)' }, gap: 2.5 }}><WorkspacePanel title="Attendance pulse" action={<Button onClick={() => navigate('/church/attendance')}>Open attendance</Button>}><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>{d.attendanceToday ?? 0} recorded check-ins today · Last six weeks</Typography>{d.charts?.attendance?.length ? <ResponsiveContainer width="100%" height={240}><LineChart data={d.charts.attendance}><CartesianGrid stroke={theme.palette.divider} strokeDasharray="3 4" vertical={false}/><XAxis dataKey="week" tick={{ fontSize: 11, fill: theme.palette.text.secondary }}/><YAxis tick={{ fontSize: 11, fill: theme.palette.text.secondary }}/><Tooltip contentStyle={{ background: theme.palette.background.paper, borderColor: theme.palette.divider }}/><Line isAnimationActive={false} dataKey="attendance" name="Recorded attendance" stroke="#58b58d" strokeWidth={2.5}/></LineChart></ResponsiveContainer> : <Typography color="text.secondary">No attendance trend recorded yet.</Typography>}</WorkspacePanel><WorkspacePanel title="Upcoming gatherings" action={<Button onClick={() => navigate('/church/events')}>Calendar</Button>}><List dense>{(d.upcomingEventsList || []).map((e: any) => <ListItem key={e.id} disableGutters><ListItemText primary={e.title || e.name} secondary={[e.startTime ? new Date(e.startTime).toLocaleString() : 'Date not set', e.location].filter(Boolean).join(' · ')}/></ListItem>)}{!d.upcomingEventsList?.length && <Typography color="text.secondary">No upcoming events.</Typography>}</List></WorkspacePanel></Box>
+ <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(2,minmax(0,1fr))' }, gap: 2.5 }}><WorkspacePanel title="Birthdays & anniversaries"><List dense>{[...(d.birthdays || []).map((r: any) => ({ ...r, kind: 'Birthday' })), ...(d.anniversaries || []).map((r: any) => ({ ...r, kind: 'Anniversary' }))].map((r: any) => <ListItem key={r.kind + r.id} disableGutters><ListItemText primary={r.name} secondary={`${r.kind} · ${r.date ? new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'This month'}`}/></ListItem>)}{!(d.birthdays?.length || d.anniversaries?.length) && <Typography color="text.secondary">No dates recorded for this month.</Typography>}</List></WorkspacePanel><WorkspacePanel title="Recent activity" action={<Button onClick={() => navigate('/church/audit')}>Audit & security</Button>}><List dense>{(d.recentActivities || []).map((r: any, i: number) => <ListItem key={r.id || i} disableGutters><ListItemText primary={`${r.userName || 'System'} · ${r.action || ''} ${r.entity || ''}`} secondary={r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}/></ListItem>)}{!d.recentActivities?.length && <Typography color="text.secondary">No recent activity recorded.</Typography>}</List></WorkspacePanel></Box><Typography variant="caption" color="text.secondary">For currency-separated giving, dues and paid-expense totals, use the Finance workspace. Counts reflect recorded data, not an audit.</Typography></>}
+ </Stack>;
+}
 export default Dashboard;

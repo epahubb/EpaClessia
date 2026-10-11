@@ -46,7 +46,7 @@ const MinistryEvents: React.FC = () => {
       try {
         const list = await ministryLeaderService.getManagedMinistries();
         setMinistries(list || []);
-        if (list && list.length > 0) setMinistryId(list[0].id);
+        if (list && list.length > 0) setMinistryId(list.some(m=>m.id===new URLSearchParams(window.location.search).get('ministryId'))?new URLSearchParams(window.location.search).get('ministryId')!:list[0].id);
         else setLoading(false);
       } catch {
         setToast({ msg: 'Failed to load ministries', sev: 'error' });
@@ -110,8 +110,8 @@ const MinistryEvents: React.FC = () => {
         <Stack direction="row" spacing={2} alignItems="center">
           {ministries.length > 0 && (
             <FormControl size="small" sx={{ minWidth: 200 }}>
-              <InputLabel>Ministry</InputLabel>
-              <Select value={ministryId} label="Ministry" onChange={(e) => setMinistryId(e.target.value)}>
+              <InputLabel id="ministry-selector-label">Ministry</InputLabel>
+              <Select labelId="ministry-selector-label" value={ministryId} label="Ministry" onChange={(e) => setMinistryId(e.target.value)}>
                 {ministries.map((m) => (
                   <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>
                 ))}
