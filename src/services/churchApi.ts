@@ -91,6 +91,13 @@ export const churchApi = {
 
   // Members
   getMembers: async (params?: any) => unwrap((await api.get('/church/members', { params })).data),
+  /**
+   * A compact, unpaginated member list for pickers. The table endpoint caps a
+   * page at 500, which is why dropdowns that asked for 2,000 members quietly
+   * came back empty; this one returns names and contact details up to 5,000.
+   */
+  getMemberOptions: async (q?: string) =>
+    unwrap((await api.get('/church/members/options', { params: q ? { q } : undefined })).data),
   getMembersPage: async (params: { page: number; limit: number; search: string }) =>
     (await api.get('/church/members', { params: { ...params, sort: 'newest' } })).data,
   getMemberDetails: async (id: string) => (await api.get(`/church/members/${id}/details`)).data,
@@ -147,6 +154,22 @@ export const churchApi = {
   createMinistry: async (data: any) => (await api.post('/church/ministries', data)).data,
   updateMinistry: async (id: string, data: any) => (await api.put(`/church/ministries/${id}`, data)).data,
   deleteMinistry: async (id: string) => (await api.delete(`/church/ministries/${id}`)).data,
+
+  // ---- Roster management for a ministry / department ----
+  getMinistryMembers: async (id: string) =>
+    (await api.get(`/church/ministries/${id}/members`)).data,
+  addMinistryMembers: async (id: string, memberIds: string[]) =>
+    (await api.post(`/church/ministries/${id}/members`, { memberIds })).data,
+  removeMinistryMember: async (id: string, memberId: string) =>
+    (await api.delete(`/church/ministries/${id}/members/${memberId}`)).data,
+
+  // ---- Roster management for a group ----
+  getGroupMembers: async (id: string) =>
+    (await api.get(`/church/groups/${id}/members`)).data,
+  addGroupMembers: async (id: string, memberIds: string[]) =>
+    (await api.post(`/church/groups/${id}/members`, { memberIds })).data,
+  removeGroupMember: async (id: string, memberId: string) =>
+    (await api.delete(`/church/groups/${id}/members/${memberId}`)).data,
 
   // Events + attendance
   getEvents: async () => unwrap((await api.get('/church/events')).data),
@@ -214,7 +237,28 @@ export const churchApi = {
   createUser: async (data: any) => (await api.post('/church/users', data)).data,
   updateUser: async (uid: string, data: any) => (await api.put(`/church/users/${uid}`, data)).data,
   deleteUser: async (uid: string) => (await api.delete(`/church/users/${uid}`)).data,
+  /** Set or generate a new password for a staff/leader account. */
+  resetUserPassword: async (uid: string, password?: string) =>
+    (await api.post(`/church/users/${uid}/reset-password`, password ? { password } : {})).data,
   getRoles: async () => unwrap((await api.get('/church/roles')).data),
+
+  // ---- Meeting minutes ----
+  getMinuteContext: async (): Promise<{
+    manager: boolean;
+    scopes: Array<{ scopeType: string; scopeId: string | null; label: string }>;
+  }> => (await api.get('/church/minutes/context')).data,
+  getMinutes: async (params?: {
+    scopeType?: string;
+    scopeId?: string;
+    status?: string;
+    from?: string;
+    to?: string;
+    q?: string;
+  }) => (await api.get('/church/minutes', { params })).data,
+  getMinute: async (id: string) => (await api.get(`/church/minutes/${id}`)).data,
+  createMinute: async (data: any) => (await api.post('/church/minutes', data)).data,
+  updateMinute: async (id: string, data: any) => (await api.put(`/church/minutes/${id}`, data)).data,
+  deleteMinute: async (id: string) => (await api.delete(`/church/minutes/${id}`)).data,
 
   /**
    * Read this church's role -> permission matrix. Roles the church has not

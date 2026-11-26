@@ -65,6 +65,7 @@ const ChurchSettingsPage = lazy(() => import('./pages/church/Settings'));
 const MemberEngagementPage = lazy(() => import('./pages/church/MemberEngagement'));
 const UnitStatisticsPage = lazy(() => import('./pages/church/UnitStatistics'));
 const ChurchRegistersPage = lazy(() => import('./pages/church/Registers'));
+const MinutesPage = lazy(() => import('./pages/church/Minutes'));
 const ChurchConfigurationPage = lazy(() => import('./pages/ChurchConfiguration'));
 const AbsenceSurveyPage = lazy(() => import('./pages/AbsenceSurvey'));
 const ActivateAccountPage = lazy(() => import('./pages/ActivateAccount'));
@@ -150,6 +151,7 @@ const App: React.FC = () => {
             <Route path="/church/reports" element={<ChurchReportsPage />} />
             <Route path="/church/audit" element={<ChurchAuditPage />} />
             <Route path="/church/registers" element={<ChurchRegistersPage />} />
+            <Route path="/church/minutes" element={<MinutesPage />} />
             <Route path="/church/statistics" element={<UnitStatisticsPage />} />
             <Route path="/church/engagement" element={<MemberEngagementPage />} />
             <Route path="/church/settings" element={<ChurchSettingsPage />} />
@@ -164,6 +166,7 @@ const App: React.FC = () => {
             <Route path="/pastor/visitation" element={<PastorVisitation />} />
             <Route path="/pastor/counseling" element={<PastorCounseling />} />
             <Route path="/pastor/reports" element={<PastorReports />} />
+            <Route path="/pastor/minutes" element={<MinutesPage />} />
             <Route path="/pastor/communication" element={<PastorCommunication />} />
             <Route path="/pastor" element={<Navigate to="/pastor/dashboard" replace />} />
           </Route>
@@ -176,6 +179,7 @@ const App: React.FC = () => {
             <Route path="/ministry/events" element={<MinistryEvents />} />
             <Route path="/ministry/communication" element={<MinistryCommunication />} />
             <Route path="/ministry/reports" element={<MinistryReports />} />
+            <Route path="/ministry/minutes" element={<MinutesPage />} />
             <Route path="/ministry" element={<Navigate to="/ministry/dashboard" replace />} />
           </Route>
 
@@ -187,6 +191,7 @@ const App: React.FC = () => {
             <Route path="followups" element={<GroupLeaderPortal initialTab={2} />} />
             <Route path="statistics" element={<GroupLeaderPortal initialTab={3} />} />
             <Route path="communication" element={<GroupLeaderPortal initialTab={4} />} />
+            <Route path="minutes" element={<MinutesPage />} />
           </Route>
 
           {/* Member Portal */}
@@ -238,6 +243,7 @@ const App: React.FC = () => {
             <Route path="/secretary/members" element={<MemberList />} />
             <Route path="/secretary/visitors" element={<ChurchVisitorsPage />} />
             <Route path="/secretary/events" element={<ChurchEventsPage />} />
+            <Route path="/secretary/minutes" element={<MinutesPage />} />
             <Route path="/secretary" element={<Navigate to="/secretary/dashboard" replace />} />
           </Route>
 

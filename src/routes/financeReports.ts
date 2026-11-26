@@ -51,4 +51,71 @@ router.patch('/invoices/:id', handle(async (req: AuthRequest, res: any) => {
   const updated = await db('church_finance_invoices').where({ id: req.params.id, tenantId: req.user!.tenantId }).update({ status: req.body.status });
   if (!updated) return res.status(404).json({ error: 'Invoice not found.' }); res.json({ success: true });
 }));
+
+/**
+ * GET /receipts/:kind/:id -- the canonical data behind a printable receipt.
+ *
+ * A receipt must show exactly what was recorded, so it is assembled on the
+ * server from the giving or dues row rather than from fields the browser may
+ * have altered. The receipt number is derived from the payment's own reference
+ * (or its id when there is none), which makes it stable: printing the same
+ * payment twice produces the same receipt number.
+ */
+router.get('/receipts/:kind/:id', handle(async (req: AuthRequest, res: any) => {
+  const tenantId = req.user!.tenantId;
+  const kind = String(req.params.kind || '');
+  if (!['giving', 'dues'].includes(kind)) return res.status(400).json({ error: 'Unknown receipt type.' });
+
+  let record: any = null;
+  if (kind === 'giving') {
+    record = await db('donations').where({ id: req.params.id, tenantId }).first();
+  } else {
+    record = await db('member_dues_payments as p')
+      .leftJoin('members as m', function () { this.on('m.id', '=', 'p.memberId').andOn('m.tenantId', '=', 'p.tenantId'); })
+      .leftJoin('member_dues as d', function () { this.on('d.id', '=', 'p.duesId').andOn('d.tenantId', '=', 'p.tenantId'); })
+      .where('p.id', req.params.id)
+      .andWhere('p.tenantId', tenantId)
+      .select('p.*', 'm.firstName', 'm.lastName', 'm.membershipId', 'd.name as duesName')
+      .first();
+  }
+  if (!record) return res.status(404).json({ error: 'That payment could not be found.' });
+
+  const church = await db('tenants').where({ id: tenantId }).first();
+  const paidAt = record.receivedAt || record.paidAt || record.createdAt || new Date();
+  const reference = record.reference || record.transactionId || record.transferReference || record.externalReference || record.id;
+  const suffix = String(reference).replace(/[^A-Za-z0-9]/g, '').slice(-10).toUpperCase();
+  const receiptNumber = `RCPT-${new Date(paidAt).getFullYear()}-${suffix || String(record.id).slice(-8).toUpperCase()}`;
+
+  res.json({
+    receiptNumber,
+    kind,
+    issuedAt: new Date(paidAt).toISOString(),
+    church: {
+      name: church?.name || 'Church',
+      logo: toDataUrl(church?.logoImage, church?.logoMimeType) || church?.logo || null,
+      phone: church?.phone || null,
+      email: church?.contactEmail || church?.adminEmail || null,
+      address: [church?.street || church?.address_line1, church?.city, church?.state, church?.country].filter(Boolean).join(', ') || church?.address || null,
+      website: church?.websiteUrl || null,
+    },
+    payer: {
+      name: kind === 'giving'
+        ? (record.donorName || 'Anonymous')
+        : (`${record.firstName || ''} ${record.lastName || ''}`.trim() || 'Member'),
+      memberId: kind === 'dues' ? (record.membershipId || null) : null,
+      email: record.email || null,
+    },
+    category: kind === 'giving' ? 'Giving / offering' : 'Member dues',
+    purpose: kind === 'giving'
+      ? (record.purpose || 'General')
+      : ([record.duesName, record.collectionPeriod].filter(Boolean).join(' · ') || 'Member dues'),
+    amount: Number(record.amount || 0),
+    currency: record.currency || 'GHS',
+    method: record.paymentMethod || '—',
+    reference: String(reference),
+    status: record.status || 'completed',
+    receivedBy: req.user?.name || req.user?.email || null,
+  });
+}));
+
 export default router;

@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Box, Typography, Tabs, Tab, Grid, Card, CardContent, Chip, List, ListItem,
   ListItemText, Divider, Checkbox, FormControlLabel, Button, Alert,
-  CircularProgress, Stack,
+  CircularProgress, Stack, Dialog, DialogTitle, DialogContent, DialogActions,
+  TextField, Tooltip, IconButton,
 } from '@mui/material';
+import { KeyRound } from 'lucide-react';
 import CrudTable from '../../components/church/CrudTable';
 import churchApi from '../../services/churchApi';
 
@@ -203,6 +205,77 @@ const LoginHistory: React.FC = () => {
   );
 };
 
+/**
+ * Reset another account's password.
+ *
+ * The administrator can type a password to hand over, or leave the box empty
+ * and receive a generated temporary one. The value is shown once, in this
+ * dialog, and never written into the user list.
+ */
+const ResetPasswordButton = ({ row }: { row: any }) => {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState('');
+
+  const submit = async () => {
+    setBusy(true);
+    setError('');
+    setResult('');
+    try {
+      const res = await churchApi.resetUserPassword(row.uid, password.trim() || undefined);
+      setResult(
+        res?.temporaryPassword
+          ? `New temporary password: ${res.temporaryPassword}`
+          : res?.message || 'The password was updated.',
+      );
+      setPassword('');
+    } catch (e: any) {
+      setError(e?.friendlyMessage || 'This password could not be reset.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Tooltip title="Reset this user's password">
+        <IconButton
+          size="small"
+          onClick={() => { setOpen(true); setResult(''); setError(''); setPassword(''); }}
+        >
+          <KeyRound size={16} />
+        </IconButton>
+      </Tooltip>
+      <Dialog open={open} onClose={() => { if (!busy) setOpen(false); }} fullWidth maxWidth="xs">
+        <DialogTitle>Reset password — {row.name || row.email}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            {error && <Alert severity="error" onClose={() => setError('')}>{error}</Alert>}
+            {result && <Alert severity="success" onClose={() => setResult('')}>{result}</Alert>}
+            <TextField
+              label="Set a password (optional)"
+              type="text"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              helperText="Leave blank to generate a temporary password. Minimum 8 characters."
+              fullWidth
+            />
+            <Typography variant="caption" color="text.secondary">
+              The account holder will be asked to change this password when they sign in.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={busy} onClick={() => setOpen(false)}>Close</Button>
+          <Button variant="contained" disabled={busy} onClick={submit}>{busy ? 'Saving…' : 'Reset password'}</Button>
+        </DialogActions>
+      </Dialog>
+    </>
+  );
+};
+
 export const UsersPermissions: React.FC = () => {
   const [tab, setTab] = useState(0);
   const cols: any[] = [
@@ -226,7 +299,7 @@ export const UsersPermissions: React.FC = () => {
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
         <Tab label="User Accounts" /><Tab label="Roles &amp; Permissions" /><Tab label="Login History" />
       </Tabs>
-      {tab === 0 && <CrudTable idKey="uid" columns={cols} fields={fields} fetchRows={() => churchApi.getUsers()} createRow={churchApi.createUser} updateRow={churchApi.updateUser} deleteRow={churchApi.deleteUser} addLabel="Add User" />}
+      {tab === 0 && <CrudTable idKey="uid" columns={cols} fields={fields} fetchRows={() => churchApi.getUsers()} createRow={churchApi.createUser} updateRow={churchApi.updateUser} deleteRow={churchApi.deleteUser} addLabel="Add User" rowActions={(row: any) => (row.role === 'SUPER_ADMIN' ? null : <ResetPasswordButton row={row} />)} />}
       {tab === 1 && <Roles />}
       {tab === 2 && <LoginHistory />}
     </Box>

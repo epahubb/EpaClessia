@@ -87,7 +87,7 @@ export default function CommunicationCenter({ title = 'Communication' }: { title
     setLoading(true);
     try {
       const [mem, min, hist, bal] = await Promise.all([
-        churchApi.getMembers().catch(() => []),
+        churchApi.getMemberOptions().catch(() => []),
         churchApi.getMinistries().catch(() => []),
         churchApi.getCommunications().catch(() => []),
         churchApi.getSmsBalance().catch(() => ({ credits: 0 })),

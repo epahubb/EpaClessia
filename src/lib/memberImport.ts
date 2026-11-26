@@ -101,7 +101,12 @@ export function parseImportDate(value: unknown): string | null {
   if (typeof value === 'number' && isFinite(value)) {
     // Plausible Excel serial range: 1900-01-01 (1) to about year 2200.
     if (value <= 0 || value > 120000) return null;
-    const ms = (value - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY;
+    // Excel pretends 1900 was a leap year, so serials before the phantom
+    // 1900-02-29 are one day out from the 1899-12-30 epoch. Correcting only
+    // those serials keeps old birthdays accurate instead of silently moving
+    // them; from serial 61 onward the usual epoch conversion is exact.
+    const corrected = value < 60 ? value + 1 : value;
+    const ms = (corrected - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY;
     const date = new Date(Math.round(ms));
     return isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
   }

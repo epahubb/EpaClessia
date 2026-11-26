@@ -5,6 +5,7 @@ import CrudTable from '../../components/church/CrudTable';
 import api from '../../services/api';
 import { financeMoney } from '../../lib/financeLedger';
 import FinanceDocuments from './FinanceDocuments';
+import ReceiptDialog from '../../components/finance/ReceiptDialog';
 import churchApi from '../../services/churchApi';
 
 const GHS = (n: number) => new Intl.NumberFormat('en-GH', { style: 'currency', currency: 'GHS', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
@@ -202,6 +203,8 @@ export const Finance: React.FC<{ section?: number }> = ({ section }) => {
   const [purposes, setPurposes] = useState<string[]>(DEFAULT_PURPOSES);
   const [categories, setCategories] = useState<string[]>([]);
   const [members, setMembers] = useState<{ value: string; label: string }[]>([]);
+  /** The payment whose printable receipt is open, if any. */
+  const [receipt, setReceipt] = useState<{ kind: 'giving' | 'dues'; id: string } | null>(null);
 
   const loadLists = () => {
     if (section == null || section === 7) churchApi.getDues().then(setDuesSchedules).catch(() => setDuesSchedules([]));
@@ -410,7 +413,7 @@ export const Finance: React.FC<{ section?: number }> = ({ section }) => {
       {section == null && <><Typography variant="h4" fontWeight={800} gutterBottom>Finance</Typography><Typography color="text.secondary" sx={{ mb: 2 }}>Tithes, offerings, donations, pledges, welfare, expenses, budgets, inventory and reports.</Typography><Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ mb: 2 }}>{tabDefs.map(t => <Tab key={t} label={t} />)}</Tabs></>}
       {tab === 0 && <Overview />}
       {tab === 10 && <FinanceDocuments />}
-      {tab === 1 && <CrudTable searchable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} createRow={withRememberedPurpose(churchApi.addGiving, 'giving')} addLabel="Record Giving" emptyText="No giving records yet." />}
+      {tab === 1 && <CrudTable searchable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} createRow={withRememberedPurpose(churchApi.addGiving, 'giving')} addLabel="Record Giving" emptyText="No giving records yet." rowActions={(r: any) => <Button size="small" onClick={() => setReceipt({ kind: 'giving', id: r.id })}>Receipt</Button>} />}
       {tab === 2 && <CrudTable searchable columns={pledgeCols} fields={pledgeFields} fetchRows={() => churchApi.getPledges()} createRow={withRememberedPurpose(churchApi.createPledge, 'pledge')} updateRow={churchApi.updatePledge} deleteRow={churchApi.deletePledge} addLabel="Add Pledge" />}
       {tab === 3 && <CrudTable searchable columns={expenseCols} fields={expenseFields} fetchRows={() => churchApi.getExpenses()} createRow={churchApi.createExpense} updateRow={churchApi.updateExpense} deleteRow={churchApi.deleteExpense} addLabel="Record Expense" />}
       {tab === 4 && <CrudTable searchable columns={budgetCols} fields={budgetFields} fetchRows={() => churchApi.getBudgets()} createRow={churchApi.createBudget} updateRow={churchApi.updateBudget} deleteRow={churchApi.deleteBudget} addLabel="Add Budget Line" />}
@@ -433,10 +436,11 @@ export const Finance: React.FC<{ section?: number }> = ({ section }) => {
       {tab === 7 && <Stack spacing={3}>
         <Alert severity="info">Set the dues schedule below, then use Record Dues Payment for money already received. These payments appear in the member’s dues history. This does not charge the member online or create a donation.</Alert>
         <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues schedules</Typography><CrudTable searchable columns={duesCols} fields={duesFields} fetchRows={() => churchApi.getDues()} createRow={async d => { const r = await churchApi.createDues(d); loadLists(); return r; }} updateRow={async (id, d) => { const r = await churchApi.updateDues(id, d); loadLists(); return r; }} deleteRow={async id => { const r = await churchApi.deleteDues(id); loadLists(); return r; }} addLabel="Set Member Dues" emptyText="No member dues have been set." /></Box>
-        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues payments</Typography><CrudTable searchable columns={duesPaymentCols} fields={duesPaymentFields} fetchRows={() => api.get('/church/dues-payments').then(r => r.data.data)} createRow={recordDuesPayment} onDialogOpen={() => { duesPaymentRequestId.current = null; }} addLabel="Record Dues Payment" emptyText="No dues payments recorded yet." /></Box>
+        <Box><Typography variant="h6" sx={{ mb: 1 }}>Dues payments</Typography><CrudTable searchable columns={duesPaymentCols} fields={duesPaymentFields} fetchRows={() => api.get('/church/dues-payments').then(r => r.data.data)} createRow={recordDuesPayment} onDialogOpen={() => { duesPaymentRequestId.current = null; }} addLabel="Record Dues Payment" emptyText="No dues payments recorded yet." rowActions={(r: any) => <Button size="small" onClick={() => setReceipt({ kind: 'dues', id: r.id })}>Receipt</Button>} /></Box>
       </Stack>}
       {tab === 8 && <ServiceChargesPanel />}
-      {tab === 9 && <CrudTable searchable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." />}
+      {tab === 9 && <CrudTable searchable columns={givingCols} fields={givingFields} fetchRows={() => churchApi.getGiving()} emptyText="No payment history yet." rowActions={(r: any) => <Button size="small" onClick={() => setReceipt({ kind: 'giving', id: r.id })}>Receipt</Button>} />}
+      {receipt && <ReceiptDialog kind={receipt.kind} recordId={receipt.id} onClose={() => setReceipt(null)} />}
     </Box>
   );
 };

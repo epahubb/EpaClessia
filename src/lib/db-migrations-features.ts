@@ -657,6 +657,45 @@ export async function applyFeatureMigrations(db: Knex): Promise<void> {
     });
     console.log('Table "absence_surveys" created.');
   }
+  /* ---------------------------------------------------------------- */
+  /* Meeting minutes                                                  */
+  /* ---------------------------------------------------------------- */
+  // Minutes are a first-class record, not a note on an event: a secretary or
+  // leader writes them once, they are approved, and they are printed with the
+  // church's own letterhead. Keeping them in their own table means they can be
+  // listed, searched and printed years later.
+  if (!(await db.schema.hasTable('minutes'))) {
+    await db.schema.createTable('minutes', (t) => {
+      t.string('id').primary();
+      t.string('tenantId').notNullable();
+      t.string('title').notNullable();
+      // church | ministry | department | group
+      t.string('scopeType').defaultTo('church');
+      t.string('scopeId');
+      // Snapshot of the unit name, so a renamed or retired unit still reads
+      // correctly in an old minute.
+      t.string('scopeName');
+      t.string('meetingType');
+      t.timestamp('meetingDate');
+      t.string('venue');
+      t.string('chairperson');
+      t.string('secretary');
+      t.text('attendees');
+      t.text('absentees');
+      t.text('agenda');
+      t.text('content');
+      t.text('resolutions');
+      t.string('status').defaultTo('draft'); // draft | final
+      t.string('createdBy');
+      t.string('createdByName');
+      t.timestamp('createdAt').defaultTo(db.fn.now());
+      t.timestamp('updatedAt').defaultTo(db.fn.now());
+      t.index(['tenantId', 'meetingDate']);
+      t.index(['tenantId', 'scopeType', 'scopeId']);
+    });
+    console.log('Table "minutes" created.');
+  }
+
   await migrateMemberIds(db);
   await migrateOperations(db);
 }

@@ -282,7 +282,7 @@ export const MemberList: React.FC = () => {
       if (wants('family')) {
         try {
           // Used to link a spouse or a child to their own member record.
-          const rows = await churchApi.getMembers({ limit: 500 });
+          const rows = await churchApi.getMemberOptions();
           if (!cancelled) {
             setPeople(
               (rows || []).map((m: any) => ({

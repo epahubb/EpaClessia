@@ -283,7 +283,7 @@ function DocumentsDialog({
           <Box>
             <Typography variant="h6">Paperwork</Typography>
             <Typography variant="caption" color="text.secondary">
-              {entry.memberName} \u00b7 {shortDate(entry.date)}
+              {entry.memberName} · {shortDate(entry.date)}
             </Typography>
           </Box>
           <IconButton size="small" onClick={onClose}>
@@ -463,7 +463,7 @@ function ClassesDialog({
         )}
 
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Name each intake once \u2014 "January 2026 intake", "Easter convention class" \u2014 and it
+          Name each intake once — "January 2026 intake", "Easter convention class" — and it
           becomes a choice on the converts register. A class with converts enrolled in it is closed
           rather than deleted, so their enrolment is never left pointing at nothing.
         </Typography>
@@ -566,16 +566,16 @@ export function RegistersPage() {
       .catch((e: any) => setError(e?.friendlyMessage || 'Could not load the registers.'));
 
     churchApi
-      .getMembers({ limit: 2000 })
+      .getMemberOptions()
       .then((list: any[]) =>
         setMembers(
           (list || []).map((m: any) => ({
             id: m.id,
-            label: [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || m.id,
+            label: [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || m.membershipId || m.id,
           })),
         ),
       )
-      .catch(() => undefined);
+      .catch((e: any) => setError(e?.friendlyMessage || 'Could not load the member list.'));
 
     churchApi
       .getOffices()
@@ -834,7 +834,7 @@ export function RegistersPage() {
                 <TextField
                   fullWidth
                   size="small"
-                  placeholder="Search names and particulars\u2026"
+                  placeholder="Search names and particulars…"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   InputProps={{
@@ -1135,7 +1135,7 @@ export function RegistersPage() {
 
             {current.documentKinds?.length ? (
               <Alert severity="info" icon={<Paperclip size={16} />} sx={{ mt: 2 }}>
-                Once the entry is filed you can attach the paperwork. It is never required \u2014 file
+                Once the entry is filed you can attach the paperwork. It is never required — file
                 the fact now and attach the document whenever it arrives.
               </Alert>
             ) : null}

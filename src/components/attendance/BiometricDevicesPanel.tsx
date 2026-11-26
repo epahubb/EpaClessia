@@ -117,7 +117,7 @@ export const BiometricDevicesPanel: React.FC = () => {
     setLinkPunch(p);
     setLinkMemberId('');
     if (members.length === 0) {
-      try { setMembers(await churchApi.getMembers()); } catch { /* list stays empty */ }
+      try { setMembers(await churchApi.getMemberOptions()); } catch { /* list stays empty */ }
     }
   };
 

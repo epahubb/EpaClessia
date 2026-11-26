@@ -100,7 +100,7 @@ const Assignments: React.FC = () => {
       const [a, p, m, mi] = await Promise.all([
         churchApi.getPositionAssignments().catch(() => []),
         churchApi.getPositions().catch(() => []),
-        churchApi.getMembers({ limit: 500 }).catch(() => []),
+        churchApi.getMemberOptions().catch(() => []),
         churchApi.getMinistries().catch(() => []),
       ]);
       setAssignments(Array.isArray(a) ? a : []);

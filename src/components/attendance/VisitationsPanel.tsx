@@ -121,7 +121,7 @@ const VisitationsPanel: React.FC = () => {
 
   useEffect(() => {
     churchApi.getUnits().then(setUnits).catch(() => setUnits([]));
-    churchApi.getMembers().then((rows: any[]) => setMembers(rows || [])).catch(() => setMembers([]));
+    churchApi.getMemberOptions().then((rows: any[]) => setMembers(rows || [])).catch(() => setMembers([]));
   }, []);
 
   const submit = async () => {

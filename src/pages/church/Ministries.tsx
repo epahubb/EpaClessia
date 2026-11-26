@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Box, Typography, Tabs, Tab, Chip } from '@mui/material';
 import CrudTable from '../../components/church/CrudTable';
 import MinistryDetailPanel from '../../components/church/MinistryDetailPanel';
+import UnitMembersDialog from '../../components/church/UnitMembersDialog';
 import { Button } from '@mui/material';
 import churchApi from '../../services/churchApi';
 
@@ -20,6 +21,7 @@ const tabs = [
 export const Ministries: React.FC = () => {
   const [selected, setSelected] = useState<any>(null);
   const [selectedGroup, setSelectedGroup] = useState<any>(null);
+  const [membersFor, setMembersFor] = useState<{ type: 'ministry' | 'department' | 'group'; unit: any } | null>(null);
   const [leaders, setLeaders] = useState<any[]>([]);
   const loadLeaders = () => { churchApi.getUsers().then(rows => setLeaders(rows.filter((u: any) => ['MEMBER','GROUP_LEADER'].includes(u.role) && u.status === 'active').map((u: any) => ({ value: u.uid, label: u.name || u.email })))).catch(() => {}); };
   useEffect(loadLeaders, []);
@@ -40,7 +42,7 @@ export const Ministries: React.FC = () => {
     { key: 'leaderName', label: 'Leader' },
     { key: 'meets', label: 'Meets', render: (r: any) => [r.meetingDay, r.meetingTime].filter(Boolean).join(' ') || '—' },
     { key: 'location', label: 'Location' },
-    { key: 'memberCount', label: 'Members' },
+    { key: 'memberCount', label: 'Members', render: (r: any) => <Box><Typography variant="body2" fontWeight={700}>{r.memberCount || 0}</Typography>{Array.isArray(r.memberNames) && r.memberNames.length > 0 && <Typography variant="caption" color="text.secondary">{r.memberNames.slice(0, 3).join(', ')}{r.memberNames.length > 3 ? '…' : ''}</Typography>}</Box> },
     { key: 'status', label: 'Status', render: (r: any) => <Chip size="small" label={r.status || 'active'} color={r.status === 'inactive' ? 'default' : 'success'} /> },
   ];
   return (
@@ -50,7 +52,25 @@ export const Ministries: React.FC = () => {
       <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ mb: 2 }}>
         {tabs.map(t => <Tab key={t.type} label={t.label} />)}
       </Tabs>
-      {tab === 2 ? <CrudTable key="groups" columns={[{ key: 'name', label: 'Group', render: r => <Button onClick={() => setSelectedGroup(r)}>{r.name}</Button> }, { key: 'leaderName', label: 'Leader' }, { key: 'memberCount', label: 'Members' }, { key: 'meetingDays', label: 'Meeting days', render: r => r.meetingDays?.join(', ') || '—' }]} fields={groupFields} fetchRows={churchApi.getGroups} createRow={churchApi.createGroup} updateRow={churchApi.updateGroup} deleteRow={churchApi.deleteGroup} onDialogOpen={loadLeaders} addLabel="Add Group" rowActions={r => <Button onClick={() => setSelectedGroup(r)}>Details</Button>} /> : <CrudTable
+      {tab === 2 ? <CrudTable key="groups" columns={[
+        { key: 'name', label: 'Group', render: r => <Button onClick={() => setSelectedGroup(r)}>{r.name}</Button> },
+        { key: 'leaderName', label: 'Leader' },
+        {
+          key: 'memberCount',
+          label: 'Members',
+          render: (r: any) => (
+            <Box>
+              <Typography variant="body2" fontWeight={700}>{r.memberCount || 0}</Typography>
+              {Array.isArray(r.memberNames) && r.memberNames.length > 0 && (
+                <Typography variant="caption" color="text.secondary">
+                  {r.memberNames.slice(0, 3).join(', ')}{r.memberNames.length > 3 ? '…' : ''}
+                </Typography>
+              )}
+            </Box>
+          ),
+        },
+        { key: 'meetingDays', label: 'Meeting days', render: r => r.meetingDays?.join(', ') || '—' },
+      ]} fields={groupFields} fetchRows={churchApi.getGroups} createRow={churchApi.createGroup} updateRow={churchApi.updateGroup} deleteRow={churchApi.deleteGroup} onDialogOpen={loadLeaders} addLabel="Add Group" rowActions={r => <Stack direction="row" gap={0.5} flexWrap="wrap"><Button onClick={() => setSelectedGroup(r)}>Details</Button><Button onClick={() => setMembersFor({ type: 'group', unit: r })}>Members</Button></Stack>} /> : <CrudTable
         key={type}
         columns={columns}
         fields={fields}
@@ -59,10 +79,19 @@ export const Ministries: React.FC = () => {
         updateRow={churchApi.updateMinistry}
         deleteRow={churchApi.deleteMinistry}
         addLabel={['Add Ministry', 'Add Department', 'Add Group', 'Add Cell Ministry'][tab]}
-        rowActions={r => <Button onClick={() => setSelected(r)}>Details</Button>}
+        rowActions={r => <Stack direction="row" gap={0.5} flexWrap="wrap"><Button onClick={() => setSelected(r)}>Details</Button><Button onClick={() => setMembersFor({ type: type === 'department' ? 'department' : 'ministry', unit: r })}>Members</Button></Stack>}
       />}
       <Drawer anchor="right" open={!!selectedGroup} onClose={() => setSelectedGroup(null)} sx={{ zIndex: theme => theme.zIndex.modal, '& .MuiDrawer-paper': { width: { xs: '100%', md: 920 }, maxWidth: '100vw', p: 2 } }}><Stack gap={2}><Button onClick={() => setSelectedGroup(null)}>Close group details</Button>{selectedGroup && <GroupLeaderPortal key={selectedGroup.id} initialGroupId={selectedGroup.id} />}</Stack></Drawer>
       <MinistryDetailPanel ministry={selected} onClose={() => setSelected(null)} />
+      {membersFor && (
+        <UnitMembersDialog
+          open
+          unitType={membersFor.type}
+          unit={membersFor.unit}
+          onClose={() => setMembersFor(null)}
+          onChanged={() => undefined}
+        />
+      )}
     </Box>
   );
 };

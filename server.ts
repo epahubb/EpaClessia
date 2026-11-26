@@ -21,7 +21,7 @@ import { auditLog } from './src/middleware/audit';
 import { JWT_SECRET } from './src/lib/config';
 // Member portal activation: the pending-account message and the token check are
 // pure logic, kept in one place so the route and the tests agree.
-import { PORTAL_PENDING_MESSAGE, checkActivationToken } from './src/lib/memberPortal';
+import { PORTAL_PENDING_MESSAGE, checkActivationToken, validatePortalPassword } from './src/lib/memberPortal';
 import {
   loginSchema,
   signAccessToken,
@@ -563,6 +563,47 @@ async function startServer() {
     } catch (error) {
       console.error('POST /public/absence-survey error:', error);
       res.status(500).json({ error: 'Could not save your response. Please try again.' });
+    }
+  });
+
+  // ---- Change your own password (every signed-in account) ----
+  //
+  // This is deliberately available to every role, including members: without
+  // it a member who was given a temporary password had no way to replace it,
+  // and an administrator had no self-service route either. The current
+  // password is required, so a borrowed browser session cannot silently take
+  // over the account.
+  app.post('/api/v1/auth/change-password', authenticate, sensitiveActionLimiter, async (req, res) => {
+    try {
+      const uid = (req as any).user?.uid;
+      const user = await db('users').where({ uid }).first();
+      if (!user) return res.status(404).json({ error: 'Account not found.' });
+      if (!user.password) {
+        return res.status(400).json({ error: 'This account has no password set. Ask an administrator to set one.' });
+      }
+
+      const currentPassword = String(req.body?.currentPassword ?? '');
+      const newPassword = String(req.body?.newPassword ?? '');
+      if (!currentPassword) return res.status(400).json({ error: 'Enter your current password.' });
+      if (!newPassword) return res.status(400).json({ error: 'Enter a new password.' });
+      if (currentPassword === newPassword) {
+        return res.status(400).json({ error: 'Choose a password different from your current one.' });
+      }
+
+      const matches = await bcrypt.compare(currentPassword, String(user.password));
+      if (!matches) return res.status(400).json({ error: 'Your current password is not correct.' });
+
+      const check = validatePortalPassword(newPassword);
+      if (!check.ok) return res.status(400).json({ error: check.error });
+
+      const hash = await bcrypt.hash(newPassword, 12);
+      await db('users').where({ uid }).update({ password: hash, mustChangePassword: false });
+      await securityEvent('PASSWORD_CHANGED', req, { userId: uid });
+
+      res.json({ success: true, message: 'Your password has been changed.' });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({ error: 'Failed to change your password.' });
     }
   });
 

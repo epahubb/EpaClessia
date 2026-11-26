@@ -39,10 +39,14 @@ test('guessColumnMapping never assigns one column to two fields', () => {
 });
 
 test('parseImportDate converts Excel serial numbers', () => {
-  // 32964 is 1990-04-03 in Excel's serial calendar.
-  assert.equal(parseImportDate(32964), '1990-04-03');
-  // A known anchor: serial 1 is 1900-01-01.
+  // Excel serial 32964 is 1990-04-01 (serial 0 is 1899-12-30).
+  assert.equal(parseImportDate(32964), '1990-04-01');
+  // Another anchor: 45292 is 2024-01-01.
+  assert.equal(parseImportDate(45292), '2024-01-01');
+  // Serial 1 is 1900-01-01. Excel's phantom 1900-02-29 means early serials
+  // need one day added, which the parser does.
   assert.equal(parseImportDate(1), '1900-01-01');
+  assert.equal(parseImportDate(59), '1900-02-28');
 });
 
 test('parseImportDate reads ambiguous text as day-first', () => {

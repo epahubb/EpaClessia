@@ -1,5 +1,5 @@
 import { financeTotals } from '../lib/financeReports';
-import { ministryRoster, ministryCounts } from '../lib/ministryRoster';
+import { ministryRoster, ministryCounts, ministryMemberNames } from '../lib/ministryRoster';
 import { churchAccess } from '../middleware/churchAccess';
 import { randomUUID } from 'node:crypto';
 import { allocateMemberId, normalizeMemberId, SIX_DIGIT_MEMBER_ID } from '../lib/memberIds';
@@ -267,18 +267,30 @@ router.get('/groups', async (req: AuthRequest, res) => {
       .orderBy('name', 'asc');
 
     // Membership counts, so an admin can see an empty group or an overloaded
-    // one without opening each in turn.
-    const counts = await db('members')
+    // one without opening each in turn. The names travel with the count so the
+    // table can show who is actually in each group instead of an unexplained
+    // number.
+    const members = await db('members')
       .where({ tenantId })
       .whereNotNull('groupId')
-      .groupBy('groupId')
-      .select('groupId')
-      .count({ total: '*' });
-    const byGroup = new Map<string, number>(
-      (counts as any[]).map((r) => [String(r.groupId), Number(r.total) || 0]),
-    );
+      .select('id', 'firstName', 'lastName', 'groupId');
+    const byGroup = new Map<string, any[]>();
+    for (const m of members as any[]) {
+      const key = String(m.groupId);
+      if (!byGroup.has(key)) byGroup.set(key, []);
+      byGroup.get(key)!.push(m);
+    }
 
-    res.json({ data: (data as any[]).map((g) => ({ ...groupWithMeetingDays(g), memberCount: byGroup.get(g.id) || 0 })) });
+    res.json({
+      data: (data as any[]).map((g) => {
+        const roster = byGroup.get(g.id) || [];
+        return {
+          ...groupWithMeetingDays(g),
+          memberCount: roster.length,
+          memberNames: roster.map((m) => memberLabel(m)),
+        };
+      }),
+    });
   } catch (error) {
     console.error('List groups error:', error);
     res.status(500).json({ error: 'Failed to fetch groups' });
@@ -462,6 +474,93 @@ router.delete('/groups/:id', requireRole('CHURCH_ADMIN', 'PASTOR'), async (req: 
   } catch (error) {
     console.error('Delete group error:', error);
     res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
+/**
+ * The people in one group, with enough contact detail for the group table and
+ * for a leader to be able to reach them.
+ */
+router.get('/groups/:id/members', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const group = await db('church_groups').where({ id: req.params.id, tenantId }).first();
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+
+    const rows = await db('members')
+      .where({ tenantId, groupId: group.id })
+      .select('id', 'firstName', 'lastName', 'membershipId', 'membershipStatus', 'phone', 'email')
+      .orderBy('lastName', 'asc')
+      .orderBy('firstName', 'asc')
+      .limit(5000);
+
+    res.json({
+      group: { id: group.id, name: group.name },
+      total: rows.length,
+      data: (rows as any[]).map((m) => ({ ...m, name: memberLabel(m) })),
+    });
+  } catch (error) {
+    console.error('GET /groups/:id/members error:', error);
+    res.status(500).json({ error: 'Failed to load this group\'s members' });
+  }
+});
+
+/**
+ * Add one or more existing members to a group. This is the admin-side
+ * equivalent of editing each member record in turn -- useful when a whole cell
+ * is being moved, or when a leader registers people on paper.
+ */
+router.post('/groups/:id/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const group = await db('church_groups').where({ id: req.params.id, tenantId }).first();
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+
+    const requested: string[] = Array.isArray(req.body?.memberIds)
+      ? req.body.memberIds.map((v: any) => String(v))
+      : req.body?.memberId
+        ? [String(req.body.memberId)]
+        : [];
+    const ids = [...new Set(requested.filter(Boolean))];
+    if (!ids.length) return res.status(400).json({ error: 'Choose at least one member to add.' });
+    if (ids.length > 500) return res.status(400).json({ error: 'Add at most 500 members at a time.' });
+
+    const members = await db('members').where({ tenantId }).whereIn('id', ids).select('id');
+    if (members.length !== ids.length) {
+      return res.status(400).json({ error: 'One or more chosen members are not in this church.' });
+    }
+
+    await db('members')
+      .where({ tenantId })
+      .whereIn('id', ids)
+      .update({ groupId: group.id, groupName: group.name });
+
+    res.json({
+      success: true,
+      added: ids.length,
+      message: `${ids.length} member${ids.length === 1 ? '' : 's'} added to ${group.name}.`,
+    });
+  } catch (error) {
+    console.error('POST /groups/:id/members error:', error);
+    res.status(500).json({ error: 'Failed to add members to this group' });
+  }
+});
+
+/** Remove a member from a group without deleting the person's record. */
+router.delete('/groups/:id/members/:memberId', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const group = await db('church_groups').where({ id: req.params.id, tenantId }).first();
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+
+    const member = await db('members').where({ id: req.params.memberId, tenantId, groupId: group.id }).first();
+    if (!member) return res.status(404).json({ error: 'That member is not in this group.' });
+
+    await db('members').where({ id: member.id, tenantId }).update({ groupId: null, groupName: null });
+    res.json({ success: true, message: `${memberLabel(member)} was removed from ${group.name}.` });
+  } catch (error) {
+    console.error('DELETE /groups/:id/members error:', error);
+    res.status(500).json({ error: 'Failed to remove this member from the group' });
   }
 });
 
@@ -1414,6 +1513,29 @@ const sameName = (a: any, b: any) =>
   String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 
 /**
+ * Parent names for a batch of register rows.
+ *
+ * Older rows (and rows written before the parent's name was copied onto the
+ * entry) can carry a parentMemberId but no parentName. Reading the name from
+ * the member record at display time means the register never shows "Child of
+ * undefined" or a blank parent simply because the two parts of the system were
+ * introduced at different times.
+ */
+async function parentNamesFor(
+  tenantId: string,
+  rows: any[],
+  field = 'parentMemberId',
+): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.map((r) => r?.[field]).filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+  const parents = await db('members')
+    .where({ tenantId })
+    .whereIn('id', ids)
+    .select('id', 'firstName', 'lastName', 'membershipId');
+  return new Map((parents as any[]).map((m) => [m.id, memberLabel(m)]));
+}
+
+/**
  * Reads one register out of the tables that own its facts.
  *
  * The `origin` on every entry names the place the row was read from, so a
@@ -1577,15 +1699,16 @@ async function readRegister(
     if (from) q.where('dateOfBirth', '>=', from);
     if (to) q.where('dateOfBirth', '<=', to);
     const rows = await q.orderBy('dateOfBirth', 'desc').limit(1000);
+    const parentNames = await parentNamesFor(tenantId, rows);
     return withCounts(
       rows.map((r: any) => ({
         id: r.id,
         memberId: r.parentMemberId || null,
         memberName: r.childName || 'Unnamed child',
         date: isoOf(r.dateOfBirth),
-        detail: r.parentName ? `Child of ${r.parentName}` : 'Birth',
+        detail: (r.parentName || parentNames.get(r.parentMemberId)) ? `Child of ${r.parentName || parentNames.get(r.parentMemberId)}` : 'Birth',
         particulars: particulars([
-          ['Parent', r.parentName],
+          ['Parent', r.parentName || parentNames.get(r.parentMemberId)],
           ['Other parent', r.secondParentName],
           ['Sex', r.gender],
           ['Place of birth', r.placeOfBirth],
@@ -1602,15 +1725,16 @@ async function readRegister(
     if (from) q.where('dedicationDate', '>=', from);
     if (to) q.where('dedicationDate', '<=', to);
     const rows = await q.orderBy('dedicationDate', 'desc').limit(1000);
+    const parentNames = await parentNamesFor(tenantId, rows);
     return withCounts(
       rows.map((r: any) => ({
         id: r.id,
         memberId: r.parentMemberId || null,
         memberName: r.childName || 'Unnamed child',
         date: isoOf(r.dedicationDate),
-        detail: r.parentName ? `Child of ${r.parentName}` : 'Dedication',
+        detail: (r.parentName || parentNames.get(r.parentMemberId)) ? `Child of ${r.parentName || parentNames.get(r.parentMemberId)}` : 'Dedication',
         particulars: particulars([
-          ['Parent', r.parentName],
+          ['Parent', r.parentName || parentNames.get(r.parentMemberId)],
           ['Date of birth', isoOf(r.childDateOfBirth)],
           ['Officiating minister', r.officiantName],
           ['Place', r.venue],
@@ -3170,6 +3294,51 @@ async function linkChildren(tenantId: string, parentId: string, children: any[],
       .update({ parentMemberId: parentId });
   }
 }
+
+/**
+ * GET /members/options -- a compact list for pickers (registers, positions,
+ * visitations, group and ministry rosters).
+ *
+ * The paginated /members list deliberately caps a page at 500 so a list view
+ * cannot be asked for ten thousand photographs at once. That cap is right for
+ * the register table, but wrong for a dropdown: a church with 900 members was
+ * getting an empty "Parent" selector, which is why a child dedication could be
+ * filed with no parent attached. This endpoint carries names and contact
+ * details only, never photos, and is bounded so it is still predictable.
+ */
+router.get('/members/options', async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const q = String(req.query.q || '').trim();
+    if (q.length > 120) return res.status(400).json({ error: 'Search text is too long.' });
+
+    const client = db.client.config.client;
+    const like = client === 'pg' ? 'ilike' : 'like';
+    let query = db('members')
+      .where({ tenantId })
+      .select('id', 'firstName', 'lastName', 'membershipId', 'membershipStatus', 'groupId', 'ministryId', 'phone', 'email');
+    if (q) {
+      query = query.where(function () {
+        this.where('firstName', like, `%${q}%`)
+          .orWhere('lastName', like, `%${q}%`)
+          .orWhere('membershipId', like, `%${q}%`)
+          .orWhere('phone', like, `%${q}%`)
+          .orWhere('email', like, `%${q}%`);
+      });
+    }
+
+    const rows = await query.orderBy('lastName', 'asc').orderBy('firstName', 'asc').limit(5000);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      data: (rows as any[]).map((m) => ({ ...m, name: memberLabel(m) })),
+      total: rows.length,
+      truncated: rows.length === 5000,
+    });
+  } catch (error) {
+    console.error('GET /members/options error:', error);
+    res.status(500).json({ error: 'Failed to load the member list' });
+  }
+});
 
 router.get('/members', async (req: AuthRequest, res) => {
   try {
@@ -5018,7 +5187,20 @@ function registerCrud(basePath: string, table: string, opts: CrudOpts) {
         if (val !== undefined && val !== '' && val !== 'all') q = q.where(f, String(val));
       }
       const rows = await q.orderBy(opts.orderBy || 'createdAt', 'desc');
-      if (table === 'ministries') { const counts = await ministryCounts(db, tid(req)); return res.json({ data: rows.map(r => ({ ...r, memberCount: counts[r.id] || 0 })) }); }
+      if (table === 'ministries') {
+        // Counts come from the roster, and the names behind each count travel
+        // with it so the table can answer "who is in this ministry?" without
+        // making the reader open a second screen.
+        const counts = await ministryCounts(db, tid(req));
+        const names = await ministryMemberNames(db, tid(req));
+        return res.json({
+          data: rows.map((r) => ({
+            ...r,
+            memberCount: counts[r.id] || 0,
+            memberNames: names[r.id] || [],
+          })),
+        });
+      }
       res.json({ data: table === 'service_schedules' ? rows.map(r => ({ ...r, meetingDays: normalizeMeetingDays(r.dayOfWeek) })) : rows });
     } catch (e) {
       console.error(`GET ${basePath} error:`, e);
@@ -5127,6 +5309,143 @@ registerCrud('/ministries', 'ministries', {
   filterFields: ['type', 'status'],
   orderBy: 'name',
 });
+
+/**
+ * The roster of one ministry or department.
+ *
+ * A member can serve in several units, so the join table is authoritative;
+ * the legacy single `members.ministryId` value is included as well so members
+ * assigned before that table existed do not disappear from their own roster.
+ */
+router.get('/ministries/:id/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const ministry = await db('ministries').where({ id: req.params.id, tenantId }).first();
+    if (!ministry) return res.status(404).json({ error: 'Ministry not found' });
+
+    const rows = await ministryRoster(db, tenantId, ministry.id)
+      .select('m.id', 'm.firstName', 'm.lastName', 'm.membershipId', 'm.membershipStatus', 'm.phone', 'm.email', 'm.ministryId')
+      .orderBy('m.lastName', 'asc')
+      .orderBy('m.firstName', 'asc')
+      .limit(5000);
+
+    const links = await db('ministry_members')
+      .where({ tenantId, ministryId: ministry.id })
+      .select('id', 'memberId', 'role', 'status', 'joinedAt');
+    const linkByMember = new Map<string, any>((links as any[]).map((l) => [l.memberId, l]));
+
+    res.json({
+      ministry: { id: ministry.id, name: ministry.name, type: ministry.type },
+      total: rows.length,
+      data: (rows as any[]).map((m) => ({
+        ...m,
+        name: memberLabel(m),
+        linkId: linkByMember.get(m.id)?.id || null,
+        role: linkByMember.get(m.id)?.role || 'member',
+        joinStatus: linkByMember.get(m.id)?.status || 'active',
+        joinedAt: linkByMember.get(m.id)?.joinedAt || null,
+      })),
+    });
+  } catch (error) {
+    console.error('GET /ministries/:id/members error:', error);
+    res.status(500).json({ error: 'Failed to load this ministry\'s members' });
+  }
+});
+
+/** Add existing members to a ministry or department. */
+router.post('/ministries/:id/members', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const ministry = await db('ministries').where({ id: req.params.id, tenantId }).first();
+    if (!ministry) return res.status(404).json({ error: 'Ministry not found' });
+    if ((req as any).dbUser?.role === 'MINISTRY_LEADER' && String(ministry.leaderId || '') !== String(req.user?.uid || '')) {
+      return res.status(403).json({ error: 'You can only add members to a ministry you lead.' });
+    }
+
+    const requested: string[] = Array.isArray(req.body?.memberIds)
+      ? req.body.memberIds.map((v: any) => String(v))
+      : req.body?.memberId
+        ? [String(req.body.memberId)]
+        : [];
+    const ids = [...new Set(requested.filter(Boolean))];
+    if (!ids.length) return res.status(400).json({ error: 'Choose at least one member to add.' });
+    if (ids.length > 500) return res.status(400).json({ error: 'Add at most 500 members at a time.' });
+
+    const members = await db('members').where({ tenantId }).whereIn('id', ids).select('id', 'firstName', 'lastName', 'phone', 'email');
+    if (members.length !== ids.length) {
+      return res.status(400).json({ error: 'One or more chosen members are not in this church.' });
+    }
+
+    const existing = await db('ministry_members').where({ tenantId, ministryId: ministry.id }).whereIn('memberId', ids).select('memberId');
+    const already = new Set((existing as any[]).map((r) => r.memberId));
+    const toAdd = (members as any[]).filter((m) => !already.has(m.id));
+
+    if (toAdd.length) {
+      await db('ministry_members').insert(
+        toAdd.map((m) => ({
+          id: genId('minmem'),
+          tenantId,
+          ministryId: ministry.id,
+          memberId: m.id,
+          name: memberLabel(m),
+          role: 'member',
+          status: 'active',
+          phone: m.phone || null,
+          email: m.email || null,
+          joinedAt: new Date(),
+          createdBy: req.user?.uid || null,
+          createdAt: new Date(),
+        })),
+      );
+    }
+
+    // Keep the legacy count column truthful for any screen still reading it.
+    const { total } = (await ministryRoster(db, tenantId, ministry.id).count({ total: '*' }).first()) as any;
+    await db('ministries').where({ id: ministry.id, tenantId }).update({ memberCount: Number(total) || 0 });
+
+    const added = toAdd.length;
+    res.json({
+      success: true,
+      added,
+      skipped: ids.length - added,
+      message: added
+        ? `${added} member${added === 1 ? '' : 's'} added to ${ministry.name}.`
+        : 'Those members are already in this ministry.',
+    });
+  } catch (error) {
+    console.error('POST /ministries/:id/members error:', error);
+    res.status(500).json({ error: 'Failed to add members to this ministry' });
+  }
+});
+
+/** Remove a member from a ministry without deleting their church record. */
+router.delete('/ministries/:id/members/:memberId', requireRole('CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER'), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const ministry = await db('ministries').where({ id: req.params.id, tenantId }).first();
+    if (!ministry) return res.status(404).json({ error: 'Ministry not found' });
+    if ((req as any).dbUser?.role === 'MINISTRY_LEADER' && String(ministry.leaderId || '') !== String(req.user?.uid || '')) {
+      return res.status(403).json({ error: 'You can only remove members from a ministry you lead.' });
+    }
+
+    const member = await db('members').where({ id: req.params.memberId, tenantId }).first();
+    if (!member) return res.status(404).json({ error: 'That member is not in this church.' });
+
+    await db('ministry_members').where({ tenantId, ministryId: ministry.id, memberId: member.id }).del();
+    if (member.ministryId === ministry.id) {
+      await db('members').where({ id: member.id, tenantId }).update({ ministryId: null });
+    }
+
+    const { total } = (await ministryRoster(db, tenantId, ministry.id).count({ total: '*' }).first()) as any;
+    await db('ministries').where({ id: ministry.id, tenantId }).update({ memberCount: Number(total) || 0 });
+
+    res.json({ success: true, message: `${memberLabel(member)} was removed from ${ministry.name}.` });
+  } catch (error) {
+    console.error('DELETE /ministries/:id/members error:', error);
+    res.status(500).json({ error: 'Failed to remove this member from the ministry' });
+  }
+});
+
 registerCrud('/expenses', 'expenses', {
   idPrefix: 'exp',
   fields: [
@@ -5686,6 +6005,47 @@ router.put('/users/:uid', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, 
     res.status(500).json({ error: 'Failed to update user' });
   }
 });
+/**
+ * POST /users/:uid/reset-password -- give a staff or leader account a new
+ * password. A church administrator may set one explicitly, or leave it blank
+ * and receive a generated temporary password to hand over. Admin-set
+ * passwords are never emailed automatically, so the administrator remains the
+ * one who decides how the credential is delivered.
+ */
+router.post('/users/:uid/reset-password', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
+  try {
+    const existing = await db('users').where({ uid: req.params.uid, tenantId: tid(req) }).first();
+    if (!existing) return res.status(404).json({ error: 'User not found' });
+    if (existing.role === 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Platform administrator passwords can only be reset by a platform administrator.' });
+    }
+
+    const supplied = req.body?.password !== undefined ? String(req.body.password) : '';
+    const password = supplied || generateTempPassword();
+    const check = validatePortalPassword(password);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+
+    const bcryptLib = (await import('bcryptjs')).default;
+    const hash = await bcryptLib.hash(password, 12);
+    await db('users').where({ uid: existing.uid }).update({
+      password: hash,
+      mustChangePassword: true,
+    });
+    await logActivity(req, 'PASSWORD_RESET', 'users', existing.uid, `Password reset for ${existing.email || existing.uid}`);
+
+    res.json({
+      success: true,
+      temporaryPassword: supplied ? undefined : password,
+      message: supplied
+        ? 'The password was updated. Give it to the account holder privately.'
+        : 'A temporary password was generated. Give it to the account holder privately; they will be asked to change it.',
+    });
+  } catch (e) {
+    console.error('Reset user password error:', e);
+    res.status(500).json({ error: 'Failed to reset this password' });
+  }
+});
+
 router.delete('/users/:uid', requireRole('CHURCH_ADMIN'), async (req: AuthRequest, res) => {
   try {
     if (req.params.uid === req.user?.uid) return res.status(400).json({ error: 'You cannot delete your own account' });
@@ -6904,6 +7264,285 @@ router.get('/portal-profile', async (req: AuthRequest, res) => {
       // tradition, e.g. ministries, education, family and medical details.
       memberSections: profile.memberSections,
     });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Meeting minutes                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Minutes are written by the people who run meetings: the secretary, group
+ * leaders and ministry leaders, as well as administrators and pastors. A
+ * leader may only file minutes for a unit they actually lead; a secretary or
+ * administrator may file for the church as a whole or for any unit.
+ *
+ * The scope is validated against the units in this tenant, never trusted from
+ * the browser, so a crafted request cannot hang a minute from another church's
+ * ministry.
+ */
+const MINUTE_READ_ROLES = ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY', 'MINISTRY_LEADER', 'GROUP_LEADER'];
+
+type MinuteScope = { scopeType: string; scopeId: string | null; label: string };
+
+async function minuteScopesFor(req: AuthRequest): Promise<{ manager: boolean; scopes: MinuteScope[] }> {
+  const tenantId = tid(req);
+  const role = (req as any).dbUser?.role || req.user?.role;
+  const uid = String(req.user?.uid || '');
+  const manager = role === 'SUPER_ADMIN' || ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'].includes(role);
+
+  const scopes: MinuteScope[] = [];
+  if (manager) {
+    scopes.push({ scopeType: 'church', scopeId: null, label: 'Church-wide' });
+  }
+
+  const ministryQuery = db('ministries').where({ tenantId }).select('id', 'name', 'type');
+  if (!manager) ministryQuery.where({ leaderId: uid });
+  const ministries = await ministryQuery.orderBy('name', 'asc');
+  for (const m of ministries as any[]) {
+    scopes.push({
+      scopeType: m.type === 'department' ? 'department' : 'ministry',
+      scopeId: m.id,
+      label: m.name,
+    });
+  }
+
+  const groupQuery = db('church_groups').where({ tenantId }).select('id', 'name');
+  if (!manager) groupQuery.where({ leaderId: uid });
+  const groups = await groupQuery.orderBy('name', 'asc');
+  for (const g of groups as any[]) {
+    scopes.push({ scopeType: 'group', scopeId: g.id, label: g.name });
+  }
+
+  return { manager, scopes };
+}
+
+/** Validates and resolves the unit a minute belongs to. */
+async function resolveMinuteScope(
+  req: AuthRequest,
+  input: any,
+): Promise<{ error?: string; scope?: MinuteScope }> {
+  const allowed = ['church', 'ministry', 'department', 'group'];
+  const scopeType = allowed.includes(String(input?.scopeType)) ? String(input.scopeType) : 'church';
+  const scopeId = input?.scopeId ? String(input.scopeId) : null;
+  const { manager, scopes } = await minuteScopesFor(req);
+
+  if (scopeType === 'church') {
+    if (!manager) {
+      return { error: 'Only a church administrator, pastor or secretary can write church-wide minutes.' };
+    }
+    return { scope: { scopeType: 'church', scopeId: null, label: 'Church-wide' } };
+  }
+
+  if (!scopeId) return { error: 'Choose the ministry, department or group this meeting belongs to.' };
+  const match = scopes.find((s) => s.scopeType === scopeType && String(s.scopeId) === scopeId);
+  if (!match) {
+    if (manager) {
+      return { error: 'That unit could not be found. Choose a ministry, department or group from this church.' };
+    }
+    return { error: 'You can only write minutes for a ministry, department or group you lead.' };
+  }
+  return { scope: match };
+}
+
+const minuteText = (value: any): string | null =>
+  value === undefined || value === null || String(value).trim() === '' ? null : String(value).trim();
+
+router.get('/minutes/context', requireRole(...MINUTE_READ_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const context = await minuteScopesFor(req);
+    res.json(context);
+  } catch (error) {
+    console.error('GET /minutes/context error:', error);
+    res.status(500).json({ error: 'Failed to load the units you can write minutes for' });
+  }
+});
+
+router.get('/minutes', requireRole(...MINUTE_READ_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const role = (req as any).dbUser?.role || req.user?.role;
+    const manager = role === 'SUPER_ADMIN' || ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'].includes(role);
+    const uid = String(req.user?.uid || '');
+
+    let query = db('minutes').where({ tenantId });
+    const scopeType = String(req.query.scopeType || '');
+    if (scopeType && scopeType !== 'all') query = query.where('scopeType', scopeType);
+    if (req.query.scopeId) query = query.where('scopeId', String(req.query.scopeId));
+    if (req.query.status && req.query.status !== 'all') query = query.where('status', String(req.query.status));
+
+    const from = req.query.from ? new Date(String(req.query.from)) : null;
+    const to = req.query.to ? new Date(String(req.query.to)) : null;
+    if (from && !Number.isNaN(from.getTime())) query = query.where('meetingDate', '>=', from);
+    if (to && !Number.isNaN(to.getTime())) {
+      to.setHours(23, 59, 59, 999);
+      query = query.where('meetingDate', '<=', to);
+    }
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      if (q.length > 120) return res.status(400).json({ error: 'Search text is too long.' });
+      query = query.where(function () {
+        this.where('title', 'like', `%${q}%`)
+          .orWhere('scopeName', 'like', `%${q}%`)
+          .orWhere('chairperson', 'like', `%${q}%`)
+          .orWhere('secretary', 'like', `%${q}%`);
+      });
+    }
+
+    const rows = await query.orderBy('meetingDate', 'desc').orderBy('createdAt', 'desc').limit(1000);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      data: (rows as any[]).map((m) => ({
+        ...m,
+        canEdit: manager || String(m.createdBy || '') === uid,
+        canDelete: manager || String(m.createdBy || '') === uid,
+      })),
+      total: rows.length,
+    });
+  } catch (error) {
+    console.error('GET /minutes error:', error);
+    res.status(500).json({ error: 'Failed to load meeting minutes' });
+  }
+});
+
+router.get('/minutes/:id', requireRole(...MINUTE_READ_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const role = (req as any).dbUser?.role || req.user?.role;
+    const manager = role === 'SUPER_ADMIN' || ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'].includes(role);
+    const row = await db('minutes').where({ id: req.params.id, tenantId: tid(req) }).first();
+    if (!row) return res.status(404).json({ error: 'That minute could not be found.' });
+    res.json({
+      ...row,
+      canEdit: manager || String(row.createdBy || '') === String(req.user?.uid || ''),
+      canDelete: manager || String(row.createdBy || '') === String(req.user?.uid || ''),
+    });
+  } catch (error) {
+    console.error('GET /minutes/:id error:', error);
+    res.status(500).json({ error: 'Failed to load this minute' });
+  }
+});
+
+router.post('/minutes', requireRole(...MINUTE_READ_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const body = req.body || {};
+    const title = minuteText(body.title);
+    if (!title) return res.status(400).json({ error: 'Give the minute a title, such as "Board meeting — March".' });
+    if (title.length > 200) return res.status(400).json({ error: 'A minute title cannot exceed 200 characters.' });
+
+    const meetingDate = body.meetingDate ? new Date(body.meetingDate) : null;
+    if (!meetingDate || Number.isNaN(meetingDate.getTime())) {
+      return res.status(400).json({ error: 'Enter the date of the meeting.' });
+    }
+
+    const resolved = await resolveMinuteScope(req, body);
+    if (resolved.error || !resolved.scope) return res.status(403).json({ error: resolved.error });
+
+    const status = body.status === 'final' ? 'final' : 'draft';
+    const id = genId('minute');
+    const actor = (req as any).dbUser;
+    const row = {
+      id,
+      tenantId,
+      title,
+      scopeType: resolved.scope.scopeType,
+      scopeId: resolved.scope.scopeId,
+      scopeName: resolved.scope.label,
+      meetingType: minuteText(body.meetingType),
+      meetingDate,
+      venue: minuteText(body.venue),
+      chairperson: minuteText(body.chairperson),
+      secretary: minuteText(body.secretary),
+      attendees: minuteText(body.attendees),
+      absentees: minuteText(body.absentees),
+      agenda: minuteText(body.agenda),
+      content: minuteText(body.content),
+      resolutions: minuteText(body.resolutions),
+      status,
+      createdBy: req.user?.uid || null,
+      createdByName: actor?.name || req.user?.email || null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await db('minutes').insert(row);
+    await logActivity(req, 'MINUTE_RECORDED', 'minutes', id, `${title} (${resolved.scope.label})`);
+    res.status(201).json({ success: true, message: 'The minute was saved.', data: row });
+  } catch (error) {
+    console.error('POST /minutes error:', error);
+    res.status(500).json({ error: 'Failed to save this minute' });
+  }
+});
+
+router.put('/minutes/:id', requireRole(...MINUTE_READ_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const existing = await db('minutes').where({ id: req.params.id, tenantId }).first();
+    if (!existing) return res.status(404).json({ error: 'That minute could not be found.' });
+
+    const role = (req as any).dbUser?.role || req.user?.role;
+    const manager = role === 'SUPER_ADMIN' || ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'].includes(role);
+    if (!manager && String(existing.createdBy || '') !== String(req.user?.uid || '')) {
+      return res.status(403).json({ error: 'You can only edit minutes you wrote.' });
+    }
+
+    const body = req.body || {};
+    const updates: any = {};
+    if ('title' in body) {
+      const title = minuteText(body.title);
+      if (!title) return res.status(400).json({ error: 'A minute must have a title.' });
+      updates.title = title;
+    }
+    if ('meetingDate' in body) {
+      const when = body.meetingDate ? new Date(body.meetingDate) : null;
+      if (!when || Number.isNaN(when.getTime())) return res.status(400).json({ error: 'Enter a valid meeting date.' });
+      updates.meetingDate = when;
+    }
+    for (const field of ['meetingType', 'venue', 'chairperson', 'secretary', 'attendees', 'absentees', 'agenda', 'content', 'resolutions']) {
+      if (field in body) updates[field] = minuteText(body[field]);
+    }
+    if ('status' in body) updates.status = body.status === 'final' ? 'final' : 'draft';
+
+    if ('scopeType' in body || 'scopeId' in body) {
+      const resolved = await resolveMinuteScope(req, {
+        scopeType: body.scopeType ?? existing.scopeType,
+        scopeId: body.scopeId ?? existing.scopeId,
+      });
+      if (resolved.error || !resolved.scope) return res.status(403).json({ error: resolved.error });
+      updates.scopeType = resolved.scope.scopeType;
+      updates.scopeId = resolved.scope.scopeId;
+      updates.scopeName = resolved.scope.label;
+    }
+
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nothing was changed.' });
+    updates.updatedAt = new Date();
+    await db('minutes').where({ id: existing.id, tenantId }).update(updates);
+    await logActivity(req, 'MINUTE_UPDATED', 'minutes', existing.id);
+    res.json({ success: true, message: 'The minute was updated.' });
+  } catch (error) {
+    console.error('PUT /minutes/:id error:', error);
+    res.status(500).json({ error: 'Failed to update this minute' });
+  }
+});
+
+router.delete('/minutes/:id', requireRole(...MINUTE_READ_ROLES), async (req: AuthRequest, res) => {
+  try {
+    const tenantId = tid(req);
+    const existing = await db('minutes').where({ id: req.params.id, tenantId }).first();
+    if (!existing) return res.status(404).json({ error: 'That minute could not be found.' });
+
+    const role = (req as any).dbUser?.role || req.user?.role;
+    const manager = role === 'SUPER_ADMIN' || ['CHURCH_ADMIN', 'PASTOR', 'SECRETARY'].includes(role);
+    if (!manager && String(existing.createdBy || '') !== String(req.user?.uid || '')) {
+      return res.status(403).json({ error: 'You can only delete minutes you wrote.' });
+    }
+
+    await db('minutes').where({ id: existing.id, tenantId }).del();
+    await logActivity(req, 'MINUTE_DELETED', 'minutes', existing.id, existing.title);
+    res.json({ success: true, message: 'The minute was deleted.' });
+  } catch (error) {
+    console.error('DELETE /minutes/:id error:', error);
+    res.status(500).json({ error: 'Failed to delete this minute' });
   }
 });
 
